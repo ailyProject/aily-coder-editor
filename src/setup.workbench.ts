@@ -30,6 +30,7 @@ import {
   userDataProvider,
   disableShadowDom
 } from './setup.common'
+import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
 
 /** 与宿主 `?theme=` 共用：dark→Default Dark+、light→Default Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -90,6 +91,9 @@ await initializeMonacoService(
   constructOptions,
   envOptions
 )
+
+// 嵌入壳：拦截命令面板，避免 Ctrl/Cmd+Shift+P 弹出 VS Code 全局命令列表
+installEmbedCommandPaletteBlock()
 
 if (coderEmbedThemeQueryPresent) {
   const nextColorTheme = coderWorkbenchColorThemeForScheme(coderEmbedThemeScheme)

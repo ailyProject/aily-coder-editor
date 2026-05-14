@@ -390,11 +390,11 @@ export const constructOptions: IWorkbenchConstructionOptions = {
   remoteAuthority,
   enableWorkspaceTrust: true,
   connectionToken,
-  windowIndicator: {
-    label: 'monaco-vscode-api',
-    tooltip: '',
-    command: ''
-  },
+  // windowIndicator: {
+  //   label: '',
+  //   tooltip: '',
+  //   command: ''
+  // },
   workspaceProvider: {
     trusted: true,
     async open() {
@@ -420,10 +420,13 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     logLevel: LogLevel.Info // Default value
   },
   configurationDefaults: {
-    // 'window.title': 'Monaco-Vscode-Api${separator}${dirty}${activeEditorShort}'
-    'window.menuBarVisibility': 'hidden',
-    'workbench.layoutControl.enabled': true,
-    // 'workbench.navigationControl.enabled': false
+    // 'window.title': '${separator}${dirty}${activeEditorShort}'
+    "window.menuBarVisibility": "compact",
+    "workbench.editor.editorActionsLocation": "hidden",
+    "window.commandCenter": false,
+    "workbench.layoutControl.enabled": false,
+    "workbench.activityBar.location": "hidden",
+    "workbench.statusBar.visible": false
   },
   defaultLayout: {
     editors: skipCoderDemoWorkbenchEditors

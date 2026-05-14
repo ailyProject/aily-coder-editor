@@ -28,6 +28,7 @@ import {
   remoteAuthority,
   userDataProvider
 } from './setup.common'
+import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
 
 const container = document.createElement('div')
 container.id = 'app'
@@ -94,6 +95,9 @@ await initializeMonacoService(
   constructOptions,
   envOptions
 )
+
+// 与 full workbench 一致：禁用命令面板命令 id
+installEmbedCommandPaletteBlock()
 
 setUnexpectedErrorHandler((e) => {
   console.info('Unexpected error', e)
