@@ -5,6 +5,8 @@ import { useEmbedHostLocalFolder, useHtmlFileSystemProvider } from './setup.comm
 // import './features/output'
 // import './features/debugger'
 import './features/intellisense' // !!
+import './features/monacoStdioLspClient'
+import './features/aiInlineCompletion'
 import './features/myExplorerTree'
 // import './features/notifications'
 // import './features/terminal'
@@ -14,7 +16,7 @@ import './features/myExplorerTree'
 
 // import '@codingame/monaco-vscode-clojure-default-extension'
 // import '@codingame/monaco-vscode-coffeescript-default-extension'
-// import '@codingame/monaco-vscode-cpp-default-extension'
+import '@codingame/monaco-vscode-cpp-default-extension'
 // import '@codingame/monaco-vscode-csharp-default-extension'
 // import '@codingame/monaco-vscode-css-default-extension'
 // import '@codingame/monaco-vscode-diff-default-extension'

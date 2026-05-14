@@ -6,7 +6,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     // files: ['src/setup.common.ts', 'src/setup.views.ts'],
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'server/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unused-vars': 'off',
     }

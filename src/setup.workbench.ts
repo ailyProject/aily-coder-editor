@@ -17,7 +17,8 @@ import {
   getUserConfiguration,
   updateUserConfiguration
 } from '@codingame/monaco-vscode-configuration-service-override'
-import './features/customView.workbench'
+// 自定义底部面板
+// import './features/customView.workbench'
 import {
   coderEmbedThemeQueryPresent,
   coderEmbedThemeScheme,
