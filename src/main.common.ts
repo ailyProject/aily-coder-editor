@@ -7,7 +7,7 @@ import { useEmbedHostLocalFolder, useHtmlFileSystemProvider } from './setup.comm
 import './features/intellisense' // !!
 import './features/monacoStdioLspClient'
 import './features/aiInlineCompletion'
-import './features/myExplorerTree'
+import './features/ailyViewExplorer'
 // import './features/notifications'
 // import './features/terminal'
 // import './features/scm'

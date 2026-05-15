@@ -426,7 +426,7 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     "window.commandCenter": false,
     "workbench.layoutControl.enabled": false,
     "workbench.activityBar.location": "hidden",
-    "workbench.statusBar.visible": false
+    "workbench.statusBar.visible": false,
   },
   defaultLayout: {
     editors: skipCoderDemoWorkbenchEditors
@@ -454,7 +454,7 @@ export const constructOptions: IWorkbenchConstructionOptions = {
         id: 'custom-view'
       },
       {
-        id: 'myExplorer'
+        id: 'ailyView'
       }
     ],
     force: resetLayout

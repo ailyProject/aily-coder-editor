@@ -78,8 +78,6 @@ container.innerHTML = `
 
 document.body.append(container)
 
-console.log('commonServices11111', commonServices)
-
 // Override services
 await initializeMonacoService(
   {
