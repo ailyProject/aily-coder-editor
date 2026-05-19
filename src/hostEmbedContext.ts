@@ -80,6 +80,12 @@ export const HOST_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-open-board-selector'
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_BOARD_SELECTOR_CHANNEL 须一致 */
 export const AILY_EMBED_OPEN_BOARD_SELECTOR_BC = 'aily-embed-open-board-selector'
 
+/** iframe → Angular：写入系统剪贴板（iframe 内 Clipboard API 常被 Permissions-Policy 禁用） */
+export const HOST_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-clipboard-write'
+
+/** 与 Angular code-editor-pro 中 AILY_EMBED_CLIPBOARD_WRITE_CHANNEL 须一致 */
+export const AILY_EMBED_CLIPBOARD_WRITE_BC = 'aily-embed-clipboard-write'
+
 /** 与宿主同步库管理侧栏：`open` 为 true 展开，false 收起 */
 export function syncHostLibraryManager(open: boolean): void {
   if (typeof window === 'undefined') {
@@ -151,6 +157,47 @@ export function requestHostOpenBoardSelector(): void {
     }, 1000)
   } catch {
     /* ignore */
+  }
+}
+
+
+/**
+ * 将文本写入 Electron 宿主剪贴板。
+ * 内嵌 iframe 中 `navigator.clipboard` / `vscode.env.clipboard` 常被 Permissions-Policy 拦截。
+ * @returns 是否已委托宿主（postMessage 或 BroadcastChannel）
+ */
+export function requestHostClipboardWriteText(text: string): boolean {
+  if (text == null || text === '') {
+    return false
+  }
+  if (typeof window === 'undefined') {
+    return false
+  }
+  const payload = { channel: HOST_CLIPBOARD_WRITE_CHANNEL, text }
+  if (window.parent != null && window.parent !== window) {
+    try {
+      window.parent.postMessage(payload, '*')
+      return true
+    } catch {
+      /* 落到 BroadcastChannel */
+    }
+  }
+  if (typeof BroadcastChannel === 'undefined') {
+    return false
+  }
+  try {
+    const ch = new BroadcastChannel(AILY_EMBED_CLIPBOARD_WRITE_BC)
+    ch.postMessage({ text })
+    setTimeout(() => {
+      try {
+        ch.close()
+      } catch {
+        /* ignore */
+      }
+    }, 1000)
+    return true
+  } catch {
+    return false
   }
 }
 

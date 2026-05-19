@@ -6,6 +6,7 @@ import {
   mergeBoardProfileIntoSnapshot,
   onHostEmbedContextChanged,
   requestHostCloseLibraryManager,
+  requestHostClipboardWriteText,
   requestHostOpenBoardSelector,
   requestHostOpenLibraryManager,
   type HostBoardProfileV1,
@@ -241,6 +242,16 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     visible: true,
     children: [
       {
+        id: 'project-config-file',
+        type: 'file',
+        label: 'project.aci',
+        icon: 'json',
+        path: 'project.aci',
+        expandable: false,
+        expandedByDefault: false,
+        visible: true
+      },
+      {
         id: 'lock-json',
         type: 'file',
         label: 'aily.lock.json',
@@ -384,8 +395,8 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
       }
     ]
   },
-  // Generated：§4.3 条件显示，§6.3 高级模式；MVP 暂隐藏，恢复时取消下方块注释
-  /*
+  // Generated：§4.3 标记为"条件显示"，§6.3 高级模式才展开
+  // 按当前对齐选择：默认可见但折叠，便于直观呈现完整 6 组结构（不含 Project Files）
   {
     id: 'generated',
     type: 'group',
@@ -427,7 +438,6 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
       }
     ]
   }
-  */
 ]
 
 /** 工程根下 node_modules 相对路径 */
@@ -960,7 +970,7 @@ const WHEN_DIRECTORY = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:/`
 const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|virtual-file):/`
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
 const WHEN_MAIN_CPP = `${WHEN_VIEW} && viewItem == aily.file:entry-main`
-const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:project-entry$/`
+const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:project-(entry|config-file)$/`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_DEPS_GROUP =
   `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:platform-packages)`
@@ -1041,7 +1051,7 @@ const { getApi } = registerExtension(
           { command: COMMANDS.newFile, when: WHEN_DIRECTORY, group: '1_directory@10' },
           { command: COMMANDS.newFolder, when: WHEN_DIRECTORY, group: '1_directory@20' },
 
-          // project.aci（Start Here > project-entry）
+          // project.aci（Start Here / Project Config 两处）
           { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_ACI, group: '1_config@10' },
           { command: COMMANDS.openAsJson, when: WHEN_PROJECT_ACI, group: '1_config@20' },
           { command: COMMANDS.validateConfig, when: WHEN_PROJECT_ACI, group: '1_config@30' },
@@ -1327,6 +1337,35 @@ void getApi().then((vscode) => {
       )
     }
 
+  /**
+   * 复制文本到剪贴板。
+   * 内嵌 Electron 优先 postMessage → 宿主 electron.clipboard，避免 iframe Permissions-Policy 报错。
+   */
+  const copyTextToClipboard = async (text: string): Promise<void> => {
+    if (requestHostClipboardWriteText(text)) {
+      return
+    }
+    if (typeof document !== 'undefined') {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.setAttribute('readonly', '')
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        const ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+        if (ok) {
+          return
+        }
+      } catch {
+        /* 继续尝试 vscode.env.clipboard */
+      }
+    }
+    await vscode.env.clipboard.writeText(text)
+  }
+
   // 通用菜单（§7.1）
   vscode.commands.registerCommand(COMMANDS.open, async (element?: ExplorerTreeElement) => {
     const label =
@@ -1426,8 +1465,12 @@ void getApi().then((vscode) => {
         return
       }
       const text = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/')
-      await vscode.env.clipboard.writeText(text)
-      await vscode.window.showInformationMessage(`已复制相对路径：${text}`)
+      try {
+        await copyTextToClipboard(text)
+        await vscode.window.showInformationMessage(`已复制相对路径：${text}`)
+      } catch (err) {
+        await vscode.window.showErrorMessage(`复制相对路径失败：${String(err)}`)
+      }
     }
   )
 
