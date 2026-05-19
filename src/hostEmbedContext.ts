@@ -3,6 +3,18 @@
  * 契约：父窗口 → iframe，仅处理 `ev.source === window.parent`。
  */
 
+/** 主板 boardDependencies 解析出的 SDK / 编译器 / 工具（磁盘在 appdata/aily-project 下） */
+export type HostPlatformPackageV1 = {
+  id: string
+  label: string
+  packageName: string
+  version: string
+  kind: 'sdk' | 'compiler' | 'tool'
+  absolutePath: string
+  /** tools 下真实文件夹名，如 ctags@5.8-arduino11 */
+  diskDirName?: string
+}
+
 /** 与 Angular `code-editor-pro` 发送的 payload 对齐；`v` 用于日后无损升级。 */
 export type HostEmbedContextV1 = {
   v: 1
@@ -16,6 +28,10 @@ export type HostEmbedContextV1 = {
   mainHexRelPath?: string
   /** 与 ProjectService.getBuildPath()+main.hex 一致的绝对路径（可能在工作区外，如 aily-builder 缓存目录） */
   mainHexAbsPath?: string
+  /** 全局 aily-project（appdata）根路径，便于扩展侧对账 */
+  appDataPath?: string
+  /** Platform Packages 子节点：主板依赖的 sdk / compiler / tool 真实目录 */
+  platformPackages?: readonly HostPlatformPackageV1[]
   /** 预留：版本号、板型等 */
   meta?: Record<string, unknown>
 }

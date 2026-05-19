@@ -1,7 +1,11 @@
 import type * as vscode from 'vscode'
 import { ExtensionHostKind, registerExtension } from '@codingame/monaco-vscode-api/extensions'
 import { coderUseEmbedHostNativeFsBridge } from '../coderEmbedEnv.js'
-import { getHostEmbedContext, onHostEmbedContextChanged } from '../hostEmbedContext.js'
+import {
+  getHostEmbedContext,
+  onHostEmbedContextChanged,
+  type HostPlatformPackageV1
+} from '../hostEmbedContext.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -445,29 +449,208 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   }
 ]
 
-// 提供给 TreeDataProvider 渲染的运行时节点（仅包装 blueprint 节点引用）
-type ExplorerTreeElement = {
-  readonly kind: 'project'
-  readonly node: ProjectTreeNode
+/** 工程根下 node_modules 相对路径 */
+const NODE_MODULES_REL = 'node_modules'
+
+/** Installed Libraries 无依赖时的占位节点 id（§9.4） */
+const INSTALLED_LIBRARIES_EMPTY_ID = 'installed-libraries-empty'
+
+/** Platform Packages 未解析到主板平台依赖时的占位节点 id（§9.4） */
+const PLATFORM_PACKAGES_EMPTY_ID = 'platform-packages-empty'
+
+/** Platform Packages 动态子节点 id 前缀 */
+const PLATFORM_PKG_NODE_PREFIX = 'platform-pkg-'
+
+/** node_modules 顶层扫描时跳过的目录 */
+const NODE_MODULES_SKIP = new Set(['.bin', '.cache'])
+
+/** §9.4 Installed Libraries 空状态文案 */
+const INSTALLED_LIBRARIES_EMPTY: ProjectTreeNode = {
+  id: INSTALLED_LIBRARIES_EMPTY_ID,
+  type: 'status',
+  label: 'No external libraries installed yet.',
+  icon: 'info',
+  description: NODE_MODULES_REL,
+  expandable: false,
+  expandedByDefault: false,
+  visible: true
 }
+
+/** §9.4 Platform Packages 空状态文案 */
+const PLATFORM_PACKAGES_EMPTY: ProjectTreeNode = {
+  id: PLATFORM_PACKAGES_EMPTY_ID,
+  type: 'status',
+  label: 'No platform packages resolved yet.',
+  icon: 'info',
+  description: 'sdk / compiler / tools',
+  expandable: false,
+  expandedByDefault: false,
+  visible: true
+}
+
+/** 平台包节点 codicon：与 Board & Platform 语义区分 */
+function iconForPlatformPackageKind(kind: HostPlatformPackageV1['kind']): string {
+  if (kind === 'sdk') {
+    return 'server-process'
+  }
+  if (kind === 'compiler') {
+    return 'tools'
+  }
+  return 'wrench'
+}
+
+/** 树标题：tool-ctags@5.8.0（与 Angular platform-packages.utils 一致） */
+function formatPlatformPackageTreeLabel(entry: HostPlatformPackageV1): string {
+  const shortName = entry.packageName.replace(/^@aily-project\//, '')
+  const ver = entry.version?.trim()
+  if (ver) {
+    return `${shortName}@${ver}`
+  }
+  return entry.label?.trim() || shortName
+}
+
+function isPlatformPackageProjectNode(node: ProjectTreeNode | undefined): boolean {
+  return node?.id.startsWith(PLATFORM_PKG_NODE_PREFIX) === true
+}
+
+/** 平台包条目：左键仅选中，右键 Open Folder 才在系统中打开真实目录 */
+function platformPackageToTreeNode(entry: HostPlatformPackageV1): ProjectTreeNode {
+  const displayLabel = formatPlatformPackageTreeLabel(entry)
+  const diskHint = entry.diskDirName?.trim()
+  return {
+    id: `${PLATFORM_PKG_NODE_PREFIX}${entry.id}`,
+    type: 'directory',
+    label: displayLabel,
+    icon: iconForPlatformPackageKind(entry.kind),
+    description: diskHint && diskHint.length > 0 ? diskHint : undefined,
+    absolutePath: entry.absolutePath,
+    expandable: false,
+    expandedByDefault: false,
+    visible: true
+  }
+}
+
+/** 来自磁盘 node_modules 的动态子节点（挂在 Installed Libraries 或包目录下） */
+type FsTreeElement = {
+  readonly kind: 'fs'
+  /** 相对工程根的路径，如 node_modules/@aily-project/lib-dht */
+  readonly relPath: string
+  readonly label: string
+  readonly isDirectory: boolean
+  /** 是否为 Installed Libraries 下的顶层包（用于 package 图标） */
+  readonly isTopLevelPackage: boolean
+}
+
+// 提供给 TreeDataProvider：蓝图静态节点 + node_modules 动态节点
+type ExplorerTreeElement =
+  | { readonly kind: 'project'; readonly node: ProjectTreeNode }
+  | FsTreeElement
 
 function wrap(node: ProjectTreeNode): ExplorerTreeElement {
   return { kind: 'project', node }
+}
+
+/** 将相对路径转为可用于 contextValue 的安全片段 */
+function fsContextSuffix(relPath: string): string {
+  return relPath.replace(/\//g, '-')
+}
+
+/** 按扩展名选择文件 codicon */
+function iconForFsEntry(name: string, isDirectory: boolean, isTopLevelPackage: boolean): string {
+  if (isDirectory) {
+    return isTopLevelPackage ? 'package' : 'folder'
+  }
+  const lower = name.toLowerCase()
+  if (lower.endsWith('.json')) {
+    return 'json'
+  }
+  if (lower.endsWith('.md')) {
+    return 'markdown'
+  }
+  if (lower.endsWith('.h') || lower.endsWith('.hpp')) {
+    return 'file-code'
+  }
+  if (lower.endsWith('.cpp') || lower.endsWith('.c') || lower.endsWith('.ino')) {
+    return 'file-code'
+  }
+  return 'file'
+}
+
+/** 兼容 monaco-vscode-api：readDirectory 返回的 FileType 可能与 vscode.FileType 非同一引用 */
+function isFsDirectory(
+  vscodeApi: typeof vscode,
+  fileType: vscode.FileType
+): boolean {
+  const dir = vscodeApi.FileType.Directory
+  return fileType === dir || Number(fileType) === Number(dir)
+}
+
+/** 列出目录真实子项；在 node_modules 下展示全部条目（含点文件），仅顶层跳过 .bin/.cache */
+async function listFsDirectoryChildren(
+  vscodeApi: typeof vscode,
+  relPath: string
+): Promise<FsTreeElement[]> {
+  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
+  if (root == null) {
+    return []
+  }
+  const segments = relPath.split('/').filter((s) => s.length > 0)
+  const dirUri = vscodeApi.Uri.joinPath(root, ...segments)
+  const underNodeModules =
+    relPath === NODE_MODULES_REL || relPath.startsWith(`${NODE_MODULES_REL}/`)
+  let entries: [string, vscode.FileType][]
+  try {
+    entries = await vscodeApi.workspace.fs.readDirectory(dirUri)
+  } catch {
+    entries = []
+  }
+
+  const out: FsTreeElement[] = []
+  for (const [name, fileType] of entries) {
+    if (!underNodeModules && name.startsWith('.')) {
+      continue
+    }
+    if (underNodeModules && relPath === NODE_MODULES_REL && NODE_MODULES_SKIP.has(name)) {
+      continue
+    }
+    const childRel = `${relPath}/${name}`
+    const isDirectory = isFsDirectory(vscodeApi, fileType)
+    out.push({
+      kind: 'fs',
+      relPath: childRel,
+      label: name,
+      isDirectory,
+      isTopLevelPackage: relPath === NODE_MODULES_REL && isDirectory
+    })
+  }
+
+  out.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) {
+      return a.isDirectory ? -1 : 1
+    }
+    return a.label.localeCompare(b.label)
+  })
+
+  return out
 }
 
 class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElement> {
   readonly #vscode: typeof vscode
   /** 读 `.aily/coder-embed-hints.json`（与 Angular getBuildPath 一致）或回退 project.aci */
   readonly #loadMainHexArtifact: () => Promise<MainHexArtifact>
+  /** 主板 boardDependencies → appdata 下 sdk/tools 等平台包目录 */
+  readonly #loadPlatformPackages: () => Promise<readonly HostPlatformPackageV1[]>
   readonly #onDidChangeTreeData: vscode.EventEmitter<ExplorerTreeElement | undefined | void>
   readonly onDidChangeTreeData: vscode.Event<ExplorerTreeElement | undefined | void>
 
   constructor(
     vscodeApi: typeof vscode,
-    loadMainHexArtifact: () => Promise<MainHexArtifact>
+    loadMainHexArtifact: () => Promise<MainHexArtifact>,
+    loadPlatformPackages: () => Promise<readonly HostPlatformPackageV1[]>
   ) {
     this.#vscode = vscodeApi
     this.#loadMainHexArtifact = loadMainHexArtifact
+    this.#loadPlatformPackages = loadPlatformPackages
     this.#onDidChangeTreeData = new vscodeApi.EventEmitter()
     this.onDidChangeTreeData = this.#onDidChangeTreeData.event
   }
@@ -476,7 +659,43 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     this.#onDidChangeTreeData.fire(element)
   }
 
+  /** node_modules 动态节点：映射真实磁盘路径，支持打开与 Files View 定位 */
+  #getFsTreeItem(element: FsTreeElement): vscode.TreeItem {
+    const vs = this.#vscode
+    const collapsibleState = element.isDirectory
+      ? vs.TreeItemCollapsibleState.Collapsed
+      : vs.TreeItemCollapsibleState.None
+
+    const item = new vs.TreeItem(element.label, collapsibleState)
+    item.id = `ailyView:fs:${element.relPath}`
+    item.iconPath = new vs.ThemeIcon(
+      iconForFsEntry(element.label, element.isDirectory, element.isTopLevelPackage)
+    )
+    const nodeType = element.isDirectory ? 'directory' : 'file'
+    item.contextValue = `aily.${nodeType}:fs-${fsContextSuffix(element.relPath)}`
+    item.tooltip = [element.label, element.relPath].join('\n')
+
+    const root = vs.workspace.workspaceFolders?.[0]?.uri
+    if (root != null) {
+      const segments = element.relPath.split('/').filter((s) => s.length > 0)
+      item.resourceUri = vs.Uri.joinPath(root, ...segments)
+    }
+
+    if (!element.isDirectory) {
+      item.command = {
+        command: COMMANDS.open,
+        title: 'Open',
+        arguments: [element]
+      }
+    }
+    return item
+  }
+
   getTreeItem(element: ExplorerTreeElement): vscode.TreeItem {
+    if (element.kind === 'fs') {
+      return this.#getFsTreeItem(element)
+    }
+
     const vs = this.#vscode
     const node = element.node
 
@@ -493,18 +712,29 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     // contextValue = `aily.<type>:<id>`，便于菜单 when 子句通过 viewItem 精确或前缀匹配（§7）
     item.contextValue = `aily.${node.type}:${node.id}`
 
-    // §9.3 tooltip 至少展示：节点标题 + 路径 / 描述
-    const tooltipParts: string[] = [node.label]
-    if (node.description != null) {
-      tooltipParts.push(node.description)
-    }
+    // §9.3 tooltip：平台包为「标题 + 磁盘目录名 + 绝对路径」各一行，不重复绝对路径
     const absFs = node.absolutePath?.trim()
-    if (absFs) {
-      tooltipParts.push(absFs)
-    } else if (node.path != null) {
-      tooltipParts.push(node.path)
+    if (isPlatformPackageProjectNode(node)) {
+      const tooltipParts: string[] = [node.label]
+      if (node.description != null && node.description.trim()) {
+        tooltipParts.push(node.description.trim())
+      }
+      if (absFs) {
+        tooltipParts.push(absFs)
+      }
+      item.tooltip = tooltipParts.join('\n')
+    } else {
+      const tooltipParts: string[] = [node.label]
+      if (node.description != null) {
+        tooltipParts.push(node.description)
+      }
+      if (absFs) {
+        tooltipParts.push(absFs)
+      } else if (node.path != null) {
+        tooltipParts.push(node.path)
+      }
+      item.tooltip = tooltipParts.join('\n')
     }
-    item.tooltip = tooltipParts.join('\n')
 
     if (absFs) {
       item.resourceUri = vs.Uri.file(absFs)
@@ -523,16 +753,23 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     }
 
     // 单击行为：§9.1
-    // file / virtual-file → 打开真实文件
-    // property / status → 弹占位提示（待右侧详情面板就绪后替换）
-    // group / directory / artifact-group → 不挂 command，沿用 TreeItem 默认展开/折叠
-    if (node.type === 'file' || node.type === 'virtual-file') {
+    // file / virtual-file → 打开真实文件（Platform Packages 除外，仅右键打开目录）
+    // property / status → 弹占位提示
+    // group / directory / Platform Packages → 不挂 command，左键仅选中
+    if (
+      (node.type === 'file' || node.type === 'virtual-file') &&
+      !isPlatformPackageProjectNode(node)
+    ) {
       item.command = {
         command: COMMANDS.open,
         title: 'Open',
         arguments: [element]
       }
-    } else if (node.type === 'property' || node.type === 'status') {
+    } else if (
+      (node.type === 'property' || node.type === 'status') &&
+      node.id !== INSTALLED_LIBRARIES_EMPTY_ID &&
+      node.id !== PLATFORM_PACKAGES_EMPTY_ID
+    ) {
       item.command = {
         command: COMMANDS.showNodeInfo,
         title: 'Show Node Info',
@@ -543,13 +780,40 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     return item
   }
 
-  // MVP 阶段不读真实 FS：directory 与所有 group 都从蓝图静态推导
-  // 后端服务接入后，仅需把 ailyViewBlueprint 替换为远端拉取结果
   async getChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
       return ailyViewBlueprint.filter((nd) => nd.visible).map(wrap)
     }
-    const children = element.node.children ?? []
+
+    // node_modules 内目录：递归列出真实子文件/子目录
+    if (element.kind === 'fs') {
+      if (!element.isDirectory) {
+        return []
+      }
+      return listFsDirectoryChildren(this.#vscode, element.relPath)
+    }
+
+    const node = element.node
+
+    // Installed Libraries：直接镜像工程根 node_modules 目录（不做包名过滤）
+    if (node.id === 'installed-libraries') {
+      const items = await listFsDirectoryChildren(this.#vscode, NODE_MODULES_REL)
+      if (items.length === 0) {
+        return [wrap(INSTALLED_LIBRARIES_EMPTY)]
+      }
+      return items
+    }
+
+    // Platform Packages：主板 boardDependencies 中的 sdk / compiler / tool（appdata/aily-project 下真实目录）
+    if (node.id === 'platform-packages') {
+      const packages = await this.#loadPlatformPackages()
+      if (packages.length === 0) {
+        return [wrap(PLATFORM_PACKAGES_EMPTY)]
+      }
+      return packages.map((entry) => wrap(platformPackageToTreeNode(entry)))
+    }
+
+    const children = node.children ?? []
     let out = children.filter((nd) => nd.visible).map(wrap)
     const injectHexParent = element.node.id === 'build-outputs' || element.node.id === 'framework'
     if (injectHexParent) {
@@ -596,6 +860,7 @@ const WHEN_VIEW = 'view == ailyView'
 const WHEN_FILE_LIKE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|virtual-file):/`
 const WHEN_DIRECTORY = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:/`
 const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|virtual-file):/`
+const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
 const WHEN_MAIN_CPP = `${WHEN_VIEW} && viewItem == aily.file:entry-main`
 const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:project-(entry|config-file)$/`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
@@ -660,6 +925,8 @@ const { getApi } = registerExtension(
         'view/item/context': [
           // 通用 - file / virtual-file → Open
           { command: COMMANDS.open, when: WHEN_FILE_LIKE, group: 'navigation@10' },
+          // Platform Packages：仅右键 Open Folder，走 Electron 打开 appdata 真实目录
+          { command: COMMANDS.openFolder, when: WHEN_PLATFORM_PKG, group: 'navigation@11' },
           // 通用 - directory → Open Folder
           { command: COMMANDS.openFolder, when: WHEN_DIRECTORY, group: 'navigation@10' },
           // 通用 - Reveal / Copy
@@ -814,6 +1081,17 @@ void getApi().then((vscode) => {
     return resolveProjectUri(node?.path)
   }
 
+  /** 蓝图节点与 node_modules 动态节点统一解析为可打开的 URI */
+  const resolveUriForElement = (element?: ExplorerTreeElement): vscode.Uri | undefined => {
+    if (element == null) {
+      return undefined
+    }
+    if (element.kind === 'fs') {
+      return resolveProjectUri(element.relPath)
+    }
+    return resolveUriForTreeNode(element.node)
+  }
+
   /** 目标 URI 是否落在当前工作区根下（用于决定能否用 Explorer 定位） */
   const isUriUnderWorkspace = (fileUri: vscode.Uri): boolean => {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri
@@ -830,6 +1108,15 @@ void getApi().then((vscode) => {
    * - LocalProcess 扩展共享主线程 window：直接 `window.parent.postMessage` 给 Angular，最稳；
    * - 兜底用 BroadcastChannel（Worker 场景或 parent 不可用），且延迟 close 避免 postMessage 异步派发被截断。
    */
+  /** Platform Packages / main.hex 等工作区外路径：仅通过 postMessage → Electron 打开 */
+  const revealPlatformPathInHostOs = (element: ExplorerTreeElement | undefined): boolean => {
+    const uri = resolveUriForElement(element)
+    if (uri == null) {
+      return false
+    }
+    return revealInHostOsIfEmbedded(uri.fsPath)
+  }
+
   const revealInHostOsIfEmbedded = (absPath: string): boolean => {
     const trimmed = absPath?.trim()
     if (!trimmed) {
@@ -913,33 +1200,63 @@ void getApi().then((vscode) => {
 
   // 占位命令工厂：MVP 阶段没法真实落地的动作统一用 information message 反馈
   // 后续接入 performTreeAction(nodeId, actionId) 时按 actionId 替换即可
+  const elementLabel = (element?: ExplorerTreeElement): string => {
+    if (element == null) {
+      return '(未指定节点)'
+    }
+    return element.kind === 'fs' ? element.label : element.node.label
+  }
+
   const placeholder =
     (actionLabel: string) =>
     async (element?: ExplorerTreeElement): Promise<void> => {
-      const name = element?.node.label ?? '(未指定节点)'
-      await vscode.window.showInformationMessage(`[Aily View] ${actionLabel}（占位）：${name}`)
+      await vscode.window.showInformationMessage(
+        `[Aily View] ${actionLabel}（占位）：${elementLabel(element)}`
+      )
     }
 
   // 通用菜单（§7.1）
   vscode.commands.registerCommand(COMMANDS.open, async (element?: ExplorerTreeElement) => {
-    const uri = resolveUriForTreeNode(element?.node)
+    const label =
+      element?.kind === 'fs' ? element.label : (element?.node.label ?? 'Unknown')
+    if (element?.kind === 'project' && isPlatformPackageProjectNode(element.node)) {
+      if (revealPlatformPathInHostOs(element)) {
+        return
+      }
+      await vscode.window.showWarningMessage(`无法在系统中打开 ${label}：未连接到 Electron 宿主。`)
+      return
+    }
+    const uri = resolveUriForElement(element)
     if (uri == null) {
       await vscode.window.showWarningMessage(
-        `无法打开 ${element?.node.label ?? 'Unknown'}：当前没有工作区或未配置真实路径。`
+        `无法打开 ${label}：当前没有工作区或未配置真实路径。`
       )
+      return
+    }
+    const abs = uri.fsPath
+    if (!isUriUnderWorkspace(uri) && revealInHostOsIfEmbedded(abs)) {
       return
     }
     try {
       await vscode.commands.executeCommand('vscode.open', uri)
     } catch (err) {
-      await vscode.window.showErrorMessage(
-        `打开 ${element?.node.label ?? 'Unknown'} 失败：${String(err)}`
-      )
+      if (revealInHostOsIfEmbedded(abs)) {
+        return
+      }
+      await vscode.window.showErrorMessage(`打开 ${label} 失败：${String(err)}`)
     }
   })
   vscode.commands.registerCommand(COMMANDS.openFolder, async (element?: ExplorerTreeElement) => {
-    const uri = resolveUriForTreeNode(element?.node)
-    const label = element?.node.label ?? 'Unknown'
+    const label =
+      element?.kind === 'fs' ? element.label : (element?.node.label ?? 'Unknown')
+    if (element?.kind === 'project' && isPlatformPackageProjectNode(element.node)) {
+      if (revealPlatformPathInHostOs(element)) {
+        return
+      }
+      await vscode.window.showWarningMessage(`无法在系统中打开 ${label}：未连接到 Electron 宿主。`)
+      return
+    }
+    const uri = resolveUriForElement(element)
     if (uri == null) {
       await vscode.window.showWarningMessage(`无法打开文件夹 ${label}：当前没有工作区或未配置路径。`)
       return
@@ -959,8 +1276,16 @@ void getApi().then((vscode) => {
   vscode.commands.registerCommand(
     COMMANDS.revealInFilesView,
     async (element?: ExplorerTreeElement) => {
-      const uri = resolveUriForTreeNode(element?.node)
-      const label = element?.node.label ?? 'Unknown'
+      const label =
+        element?.kind === 'fs' ? element.label : (element?.node.label ?? 'Unknown')
+      if (element?.kind === 'project' && isPlatformPackageProjectNode(element.node)) {
+        if (revealPlatformPathInHostOs(element)) {
+          return
+        }
+        await vscode.window.showWarningMessage(`无法在系统中定位 ${label}：未连接到 Electron 宿主。`)
+        return
+      }
+      const uri = resolveUriForElement(element)
       if (uri == null) {
         await vscode.window.showWarningMessage(`无法定位 ${label}：当前没有工作区或未配置路径。`)
         return
@@ -981,14 +1306,14 @@ void getApi().then((vscode) => {
   vscode.commands.registerCommand(
     COMMANDS.copyRelativePath,
     async (element?: ExplorerTreeElement) => {
-      const uri = resolveUriForTreeNode(element?.node)
+      const uri = resolveUriForElement(element)
+      const label =
+        element?.kind === 'fs' ? element.label : (element?.node.label ?? '该节点')
       if (uri == null) {
-        await vscode.window.showWarningMessage(
-          `${element?.node.label ?? '该节点'} 没有可复制的相对路径。`
-        )
+        await vscode.window.showWarningMessage(`${label} 没有可复制的相对路径。`)
         return
       }
-      let text = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/')
+      const text = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/')
       await vscode.env.clipboard.writeText(text)
       await vscode.window.showInformationMessage(`已复制相对路径：${text}`)
     }
@@ -1006,7 +1331,10 @@ void getApi().then((vscode) => {
   // Open as JSON 可立即落地，复用 path；其余先占位
   vscode.commands.registerCommand(COMMANDS.openVisualConfig, placeholder('Open Visual Config'))
   vscode.commands.registerCommand(COMMANDS.openAsJson, async (element?: ExplorerTreeElement) => {
-    await openByPath(element?.node.path, element?.node.label ?? 'project.aci')
+    if (element?.kind !== 'project') {
+      return
+    }
+    await openByPath(element.node.path, element.node.label ?? 'project.aci')
   })
   vscode.commands.registerCommand(COMMANDS.validateConfig, placeholder('Validate Config'))
   vscode.commands.registerCommand(COMMANDS.regenerateLockFile, placeholder('Regenerate Lock File'))
@@ -1021,7 +1349,6 @@ void getApi().then((vscode) => {
 
   // Dependencies 分组（§7.2）
   vscode.commands.registerCommand(COMMANDS.addDependency, placeholder('Add Dependency'))
-  vscode.commands.registerCommand(COMMANDS.refreshPackages, placeholder('Refresh Packages'))
   vscode.commands.registerCommand(
     COMMANDS.openDependencyPanel,
     placeholder('Open Dependency Panel')
@@ -1056,23 +1383,77 @@ void getApi().then((vscode) => {
   vscode.commands.registerCommand(
     COMMANDS.showNodeInfo,
     async (element?: ExplorerTreeElement) => {
-      const n = element?.node
-      if (n == null) {
+      if (element?.kind !== 'project') {
         await vscode.window.showInformationMessage('Aily 节点：未选中')
         return
       }
+      const n = element.node
       await vscode.window.showInformationMessage(`Aily 节点：${n.label} (${n.type}/${n.id})`)
     }
   )
 
-  const provider = new AilyExplorerProvider(vscode, loadMainHexArtifactFromWorkspace)
+  /** 优先宿主 postMessage 的 platformPackages，其次读 `.aily/coder-embed-hints.json` */
+  const loadPlatformPackagesFromWorkspace = async (): Promise<readonly HostPlatformPackageV1[]> => {
+    const fromHost = getHostEmbedContext()?.platformPackages
+    if (fromHost != null && fromHost.length > 0) {
+      return fromHost
+    }
+    try {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri
+      if (root == null) {
+        return []
+      }
+      const hintsUri = vscode.Uri.joinPath(root, '.aily', 'coder-embed-hints.json')
+      const hbuf = await vscode.workspace.fs.readFile(hintsUri)
+      const h = JSON.parse(new TextDecoder('utf-8').decode(hbuf)) as {
+        platformPackages?: HostPlatformPackageV1[]
+      }
+      const list = Array.isArray(h.platformPackages) ? h.platformPackages : []
+      return list
+    } catch {
+      return []
+    }
+  }
+
+  const provider = new AilyExplorerProvider(
+    vscode,
+    loadMainHexArtifactFromWorkspace,
+    loadPlatformPackagesFromWorkspace
+  )
+
+  vscode.commands.registerCommand(COMMANDS.refreshPackages, async () => {
+    provider.refresh()
+  })
+
   vscode.window.createTreeView(AILY_VIEW_ID, {
     treeDataProvider: provider,
     showCollapseAll: true
   })
 
+  /** node_modules 变更时刷新 Installed Libraries 子树 */
+  let nodeModulesWatcher: vscode.FileSystemWatcher | undefined
+  const setupNodeModulesWatcher = (): void => {
+    nodeModulesWatcher?.dispose()
+    nodeModulesWatcher = undefined
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (root == null) {
+      return
+    }
+    nodeModulesWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, `${NODE_MODULES_REL}/**`)
+    )
+    const bump = (): void => {
+      provider.refresh()
+    }
+    nodeModulesWatcher.onDidCreate(bump)
+    nodeModulesWatcher.onDidDelete(bump)
+    nodeModulesWatcher.onDidChange(bump)
+  }
+  setupNodeModulesWatcher()
+
   vscode.workspace.onDidChangeWorkspaceFolders(() => {
     mainHexArtifactCache = undefined
+    setupNodeModulesWatcher()
     provider.refresh()
   })
 
