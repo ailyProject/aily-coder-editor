@@ -3,6 +3,31 @@
  * 契约：父窗口 → iframe，仅处理 `ev.source === window.parent`。
  */
 
+/** Blockly 主板「一板多类型」列表行（如 package.json 的 mode[]） */
+export type HostBoardListItemV1 = {
+  id: string
+  label: string
+  description?: string
+  /** 当前工程选中的框架 / 类型 */
+  selected?: boolean
+}
+
+/** 虚拟 Board 属性节点在内嵌编辑器中展示的概要 */
+export type HostBoardProfileV1 = {
+  boardName?: string
+  boardNickname?: string
+  /** 与 Blockly 主板包 mode 对齐；仅展示，切换仍走宿主弹窗 */
+  frameworkModes?: readonly HostBoardListItemV1[]
+}
+
+/** 编译产物虚拟树节点（main.hex / main.bin / *.bootloader.bin / *.partitions.bin 等） */
+export type HostBuildArtifactV1 = {
+  label: string
+  absPath: string
+  /** 相对工作区根；工作区外产物可省略 */
+  relPath?: string
+}
+
 /** 主板 boardDependencies 解析出的 SDK / 编译器 / 工具（磁盘在 appdata/aily-project 下） */
 export type HostPlatformPackageV1 = {
   id: string
@@ -22,8 +47,11 @@ export type HostEmbedContextV1 = {
   workspaceRoot?: string
   /** Aily Code：`getBuildPath()` 得到的构建输出目录绝对路径 */
   buildPath?: string
+  /** 磁盘上真实存在的编译产物列表（仅在有产物时由宿主写入） */
+  buildArtifacts?: readonly HostBuildArtifactV1[]
   /**
    * 相对工作区根的 main.hex 路径（POSIX 斜杠），供 TreeItem / vscode.open 使用。
+   * @deprecated 优先使用 buildArtifacts；保留以便旧版扩展兼容
    */
   mainHexRelPath?: string
   /** 与 ProjectService.getBuildPath()+main.hex 一致的绝对路径（可能在工作区外，如 aily-builder 缓存目录） */
@@ -32,6 +60,8 @@ export type HostEmbedContextV1 = {
   appDataPath?: string
   /** Platform Packages 子节点：主板依赖的 sdk / compiler / tool 真实目录 */
   platformPackages?: readonly HostPlatformPackageV1[]
+  /** 虚拟 Board 节点：Blockly 主板支持的 framework / mode 列表 */
+  boardProfile?: HostBoardProfileV1
   /** 预留：版本号、板型等 */
   meta?: Record<string, unknown>
 }
@@ -43,6 +73,12 @@ export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manage
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL 须一致 */
 export const AILY_EMBED_OPEN_LIBRARY_MANAGER_BC = 'aily-embed-open-library-manager'
+
+/** iframe → Angular：请求打开切换开发板弹窗（与 Header board-select 同源） */
+export const HOST_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-open-board-selector'
+
+/** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_BOARD_SELECTOR_CHANNEL 须一致 */
+export const AILY_EMBED_OPEN_BOARD_SELECTOR_BC = 'aily-embed-open-board-selector'
 
 /** 与宿主同步库管理侧栏：`open` 为 true 展开，false 收起 */
 export function syncHostLibraryManager(open: boolean): void {
@@ -86,12 +122,78 @@ export function requestHostCloseLibraryManager(): void {
   syncHostLibraryManager(false)
 }
 
+/** 向 Electron 宿主请求打开切换开发板弹窗 */
+export function requestHostOpenBoardSelector(): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const payload = { channel: HOST_OPEN_BOARD_SELECTOR_CHANNEL }
+  if (window.parent != null && window.parent !== window) {
+    try {
+      window.parent.postMessage(payload, '*')
+      return
+    } catch {
+      /* 落到 BroadcastChannel */
+    }
+  }
+  if (typeof BroadcastChannel === 'undefined') {
+    return
+  }
+  try {
+    const ch = new BroadcastChannel(AILY_EMBED_OPEN_BOARD_SELECTOR_BC)
+    ch.postMessage({})
+    setTimeout(() => {
+      try {
+        ch.close()
+      } catch {
+        /* ignore */
+      }
+    }, 1000)
+  } catch {
+    /* ignore */
+  }
+}
+
 let snapshot: HostEmbedContextV1 | null = null
 const listeners = new Set<() => void>()
 
 /** 当前快照；扩展里只读。 */
 export function getHostEmbedContext(): HostEmbedContextV1 | null {
   return snapshot
+}
+
+/** 将 hints / 延后解析的 boardProfile 合并进快照并通知订阅方 */
+export function mergeBoardProfileIntoSnapshot(boardProfile: HostBoardProfileV1): void {
+  const modes = boardProfile.frameworkModes
+  if (modes == null || modes.length === 0) {
+    return
+  }
+  snapshot = {
+    v: 1,
+    ...snapshot,
+    boardProfile
+  }
+  emitHostEmbedContextChanged()
+}
+
+/** Board 列表编辑器展示契约（与 ailyBoardListEditor 对齐） */
+export type HostBoardListSpec = {
+  readonly title: string
+  readonly subtitle?: string
+  readonly items: readonly HostBoardListItemV1[]
+}
+
+/** boardProfile → Board 列表编辑器 spec */
+export function boardProfileToListSpec(bp: HostBoardProfileV1): HostBoardListSpec | null {
+  const items = bp.frameworkModes
+  if (items == null || items.length === 0) {
+    return null
+  }
+  return {
+    title: 'Board',
+    subtitle: bp.boardNickname?.trim() || bp.boardName?.trim() || undefined,
+    items
+  }
 }
 
 /** 宿主更新上下文时订阅（用于刷新 TreeDataProvider）。 */

@@ -317,3 +317,16 @@ export class ParentBackedNativeFsProvider {
     this._onDidChangeFile.fire(changes)
   }
 }
+
+/** 经宿主 native-fs 桥读取磁盘二进制（供 workbench 侧无法 import IFileService 的场景） */
+export async function readNativeFsBinary(absPath: string): Promise<Uint8Array | null> {
+  if (!window.parent || window.parent === window) {
+    return null
+  }
+  try {
+    const out = await rpc<{ base64: string }>('nativeFsReadBinary', { path: absPath })
+    return base64ToBytes(out.base64)
+  } catch {
+    return null
+  }
+}

@@ -3,11 +3,19 @@ import { ExtensionHostKind, registerExtension } from '@codingame/monaco-vscode-a
 import { coderUseEmbedHostNativeFsBridge } from '../coderEmbedEnv.js'
 import {
   getHostEmbedContext,
+  mergeBoardProfileIntoSnapshot,
   onHostEmbedContextChanged,
   requestHostCloseLibraryManager,
+  requestHostOpenBoardSelector,
   requestHostOpenLibraryManager,
+  type HostBoardProfileV1,
+  type HostEmbedContextV1,
   type HostPlatformPackageV1
 } from '../hostEmbedContext.js'
+import {
+  buildBoardListSpecFromHost,
+  openAilyBoardListEditor
+} from './ailyBoardListEditor.workbench.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -32,11 +40,17 @@ interface TreeBadge {
   readonly priority: number
 }
 
-/** Angular 写入的 hints 与扩展回退解析共用形状 */
-type MainHexArtifact = {
-  rel?: string
-  abs?: string
+/** 单条编译产物（虚拟树节点） */
+type BuildArtifactEntry = {
+  readonly label: string
+  readonly abs?: string
+  readonly rel?: string
+}
+
+/** Angular 写入的 hints 与宿主 postMessage 共用形状 */
+type BuildOutputsHint = {
   buildPath?: string
+  artifacts: BuildArtifactEntry[]
 }
 
 interface ProjectTreeNode {
@@ -60,6 +74,46 @@ interface ProjectTreeNode {
 }
 
 const AILY_VIEW_ID = 'ailyView'
+
+/** 合并宿主 postMessage 与 hints 中的产物列表（按绝对路径去重，保持写入顺序） */
+function mergeBuildArtifactsFromHostAndHint(
+  hostCtx: HostEmbedContextV1 | null,
+  hint: BuildOutputsHint
+): BuildArtifactEntry[] {
+  const out: BuildArtifactEntry[] = []
+  const seen = new Set<string>()
+
+  const push = (label: string, abs?: string, rel?: string): void => {
+    const absTrim = abs?.trim()
+    const relTrim = rel?.trim()
+    const key = absTrim ?? relTrim
+    if (!key || !label.trim() || seen.has(key)) {
+      return
+    }
+    seen.add(key)
+    out.push({
+      label: label.trim(),
+      ...(absTrim ? { abs: absTrim } : {}),
+      ...(relTrim ? { rel: relTrim.replace(/\\/g, '/') } : {})
+    })
+  }
+
+  const fromHost = hostCtx?.buildArtifacts
+  if (fromHost != null) {
+    for (const a of fromHost) {
+      push(a.label, a.absPath, a.relPath)
+    }
+  }
+  if (hostCtx?.mainHexAbsPath?.trim()) {
+    push('main.hex', hostCtx.mainHexAbsPath, hostCtx.mainHexRelPath)
+  }
+
+  for (const a of hint.artifacts) {
+    push(a.label, a.abs, a.rel)
+  }
+
+  return out
+}
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OS_REVEAL_CHANNEL 须一致（Worker 兜底用 BroadcastChannel） */
 const AILY_EMBED_OS_REVEAL_CHANNEL = 'aily-embed-os-reveal'
@@ -110,9 +164,38 @@ const COMMANDS = {
   revealGeneratedSources: 'ailyView.revealGeneratedSources',
   revealBridgeFiles: 'ailyView.revealBridgeFiles',
   openCompileCommands: 'ailyView.openCompileCommands',
-  // 内部占位：property / status 节点的默认单击行为
+  // MCU：单击请求宿主打开切换开发板弹窗
+  openBoardSelector: 'ailyView.openBoardSelector',
+  /** 虚拟 Board：在内嵌编辑区打开「列表」型自定义面板 */
+  openBoardProperty: 'ailyView.openBoardProperty',
+  // 内部占位：其余 property / status 节点的默认单击行为
   showNodeInfo: 'ailyView.showNodeInfo'
 } as const
+
+/** MCU 虚拟属性节点：单击打开切换开发板弹窗（Board 仅展示，不触发切换） */
+const BOARD_SELECTOR_PROPERTY_IDS = new Set(['mcu'])
+
+function isBoardSelectorPropertyNode(node: ProjectTreeNode | undefined): boolean {
+  return node?.type === 'property' && BOARD_SELECTOR_PROPERTY_IDS.has(node.id)
+}
+
+/** 虚拟 Board：单击打开列表型自定义编辑器（非切换弹窗） */
+function isBoardListNode(node: ProjectTreeNode | undefined): boolean {
+  return node?.type === 'property' && node.id === 'board'
+}
+
+/** 将宿主 boardProfile 合并进树节点 description（仅 Board） */
+function withHostBoardDescription(node: ProjectTreeNode): ProjectTreeNode {
+  if (!isBoardListNode(node)) {
+    return node
+  }
+  const bp = getHostEmbedContext()?.boardProfile
+  const desc = bp?.boardNickname?.trim() || bp?.boardName?.trim()
+  if (desc == null || desc.length === 0) {
+    return node
+  }
+  return { ...node, description: desc }
+}
 
 // 工程视图节点蓝图
 // 严格对照 docs/aily-code工程视图与信息架构设计.md §3.1 §4.3 §4.4 §6.1
@@ -559,6 +642,43 @@ function isInstalledLibrariesGroup(
   return element?.kind === 'project' && element.node.id === 'installed-libraries'
 }
 
+/** 在蓝图树中按 id 查找节点（用于定向 refresh，避免全树 refresh 与自定义编辑器打开竞态） */
+function findBlueprintNode(id: string): ProjectTreeNode | undefined {
+  const walk = (nodes: readonly ProjectTreeNode[]): ProjectTreeNode | undefined => {
+    for (const n of nodes) {
+      if (n.id === id) {
+        return n
+      }
+      if (n.children != null) {
+        const hit = walk(n.children)
+        if (hit != null) {
+          return hit
+        }
+      }
+    }
+    return undefined
+  }
+  return walk(ailyViewBlueprint)
+}
+
+/** 宿主上下文 / 动态子树变更时刷新的蓝图节点（勿 refresh(undefined)） */
+const DYNAMIC_REFRESH_BLUEPRINT_IDS = [
+  'board-platform',
+  'build-outputs',
+  'framework',
+  'platform-packages',
+  'installed-libraries'
+] as const
+
+function refreshDynamicBlueprintSections(provider: AilyExplorerProvider): void {
+  for (const id of DYNAMIC_REFRESH_BLUEPRINT_IDS) {
+    const node = findBlueprintNode(id)
+    if (node != null) {
+      provider.refresh({ kind: 'project', node })
+    }
+  }
+}
+
 /** 将相对路径转为可用于 contextValue 的安全片段 */
 function fsContextSuffix(relPath: string): string {
   return relPath.replace(/\//g, '-')
@@ -645,8 +765,8 @@ async function listFsDirectoryChildren(
 
 class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElement> {
   readonly #vscode: typeof vscode
-  /** 读 `.aily/coder-embed-hints.json`（与 Angular getBuildPath 一致）或回退 project.aci */
-  readonly #loadMainHexArtifact: () => Promise<MainHexArtifact>
+  /** 读 `.aily/coder-embed-hints.json` 与宿主 postMessage（仅真实产物，不回退 project.aci） */
+  readonly #loadBuildOutputs: () => Promise<BuildOutputsHint>
   /** 主板 boardDependencies → appdata 下 sdk/tools 等平台包目录 */
   readonly #loadPlatformPackages: () => Promise<readonly HostPlatformPackageV1[]>
   readonly #onDidChangeTreeData: vscode.EventEmitter<ExplorerTreeElement | undefined | void>
@@ -654,11 +774,11 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   constructor(
     vscodeApi: typeof vscode,
-    loadMainHexArtifact: () => Promise<MainHexArtifact>,
+    loadBuildOutputs: () => Promise<BuildOutputsHint>,
     loadPlatformPackages: () => Promise<readonly HostPlatformPackageV1[]>
   ) {
     this.#vscode = vscodeApi
-    this.#loadMainHexArtifact = loadMainHexArtifact
+    this.#loadBuildOutputs = loadBuildOutputs
     this.#loadPlatformPackages = loadPlatformPackages
     this.#onDidChangeTreeData = new vscodeApi.EventEmitter()
     this.onDidChangeTreeData = this.#onDidChangeTreeData.event
@@ -666,6 +786,96 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   refresh(element?: ExplorerTreeElement): void {
     this.#onDidChangeTreeData.fire(element)
+  }
+
+  /** 为 Framework 节点注入编译产物虚拟文件（Build Outputs 暂仅保留 debug/release/simulator 分组） */
+  async #injectFrameworkBuildArtifactChildren(): Promise<ExplorerTreeElement[]> {
+    const hostCtx = getHostEmbedContext()
+    const hint = await this.#loadBuildOutputs()
+    const buildDesc = hostCtx?.buildPath ?? hint.buildPath
+    const artifactNodes: ExplorerTreeElement[] = []
+    const merged = mergeBuildArtifactsFromHostAndHint(hostCtx, hint)
+
+    for (const art of merged) {
+      let abs = art.abs?.trim() || undefined
+      const rel = art.rel?.trim() || undefined
+
+      if (!abs && rel) {
+        const root = this.#vscode.workspace.workspaceFolders?.[0]?.uri
+        if (root != null) {
+          const segments = rel.split('/').filter((s) => s.length > 0)
+          abs = this.#vscode.Uri.joinPath(root, ...segments).fsPath
+        }
+      }
+
+      if (!(await this.#artifactExistsOnDisk(abs, rel))) {
+        continue
+      }
+
+      const safeId = art.label.replace(/[^a-zA-Z0-9._-]+/g, '-')
+      const artifactNode: ProjectTreeNode = {
+        id: `framework-artifact-${safeId}`,
+        type: 'virtual-file',
+        label: art.label,
+        icon: 'file-binary',
+        path: rel,
+        absolutePath: abs,
+        expandable: false,
+        expandedByDefault: false,
+        visible: true,
+        description: buildDesc ? `构建目录: ${buildDesc}` : undefined
+      }
+      artifactNodes.push(wrap(artifactNode))
+    }
+
+    return artifactNodes
+  }
+
+  /** 绝对路径是否落在当前 VS Code 工作区根下 */
+  #isAbsPathUnderWorkspace(absPath: string): boolean {
+    const root = this.#vscode.workspace.workspaceFolders?.[0]?.uri
+    if (root == null) {
+      return false
+    }
+    const r = root.fsPath.replace(/\\/g, '/').toLowerCase()
+    const u = absPath.replace(/\\/g, '/').toLowerCase()
+    return u === r || u.startsWith(`${r}/`)
+  }
+
+  /**
+   * 仅当产物在磁盘上真实存在时才展示虚拟节点。
+   * 工作区外路径（如 aily-builder 缓存）无法用 workspace.fs.stat，改信任宿主 Electron fs 解析结果。
+   */
+  async #artifactExistsOnDisk(abs?: string, rel?: string): Promise<boolean> {
+    const vs = this.#vscode
+    const absTrim = abs?.trim()
+    if (absTrim) {
+      if (!this.#isAbsPathUnderWorkspace(absTrim)) {
+        return true
+      }
+      try {
+        const stat = await vs.workspace.fs.stat(vs.Uri.file(absTrim))
+        return stat.type === vs.FileType.File
+      } catch {
+        return false
+      }
+    }
+    const relTrim = rel?.trim()
+    if (!relTrim) {
+      return false
+    }
+    const root = vs.workspace.workspaceFolders?.[0]?.uri
+    if (root == null) {
+      return false
+    }
+    const segments = relTrim.split('/').filter((s) => s.length > 0)
+    try {
+      const uri = vs.Uri.joinPath(root, ...segments)
+      const stat = await vs.workspace.fs.stat(uri)
+      return stat.type === vs.FileType.File
+    } catch {
+      return false
+    }
   }
 
   /** node_modules 动态节点：映射真实磁盘路径，支持打开与 Files View 定位 */
@@ -706,7 +916,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     }
 
     const vs = this.#vscode
-    const node = element.node
+    const node = withHostBoardDescription(element.node)
 
     // §4.3 expandable + expandedByDefault → VS Code 三态
     const collapsibleState = !node.expandable
@@ -763,7 +973,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
     // 单击行为：§9.1
     // file / virtual-file → 打开真实文件（Platform Packages 除外，仅右键打开目录）
-    // property / status → 弹占位提示
+    // MCU → 请求宿主打开切换开发板弹窗；Board → 打开列表型自定义编辑器
     // group / directory / Platform Packages → 不挂 command，左键仅选中
     if (
       (node.type === 'file' || node.type === 'virtual-file') &&
@@ -772,6 +982,18 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       item.command = {
         command: COMMANDS.open,
         title: 'Open',
+        arguments: [element]
+      }
+    } else if (isBoardSelectorPropertyNode(node)) {
+      item.command = {
+        command: COMMANDS.openBoardSelector,
+        title: 'Change Board',
+        arguments: [element]
+      }
+    } else if (isBoardListNode(node)) {
+      item.command = {
+        command: COMMANDS.openBoardProperty,
+        title: 'Open Board Types',
         arguments: [element]
       }
     } else if (
@@ -824,39 +1046,10 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
     const children = node.children ?? []
     let out = children.filter((nd) => nd.visible).map(wrap)
-    const injectHexParent = element.node.id === 'build-outputs' || element.node.id === 'framework'
-    if (injectHexParent) {
-      const hostCtx = getHostEmbedContext()
-      const hint = await this.#loadMainHexArtifact()
-      let abs = hostCtx?.mainHexAbsPath?.trim() || hint.abs?.trim() || undefined
-      const rel = hostCtx?.mainHexRelPath?.trim() || hint.rel?.trim() || undefined
-      const buildDesc = hostCtx?.buildPath ?? hint.buildPath
-
-      // abs 缺失但 rel 存在时基于 workspace 兜底，保证 Reveal in Finder / Copy Path 总能拿到绝对路径
-      if (!abs && rel) {
-        const root = this.#vscode.workspace.workspaceFolders?.[0]?.uri
-        if (root != null) {
-          const segments = rel.split('/').filter((s) => s.length > 0)
-          abs = this.#vscode.Uri.joinPath(root, ...segments).fsPath
-        }
-      }
-
-      if (abs || rel) {
-        const hexId =
-          element.node.id === 'framework' ? 'framework-artifact-main-hex' : 'build-artifact-main-hex'
-        const hexNode: ProjectTreeNode = {
-          id: hexId,
-          type: 'virtual-file',
-          label: 'main.hex',
-          icon: 'file-binary',
-          path: rel,
-          absolutePath: abs,
-          expandable: false,
-          expandedByDefault: false,
-          visible: true,
-          description: buildDesc ? `构建目录: ${buildDesc}` : undefined
-        }
-        out = [wrap(hexNode), ...out]
+    if (element.node.id === 'framework') {
+      const artifactNodes = await this.#injectFrameworkBuildArtifactChildren()
+      if (artifactNodes.length > 0) {
+        out = [...artifactNodes, ...out]
       }
     }
     return out
@@ -928,6 +1121,8 @@ const { getApi } = registerExtension(
         { command: COMMANDS.revealGeneratedSources, title: 'Reveal Generated Sources' },
         { command: COMMANDS.revealBridgeFiles, title: 'Reveal Bridge Files' },
         { command: COMMANDS.openCompileCommands, title: 'Open Compile Commands' },
+        { command: COMMANDS.openBoardSelector, title: 'Change Board' },
+        { command: COMMANDS.openBoardProperty, title: 'Open Board Types' },
         { command: COMMANDS.showNodeInfo, title: 'Show Node Info' }
       ],
       menus: {
@@ -1001,71 +1196,83 @@ const { getApi } = registerExtension(
 )
 
 void getApi().then((vscode) => {
-  let mainHexArtifactCache: MainHexArtifact | null | undefined
-  let mainHexArtifactInflight: Promise<MainHexArtifact> | null = null
+  let buildOutputsCache: BuildOutputsHint | null | undefined
+  let buildOutputsInflight: Promise<BuildOutputsHint> | null = null
 
-  /** 优先读 `.aily/coder-embed-hints.json`（与 Angular getBuildPath 一致），否则 project.aci 推导 */
-  const loadMainHexArtifactFromWorkspace = async (): Promise<MainHexArtifact> => {
-    if (mainHexArtifactCache != null) {
-      return mainHexArtifactCache
+  /** 仅读宿主写入的 hints；无产物时不推导虚拟路径 */
+  const loadBuildOutputsFromWorkspace = async (): Promise<BuildOutputsHint> => {
+    if (buildOutputsCache != null) {
+      return buildOutputsCache
     }
-    if (mainHexArtifactInflight != null) {
-      return mainHexArtifactInflight
+    if (buildOutputsInflight != null) {
+      return buildOutputsInflight
     }
-    mainHexArtifactInflight = (async (): Promise<MainHexArtifact> => {
+    buildOutputsInflight = (async (): Promise<BuildOutputsHint> => {
       try {
         const root = vscode.workspace.workspaceFolders?.[0]?.uri
-        const empty: MainHexArtifact = {}
+        const empty: BuildOutputsHint = { artifacts: [] }
         if (root == null) {
-          mainHexArtifactCache = empty
+          buildOutputsCache = empty
           return empty
         }
         try {
           const hintsUri = vscode.Uri.joinPath(root, '.aily', 'coder-embed-hints.json')
           const hbuf = await vscode.workspace.fs.readFile(hintsUri)
           const h = JSON.parse(new TextDecoder('utf-8').decode(hbuf)) as {
+            buildPath?: string
+            buildArtifacts?: Array<{ label?: string; abs?: string; rel?: string }>
             mainHexAbs?: string
             mainHexRelPath?: string
-            buildPath?: string
           }
-          const out: MainHexArtifact = {}
-          if (typeof h.mainHexAbs === 'string' && h.mainHexAbs.trim()) {
-            out.abs = h.mainHexAbs.trim()
-          }
-          if (typeof h.mainHexRelPath === 'string' && h.mainHexRelPath.trim()) {
-            out.rel = h.mainHexRelPath.trim().replace(/\\/g, '/')
-          }
+          const out: BuildOutputsHint = { artifacts: [] }
           if (typeof h.buildPath === 'string' && h.buildPath.trim()) {
             out.buildPath = h.buildPath.trim()
           }
-          if (out.abs != null || out.rel != null) {
-            mainHexArtifactCache = out
+          if (Array.isArray(h.buildArtifacts)) {
+            for (const row of h.buildArtifacts) {
+              const label = typeof row.label === 'string' ? row.label.trim() : ''
+              const abs = typeof row.abs === 'string' ? row.abs.trim() : ''
+              if (!label || !abs) {
+                continue
+              }
+              const rel =
+                typeof row.rel === 'string' && row.rel.trim()
+                  ? row.rel.trim().replace(/\\/g, '/')
+                  : undefined
+              out.artifacts.push({ label, abs, ...(rel ? { rel } : {}) })
+            }
+          }
+          if (typeof h.mainHexAbs === 'string' && h.mainHexAbs.trim()) {
+            const hexAbs = h.mainHexAbs.trim()
+            if (!out.artifacts.some((a) => a.abs === hexAbs)) {
+              const rel =
+                typeof h.mainHexRelPath === 'string' && h.mainHexRelPath.trim()
+                  ? h.mainHexRelPath.trim().replace(/\\/g, '/')
+                  : undefined
+              out.artifacts.unshift({
+                label: 'main.hex',
+                abs: hexAbs,
+                ...(rel ? { rel } : {})
+              })
+            }
+          }
+          if (out.artifacts.length > 0) {
+            buildOutputsCache = out
             return out
           }
         } catch {
           /* 无 hints */
         }
-        const aciUri = vscode.Uri.joinPath(root, 'project.aci')
-        const buf = await vscode.workspace.fs.readFile(aciUri)
-        const text = new TextDecoder('utf-8').decode(buf)
-        const aci = JSON.parse(text) as {
-          target?: { framework?: string }
-          devmode?: string
-        }
-        const frameworkRaw = aci?.target?.framework ?? aci?.devmode ?? 'arduino'
-        const fw = String(frameworkRaw || 'arduino').trim() || 'arduino'
-        const seg = fw.toLowerCase().replace(/[^a-z0-9_-]+/g, '_') || 'arduino'
-        const rel = `.aily/build/${seg}/main.hex`
-        mainHexArtifactCache = { rel }
-        return { rel }
+        buildOutputsCache = empty
+        return empty
       } catch {
-        mainHexArtifactCache = {}
-        return {}
+        buildOutputsCache = { artifacts: [] }
+        return { artifacts: [] }
       } finally {
-        mainHexArtifactInflight = null
+        buildOutputsInflight = null
       }
     })()
-    return mainHexArtifactInflight
+    return buildOutputsInflight
   }
 
   // 把 ProjectTreeNode.path 解析为当前工程根下的真实 URI
@@ -1350,7 +1557,56 @@ void getApi().then((vscode) => {
 
   // property 节点（§7.2）
   vscode.commands.registerCommand(COMMANDS.openSettings, placeholder('Open Settings'))
-  vscode.commands.registerCommand(COMMANDS.changeValue, placeholder('Change Value'))
+  vscode.commands.registerCommand(COMMANDS.openBoardSelector, () => {
+    requestHostOpenBoardSelector()
+  })
+  const loadBoardProfileFromWorkspace = async (): Promise<HostBoardProfileV1 | undefined> => {
+    const fromHost = getHostEmbedContext()?.boardProfile
+    if (fromHost?.frameworkModes != null && fromHost.frameworkModes.length > 0) {
+      return fromHost
+    }
+    try {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri
+      if (root == null) {
+        return undefined
+      }
+      const hintsUri = vscode.Uri.joinPath(root, '.aily', 'coder-embed-hints.json')
+      const hbuf = await vscode.workspace.fs.readFile(hintsUri)
+      const h = JSON.parse(new TextDecoder('utf-8').decode(hbuf)) as {
+        boardProfile?: HostBoardProfileV1
+      }
+      const bp = h.boardProfile
+      if (bp?.frameworkModes != null && bp.frameworkModes.length > 0) {
+        mergeBoardProfileIntoSnapshot(bp)
+      }
+      return bp
+    } catch {
+      return undefined
+    }
+  }
+
+  vscode.commands.registerCommand(COMMANDS.openBoardProperty, async () => {
+    let spec = buildBoardListSpecFromHost()
+    if (spec == null) {
+      const bp = await loadBoardProfileFromWorkspace()
+      const items = bp?.frameworkModes
+      if (items != null && items.length > 0) {
+        spec = {
+          title: 'Board',
+          subtitle: bp.boardNickname?.trim() || bp.boardName?.trim() || undefined,
+          items
+        }
+      }
+    }
+    await openAilyBoardListEditor(spec, 'board')
+  })
+  vscode.commands.registerCommand(COMMANDS.changeValue, async (element?: ExplorerTreeElement) => {
+    if (element?.kind === 'project' && isBoardSelectorPropertyNode(element.node)) {
+      requestHostOpenBoardSelector()
+      return
+    }
+    await placeholder('Change Value')(element)
+  })
   vscode.commands.registerCommand(
     COMMANDS.revealBackingConfig,
     placeholder('Reveal Backing Config')
@@ -1427,7 +1683,7 @@ void getApi().then((vscode) => {
 
   const provider = new AilyExplorerProvider(
     vscode,
-    loadMainHexArtifactFromWorkspace,
+    loadBuildOutputsFromWorkspace,
     loadPlatformPackagesFromWorkspace
   )
 
@@ -1474,14 +1730,18 @@ void getApi().then((vscode) => {
   setupNodeModulesWatcher()
 
   vscode.workspace.onDidChangeWorkspaceFolders(() => {
-    mainHexArtifactCache = undefined
+    buildOutputsCache = undefined
     setupNodeModulesWatcher()
     provider.refresh()
   })
 
   onHostEmbedContextChanged(() => {
     // 宿主推送新上下文时，让 hint 兜底也走一次盘上读取，避免编译完成后仍用旧路径
-    mainHexArtifactCache = undefined
-    provider.refresh()
+    buildOutputsCache = undefined
+    // 定向刷新动态分组，避免 refresh(undefined) 与 Board 自定义编辑器打开竞态导致同级节点 UI 消失
+    refreshDynamicBlueprintSections(provider)
+    if ((getHostEmbedContext()?.boardProfile?.frameworkModes?.length ?? 0) === 0) {
+      void loadBoardProfileFromWorkspace()
+    }
   })
 })

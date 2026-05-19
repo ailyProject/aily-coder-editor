@@ -8,6 +8,7 @@ import './features/intellisense' // !!
 import './features/monacoStdioLspClient'
 import './features/aiInlineCompletion'
 import './features/ailyViewExplorer'
+import './features/ailyBoardListEditor.workbench'
 // import './features/notifications'
 // import './features/terminal'
 // import './features/scm'
