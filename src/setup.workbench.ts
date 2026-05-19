@@ -31,6 +31,7 @@ import {
   disableShadowDom
 } from './setup.common'
 import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
+import { installEmbedLayoutSync } from './embedLayoutSync'
 
 /** 与宿主 `?theme=` 共用：dark→Default Dark+、light→Default Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -46,7 +47,8 @@ let container = window.vscodeContainer
 
 if (container == null) {
   container = document.createElement('div')
-  container.style.height = '100vh'
+  container.style.height = '100%'
+  container.style.width = '100%'
 
   document.body.replaceChildren(container)
 
@@ -56,7 +58,8 @@ if (container == null) {
     })
 
     const workbenchElement = document.createElement('div')
-    workbenchElement.style.height = '100vh'
+    workbenchElement.style.height = '100%'
+    workbenchElement.style.width = '100%'
     shadowRoot.appendChild(workbenchElement)
     container = workbenchElement
   }
@@ -115,6 +118,7 @@ if (coderEmbedThemeQueryPresent) {
 }
 
 const layoutService = await getService(IWorkbenchLayoutService)
+installEmbedLayoutSync(layoutService)
 // document.querySelector('#togglePanel')!.addEventListener('click', async () => {
 //   layoutService.setPartHidden(layoutService.isVisible(Parts.PANEL_PART, window), Parts.PANEL_PART)
 // })

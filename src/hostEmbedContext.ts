@@ -38,6 +38,54 @@ export type HostEmbedContextV1 = {
 
 export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-host-context'
 
+/** iframe → Angular：请求打开右上角库管理面板（与 Blockly 库管理 UI 同源） */
+export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manager'
+
+/** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL 须一致 */
+export const AILY_EMBED_OPEN_LIBRARY_MANAGER_BC = 'aily-embed-open-library-manager'
+
+/** 与宿主同步库管理侧栏：`open` 为 true 展开，false 收起 */
+export function syncHostLibraryManager(open: boolean): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const payload = { channel: HOST_OPEN_LIBRARY_MANAGER_CHANNEL, open }
+  if (window.parent != null && window.parent !== window) {
+    try {
+      window.parent.postMessage(payload, '*')
+      return
+    } catch {
+      /* 落到 BroadcastChannel */
+    }
+  }
+  if (typeof BroadcastChannel === 'undefined') {
+    return
+  }
+  try {
+    const ch = new BroadcastChannel(AILY_EMBED_OPEN_LIBRARY_MANAGER_BC)
+    ch.postMessage({ open })
+    setTimeout(() => {
+      try {
+        ch.close()
+      } catch {
+        /* ignore */
+      }
+    }, 1000)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 向 Electron 宿主请求展开库管理侧栏 */
+export function requestHostOpenLibraryManager(): void {
+  syncHostLibraryManager(true)
+}
+
+/** 向 Electron 宿主请求收起库管理侧栏 */
+export function requestHostCloseLibraryManager(): void {
+  syncHostLibraryManager(false)
+}
+
 let snapshot: HostEmbedContextV1 | null = null
 const listeners = new Set<() => void>()
 

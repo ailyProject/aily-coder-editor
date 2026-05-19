@@ -468,6 +468,7 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     "workbench.layoutControl.enabled": false,
     "workbench.activityBar.location": "hidden",
     "workbench.statusBar.visible": false,
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
   },
   defaultLayout: {
     editors: skipCoderDemoWorkbenchEditors

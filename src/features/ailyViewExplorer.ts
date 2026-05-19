@@ -4,6 +4,8 @@ import { coderUseEmbedHostNativeFsBridge } from '../coderEmbedEnv.js'
 import {
   getHostEmbedContext,
   onHostEmbedContextChanged,
+  requestHostCloseLibraryManager,
+  requestHostOpenLibraryManager,
   type HostPlatformPackageV1
 } from '../hostEmbedContext.js'
 
@@ -548,6 +550,13 @@ type ExplorerTreeElement =
 
 function wrap(node: ProjectTreeNode): ExplorerTreeElement {
   return { kind: 'project', node }
+}
+
+/** Installed Libraries 顶层分组节点（展开/折叠时同步宿主库管理侧栏） */
+function isInstalledLibrariesGroup(
+  element: ExplorerTreeElement | undefined
+): boolean {
+  return element?.kind === 'project' && element.node.id === 'installed-libraries'
 }
 
 /** 将相对路径转为可用于 contextValue 的安全片段 */
@@ -1348,11 +1357,12 @@ void getApi().then((vscode) => {
   )
 
   // Dependencies 分组（§7.2）
-  vscode.commands.registerCommand(COMMANDS.addDependency, placeholder('Add Dependency'))
-  vscode.commands.registerCommand(
-    COMMANDS.openDependencyPanel,
-    placeholder('Open Dependency Panel')
-  )
+  vscode.commands.registerCommand(COMMANDS.addDependency, () => {
+    requestHostOpenLibraryManager()
+  })
+  vscode.commands.registerCommand(COMMANDS.openDependencyPanel, () => {
+    requestHostOpenLibraryManager()
+  })
 
   // Package Status（§7.2）
   // Open Lock File 直接打开根目录下的 aily.lock.json
@@ -1425,9 +1435,21 @@ void getApi().then((vscode) => {
     provider.refresh()
   })
 
-  vscode.window.createTreeView(AILY_VIEW_ID, {
+  const treeView = vscode.window.createTreeView(AILY_VIEW_ID, {
     treeDataProvider: provider,
     showCollapseAll: true
+  })
+
+  /** Installed Libraries 树节点展开/折叠 ↔ 宿主右上角库管理侧栏 */
+  treeView.onDidExpandElement((ev) => {
+    if (isInstalledLibrariesGroup(ev.element)) {
+      requestHostOpenLibraryManager()
+    }
+  })
+  treeView.onDidCollapseElement((ev) => {
+    if (isInstalledLibrariesGroup(ev.element)) {
+      requestHostCloseLibraryManager()
+    }
   })
 
   /** node_modules 变更时刷新 Installed Libraries 子树 */
