@@ -1,5 +1,7 @@
 import type * as vscode from 'vscode'
 import { ExtensionHostKind, registerExtension } from '@codingame/monaco-vscode-api/extensions'
+import { coderUseEmbedHostNativeFsBridge } from '../coderEmbedEnv.js'
+import { getHostEmbedContext, onHostEmbedContextChanged } from '../hostEmbedContext.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -24,6 +26,13 @@ interface TreeBadge {
   readonly priority: number
 }
 
+/** Angular 写入的 hints 与扩展回退解析共用形状 */
+type MainHexArtifact = {
+  rel?: string
+  abs?: string
+  buildPath?: string
+}
+
 interface ProjectTreeNode {
   readonly id: string
   readonly type: TreeNodeType
@@ -34,6 +43,8 @@ interface ProjectTreeNode {
   readonly icon: string
   // 相对工程根的路径（仅 file / directory / virtual-file 有意义）
   readonly path?: string
+  /** 磁盘绝对路径（固件等工作区外文件；打开/访达/复制时优先使用） */
+  readonly absolutePath?: string
   readonly expandable: boolean
   readonly expandedByDefault: boolean
   // 顶层节点是否默认渲染；Generated 在 MVP 高级模式开启前不展示
@@ -43,6 +54,15 @@ interface ProjectTreeNode {
 }
 
 const AILY_VIEW_ID = 'ailyView'
+
+/** 与 Angular code-editor-pro 中 AILY_EMBED_OS_REVEAL_CHANNEL 须一致（Worker 兜底用 BroadcastChannel） */
+const AILY_EMBED_OS_REVEAL_CHANNEL = 'aily-embed-os-reveal'
+
+/**
+ * 与 setup.common 中转用的 postMessage 通道一致；
+ * LocalProcess 扩展共享主线程 window，可直接 postMessage 给 Angular 父窗口，避免 BroadcastChannel 异步派发与 close 之间的竞b态。
+ */
+const AILY_CODER_REVEAL_IN_OS_PM = 'aily-coder-reveal-in-os'
 
 // 命令清单：与 docs/aily-code工程视图与信息架构设计.md §7 严格对齐
 // 命令 id 用前缀 `ailyView.`，未来切换到 performTreeAction(nodeId, actionId) 时按 actionId 平滑替换
@@ -280,7 +300,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
         type: 'property',
         label: 'Framework',
         icon: 'server-process',
-        expandable: false,
+        expandable: true,
         expandedByDefault: false,
         visible: true
       },
@@ -437,11 +457,17 @@ function wrap(node: ProjectTreeNode): ExplorerTreeElement {
 
 class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElement> {
   readonly #vscode: typeof vscode
+  /** 读 `.aily/coder-embed-hints.json`（与 Angular getBuildPath 一致）或回退 project.aci */
+  readonly #loadMainHexArtifact: () => Promise<MainHexArtifact>
   readonly #onDidChangeTreeData: vscode.EventEmitter<ExplorerTreeElement | undefined | void>
   readonly onDidChangeTreeData: vscode.Event<ExplorerTreeElement | undefined | void>
 
-  constructor(vscodeApi: typeof vscode) {
+  constructor(
+    vscodeApi: typeof vscode,
+    loadMainHexArtifact: () => Promise<MainHexArtifact>
+  ) {
     this.#vscode = vscodeApi
+    this.#loadMainHexArtifact = loadMainHexArtifact
     this.#onDidChangeTreeData = new vscodeApi.EventEmitter()
     this.onDidChangeTreeData = this.#onDidChangeTreeData.event
   }
@@ -472,14 +498,28 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     if (node.description != null) {
       tooltipParts.push(node.description)
     }
-    if (node.path != null) {
+    const absFs = node.absolutePath?.trim()
+    if (absFs) {
+      tooltipParts.push(absFs)
+    } else if (node.path != null) {
       tooltipParts.push(node.path)
     }
     item.tooltip = tooltipParts.join('\n')
 
-    if (node.path != null) {
-      // VS Code 资源装饰需要 fileLike URI；这里仅起辅助标识作用，不影响真实文件打开
-      item.resourceUri = vs.Uri.parse(`aily-virtual:/${node.path}`)
+    if (absFs) {
+      item.resourceUri = vs.Uri.file(absFs)
+    } else if (node.path != null) {
+      // 工作区内真实路径用 file URI，避免内置「复制路径」得到 aily-virtual: 协议
+      const root = vs.workspace.workspaceFolders?.[0]?.uri
+      const useWorkspaceFileUri =
+        root != null &&
+        (node.type === 'file' || node.type === 'virtual-file' || node.type === 'directory')
+      if (useWorkspaceFileUri) {
+        const segments = node.path.split('/').filter((s) => s.length > 0)
+        item.resourceUri = vs.Uri.joinPath(root, ...segments)
+      } else {
+        item.resourceUri = vs.Uri.parse(`aily-virtual:/${node.path}`)
+      }
     }
 
     // 单击行为：§9.1
@@ -507,10 +547,46 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
   // 后端服务接入后，仅需把 ailyViewBlueprint 替换为远端拉取结果
   async getChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
-      return ailyViewBlueprint.filter((n) => n.visible).map(wrap)
+      return ailyViewBlueprint.filter((nd) => nd.visible).map(wrap)
     }
     const children = element.node.children ?? []
-    return children.filter((n) => n.visible).map(wrap)
+    let out = children.filter((nd) => nd.visible).map(wrap)
+    const injectHexParent = element.node.id === 'build-outputs' || element.node.id === 'framework'
+    if (injectHexParent) {
+      const hostCtx = getHostEmbedContext()
+      const hint = await this.#loadMainHexArtifact()
+      let abs = hostCtx?.mainHexAbsPath?.trim() || hint.abs?.trim() || undefined
+      const rel = hostCtx?.mainHexRelPath?.trim() || hint.rel?.trim() || undefined
+      const buildDesc = hostCtx?.buildPath ?? hint.buildPath
+
+      // abs 缺失但 rel 存在时基于 workspace 兜底，保证 Reveal in Finder / Copy Path 总能拿到绝对路径
+      if (!abs && rel) {
+        const root = this.#vscode.workspace.workspaceFolders?.[0]?.uri
+        if (root != null) {
+          const segments = rel.split('/').filter((s) => s.length > 0)
+          abs = this.#vscode.Uri.joinPath(root, ...segments).fsPath
+        }
+      }
+
+      if (abs || rel) {
+        const hexId =
+          element.node.id === 'framework' ? 'framework-artifact-main-hex' : 'build-artifact-main-hex'
+        const hexNode: ProjectTreeNode = {
+          id: hexId,
+          type: 'virtual-file',
+          label: 'main.hex',
+          icon: 'file-binary',
+          path: rel,
+          absolutePath: abs,
+          expandable: false,
+          expandedByDefault: false,
+          visible: true,
+          description: buildDesc ? `构建目录: ${buildDesc}` : undefined
+        }
+        out = [wrap(hexNode), ...out]
+      }
+    }
+    return out
   }
 }
 
@@ -649,6 +725,73 @@ const { getApi } = registerExtension(
 )
 
 void getApi().then((vscode) => {
+  let mainHexArtifactCache: MainHexArtifact | null | undefined
+  let mainHexArtifactInflight: Promise<MainHexArtifact> | null = null
+
+  /** 优先读 `.aily/coder-embed-hints.json`（与 Angular getBuildPath 一致），否则 project.aci 推导 */
+  const loadMainHexArtifactFromWorkspace = async (): Promise<MainHexArtifact> => {
+    if (mainHexArtifactCache != null) {
+      return mainHexArtifactCache
+    }
+    if (mainHexArtifactInflight != null) {
+      return mainHexArtifactInflight
+    }
+    mainHexArtifactInflight = (async (): Promise<MainHexArtifact> => {
+      try {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri
+        const empty: MainHexArtifact = {}
+        if (root == null) {
+          mainHexArtifactCache = empty
+          return empty
+        }
+        try {
+          const hintsUri = vscode.Uri.joinPath(root, '.aily', 'coder-embed-hints.json')
+          const hbuf = await vscode.workspace.fs.readFile(hintsUri)
+          const h = JSON.parse(new TextDecoder('utf-8').decode(hbuf)) as {
+            mainHexAbs?: string
+            mainHexRelPath?: string
+            buildPath?: string
+          }
+          const out: MainHexArtifact = {}
+          if (typeof h.mainHexAbs === 'string' && h.mainHexAbs.trim()) {
+            out.abs = h.mainHexAbs.trim()
+          }
+          if (typeof h.mainHexRelPath === 'string' && h.mainHexRelPath.trim()) {
+            out.rel = h.mainHexRelPath.trim().replace(/\\/g, '/')
+          }
+          if (typeof h.buildPath === 'string' && h.buildPath.trim()) {
+            out.buildPath = h.buildPath.trim()
+          }
+          if (out.abs != null || out.rel != null) {
+            mainHexArtifactCache = out
+            return out
+          }
+        } catch {
+          /* 无 hints */
+        }
+        const aciUri = vscode.Uri.joinPath(root, 'project.aci')
+        const buf = await vscode.workspace.fs.readFile(aciUri)
+        const text = new TextDecoder('utf-8').decode(buf)
+        const aci = JSON.parse(text) as {
+          target?: { framework?: string }
+          devmode?: string
+        }
+        const frameworkRaw = aci?.target?.framework ?? aci?.devmode ?? 'arduino'
+        const fw = String(frameworkRaw || 'arduino').trim() || 'arduino'
+        const seg = fw.toLowerCase().replace(/[^a-z0-9_-]+/g, '_') || 'arduino'
+        const rel = `.aily/build/${seg}/main.hex`
+        mainHexArtifactCache = { rel }
+        return { rel }
+      } catch {
+        mainHexArtifactCache = {}
+        return {}
+      } finally {
+        mainHexArtifactInflight = null
+      }
+    })()
+    return mainHexArtifactInflight
+  }
+
   // 把 ProjectTreeNode.path 解析为当前工程根下的真实 URI
   // workspaceFolders[0] 视为工程根；MVP 单工作区
   const resolveProjectUri = (relPath: string | undefined): vscode.Uri | undefined => {
@@ -661,6 +804,76 @@ void getApi().then((vscode) => {
     }
     const segments = relPath.split('/').filter((s) => s.length > 0)
     return vscode.Uri.joinPath(root, ...segments)
+  }
+
+  const resolveUriForTreeNode = (node: ProjectTreeNode | undefined): vscode.Uri | undefined => {
+    const abs = node?.absolutePath?.trim()
+    if (abs) {
+      return vscode.Uri.file(abs)
+    }
+    return resolveProjectUri(node?.path)
+  }
+
+  /** 目标 URI 是否落在当前工作区根下（用于决定能否用 Explorer 定位） */
+  const isUriUnderWorkspace = (fileUri: vscode.Uri): boolean => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri
+    if (root == null) {
+      return false
+    }
+    const r = root.fsPath.replace(/\\/g, '/').toLowerCase()
+    const u = fileUri.fsPath.replace(/\\/g, '/').toLowerCase()
+    return u === r || u.startsWith(r + '/')
+  }
+
+  /**
+   * 委托 Electron 宿主 shell.showItemInFolder 在 Finder / Explorer 中高亮路径。
+   * - LocalProcess 扩展共享主线程 window：直接 `window.parent.postMessage` 给 Angular，最稳；
+   * - 兜底用 BroadcastChannel（Worker 场景或 parent 不可用），且延迟 close 避免 postMessage 异步派发被截断。
+   */
+  const revealInHostOsIfEmbedded = (absPath: string): boolean => {
+    const trimmed = absPath?.trim()
+    if (!trimmed) {
+      return false
+    }
+
+    // 优先：主线程扩展直接告诉 Angular 父窗口，零中转、零竞b态
+    if (
+      typeof window !== 'undefined' &&
+      window.parent != null &&
+      window.parent !== window
+    ) {
+      try {
+        window.parent.postMessage(
+          { channel: AILY_CODER_REVEAL_IN_OS_PM, absPath: trimmed },
+          '*'
+        )
+        return true
+      } catch {
+        /* 落到 BroadcastChannel 兜底 */
+      }
+    }
+
+    if (!coderUseEmbedHostNativeFsBridge) {
+      return false
+    }
+    if (typeof BroadcastChannel === 'undefined') {
+      return false
+    }
+    try {
+      const ch = new BroadcastChannel(AILY_EMBED_OS_REVEAL_CHANNEL)
+      ch.postMessage({ absPath: trimmed })
+      // 延迟关闭：BroadcastChannel.postMessage 是异步派发，立即 close 在某些时序下会截断消息
+      setTimeout(() => {
+        try {
+          ch.close()
+        } catch {
+          /* ignore */
+        }
+      }, 1000)
+      return true
+    } catch {
+      return false
+    }
   }
 
   // 统一的"打开真实文件"实现，供 file / virtual-file / 各专属菜单复用
@@ -709,29 +922,75 @@ void getApi().then((vscode) => {
 
   // 通用菜单（§7.1）
   vscode.commands.registerCommand(COMMANDS.open, async (element?: ExplorerTreeElement) => {
-    await openByPath(element?.node.path, element?.node.label ?? 'Unknown')
+    const uri = resolveUriForTreeNode(element?.node)
+    if (uri == null) {
+      await vscode.window.showWarningMessage(
+        `无法打开 ${element?.node.label ?? 'Unknown'}：当前没有工作区或未配置真实路径。`
+      )
+      return
+    }
+    try {
+      await vscode.commands.executeCommand('vscode.open', uri)
+    } catch (err) {
+      await vscode.window.showErrorMessage(
+        `打开 ${element?.node.label ?? 'Unknown'} 失败：${String(err)}`
+      )
+    }
   })
   vscode.commands.registerCommand(COMMANDS.openFolder, async (element?: ExplorerTreeElement) => {
-    await revealByPath(element?.node.path, element?.node.label ?? 'Unknown')
+    const uri = resolveUriForTreeNode(element?.node)
+    const label = element?.node.label ?? 'Unknown'
+    if (uri == null) {
+      await vscode.window.showWarningMessage(`无法打开文件夹 ${label}：当前没有工作区或未配置路径。`)
+      return
+    }
+    if (!isUriUnderWorkspace(uri) && revealInHostOsIfEmbedded(uri.fsPath)) {
+      return
+    }
+    try {
+      await vscode.commands.executeCommand('revealInExplorer', uri)
+    } catch (err) {
+      if (revealInHostOsIfEmbedded(uri.fsPath)) {
+        return
+      }
+      await vscode.window.showErrorMessage(`在 Files View 中打开 ${label} 失败：${String(err)}`)
+    }
   })
   vscode.commands.registerCommand(
     COMMANDS.revealInFilesView,
     async (element?: ExplorerTreeElement) => {
-      await revealByPath(element?.node.path, element?.node.label ?? 'Unknown')
+      const uri = resolveUriForTreeNode(element?.node)
+      const label = element?.node.label ?? 'Unknown'
+      if (uri == null) {
+        await vscode.window.showWarningMessage(`无法定位 ${label}：当前没有工作区或未配置路径。`)
+        return
+      }
+      if (!isUriUnderWorkspace(uri) && revealInHostOsIfEmbedded(uri.fsPath)) {
+        return
+      }
+      try {
+        await vscode.commands.executeCommand('revealInExplorer', uri)
+      } catch (err) {
+        if (revealInHostOsIfEmbedded(uri.fsPath)) {
+          return
+        }
+        await vscode.window.showErrorMessage(`在 Files View 中定位 ${label} 失败：${String(err)}`)
+      }
     }
   )
   vscode.commands.registerCommand(
     COMMANDS.copyRelativePath,
     async (element?: ExplorerTreeElement) => {
-      const path = element?.node.path
-      if (path == null || path === '') {
+      const uri = resolveUriForTreeNode(element?.node)
+      if (uri == null) {
         await vscode.window.showWarningMessage(
           `${element?.node.label ?? '该节点'} 没有可复制的相对路径。`
         )
         return
       }
-      await vscode.env.clipboard.writeText(path)
-      await vscode.window.showInformationMessage(`已复制相对路径：${path}`)
+      let text = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/')
+      await vscode.env.clipboard.writeText(text)
+      await vscode.window.showInformationMessage(`已复制相对路径：${text}`)
     }
   )
 
@@ -806,13 +1065,20 @@ void getApi().then((vscode) => {
     }
   )
 
-  const provider = new AilyExplorerProvider(vscode)
+  const provider = new AilyExplorerProvider(vscode, loadMainHexArtifactFromWorkspace)
   vscode.window.createTreeView(AILY_VIEW_ID, {
     treeDataProvider: provider,
     showCollapseAll: true
   })
 
   vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    mainHexArtifactCache = undefined
+    provider.refresh()
+  })
+
+  onHostEmbedContextChanged(() => {
+    // 宿主推送新上下文时，让 hint 兜底也走一次盘上读取，避免编译完成后仍用旧路径
+    mainHexArtifactCache = undefined
     provider.refresh()
   })
 })

@@ -27,7 +27,7 @@ import getLanguagesServiceOverride from '@codingame/monaco-vscode-languages-serv
 // import getScmServiceOverride from '@codingame/monaco-vscode-scm-service-override'
 // import getExtensionGalleryServiceOverride from '@codingame/monaco-vscode-extension-gallery-service-override'
 // import getBannerServiceOverride from '@codingame/monaco-vscode-view-banner-service-override'
-// import getStatusBarServiceOverride from '@codingame/monaco-vscode-view-status-bar-service-override'
+import getStatusBarServiceOverride from '@codingame/monaco-vscode-view-status-bar-service-override'
 // import getTitleBarServiceOverride from '@codingame/monaco-vscode-view-title-bar-service-override'
 // import getDebugServiceOverride from '@codingame/monaco-vscode-debug-service-override'
 // import getPreferencesServiceOverride from '@codingame/monaco-vscode-preferences-service-override'
@@ -86,7 +86,46 @@ import {
   ParentBackedNativeFsProvider,
   installParentBackedNativeFsReplyListener
 } from './parentBackedNativeFs.js'
+import { installHostEmbedContextListener } from './hostEmbedContext.js'
+import { setCoderUseEmbedHostNativeFsBridge } from './coderEmbedEnv.js'
 import 'vscode/localExtensionHost'
+
+/** 宿主注入构建路径等；不依赖本地 FS overlay 是否启用。 */
+installHostEmbedContextListener()
+
+/**
+ * Extension Host 在 Worker 内发 BroadcastChannel；Worker 与 iframe 同源，与 Angular 父窗口往往不同源，父页 Listen 不到。
+ * iframe 主线程收到后再 postMessage 给父窗口（与 code-editor-pro `AILY_CODER_REVEAL_IN_OS_CHANNEL` 一致）。
+ */
+const AILY_EMBED_OS_REVEAL_BC = 'aily-embed-os-reveal'
+const AILY_CODER_REVEAL_IN_OS_PM = 'aily-coder-reveal-in-os'
+
+function installEmbedOsRevealRelayToParent(): void {
+  if (typeof BroadcastChannel === 'undefined') {
+    return
+  }
+  try {
+    const bc = new BroadcastChannel(AILY_EMBED_OS_REVEAL_BC)
+    bc.addEventListener('message', (ev: MessageEvent) => {
+      const absPath = (ev.data as { absPath?: string })?.absPath
+      if (typeof absPath !== 'string' || !absPath.trim()) {
+        return
+      }
+      // 非内嵌页 parent === self，勿向自身误发
+      if (window.parent == null || window.parent === window) {
+        return
+      }
+      window.parent.postMessage(
+        { channel: AILY_CODER_REVEAL_IN_OS_PM, absPath: absPath.trim() },
+        '*'
+      )
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
+installEmbedOsRevealRelayToParent()
 
 function decodeFolderQueryParam(raw: string | null): string | undefined {
   if (!raw) {
@@ -145,6 +184,8 @@ const embedNativeFsBridge = params.get('nativeFsBridge') === 'true'
 export const useEmbedHostLocalFolder = Boolean(
   embedFolderAbsolute && embedNativeFsBridge && !useHtmlFileSystemProvider
 )
+/** 扩展 Worker 可读：是否走 BroadcastChannel 委托宿主 shell.showItemInFolder */
+setCoderUseEmbedHostNativeFsBridge(useEmbedHostLocalFolder)
 params.delete('resetLayout')
 
 window.history.replaceState({}, document.title, url.href)
@@ -502,7 +543,7 @@ export const commonServices: IEditorOverrideServices = {
   // ...getOutlineServiceOverride(),
   // ...getTimelineServiceOverride(),
   // ...getBannerServiceOverride(),
-  // ...getStatusBarServiceOverride(),
+  ...getStatusBarServiceOverride(),
   // ...getTitleBarServiceOverride(),
   // ...getSnippetServiceOverride(),
   // ...getOutputServiceOverride(),
