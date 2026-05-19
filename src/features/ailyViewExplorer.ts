@@ -241,16 +241,6 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     visible: true,
     children: [
       {
-        id: 'project-config-file',
-        type: 'file',
-        label: 'project.aci',
-        icon: 'json',
-        path: 'project.aci',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
         id: 'lock-json',
         type: 'file',
         label: 'aily.lock.json',
@@ -970,7 +960,7 @@ const WHEN_DIRECTORY = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:/`
 const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|virtual-file):/`
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
 const WHEN_MAIN_CPP = `${WHEN_VIEW} && viewItem == aily.file:entry-main`
-const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:project-(entry|config-file)$/`
+const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:project-entry$/`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_DEPS_GROUP =
   `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:platform-packages)`
@@ -1051,7 +1041,7 @@ const { getApi } = registerExtension(
           { command: COMMANDS.newFile, when: WHEN_DIRECTORY, group: '1_directory@10' },
           { command: COMMANDS.newFolder, when: WHEN_DIRECTORY, group: '1_directory@20' },
 
-          // project.aci（Start Here / Project Config 两处）
+          // project.aci（Start Here > project-entry）
           { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_ACI, group: '1_config@10' },
           { command: COMMANDS.openAsJson, when: WHEN_PROJECT_ACI, group: '1_config@20' },
           { command: COMMANDS.validateConfig, when: WHEN_PROJECT_ACI, group: '1_config@30' },
