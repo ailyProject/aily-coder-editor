@@ -34,7 +34,7 @@ import getStatusBarServiceOverride from '@codingame/monaco-vscode-view-status-ba
 // import getSnippetServiceOverride from '@codingame/monaco-vscode-snippets-service-override'
 // import getOutputServiceOverride from '@codingame/monaco-vscode-output-service-override'
 // import getTerminalServiceOverride from '@codingame/monaco-vscode-terminal-service-override'
-// import getSearchServiceOverride from '@codingame/monaco-vscode-search-service-override'
+import getSearchServiceOverride from '@codingame/monaco-vscode-search-service-override'
 // import getMarkersServiceOverride from '@codingame/monaco-vscode-markers-service-override'
 // import getAccessibilityServiceOverride from '@codingame/monaco-vscode-accessibility-service-override'
 // import getLanguageDetectionWorkerServiceOverride from '@codingame/monaco-vscode-language-detection-worker-service-override'
@@ -549,7 +549,7 @@ export const commonServices: IEditorOverrideServices = {
   // ...getSnippetServiceOverride(),
   // ...getOutputServiceOverride(),
   // ...getTerminalServiceOverride(new TerminalBackend()),
-  // ...getSearchServiceOverride(),
+  ...getSearchServiceOverride(),
   // ...getMarkersServiceOverride(),
   // ...getAccessibilityServiceOverride(),
   // ...getLanguageDetectionWorkerServiceOverride(),

@@ -146,33 +146,33 @@ for (const config of [
   })
 }
 
-const layoutService = await getService(IWorkbenchLayoutService)
-document.querySelector('#togglePanel')!.addEventListener('click', async () => {
-  layoutService.setPartHidden(layoutService.isVisible(Parts.PANEL_PART, window), Parts.PANEL_PART)
-})
+// const layoutService = await getService(IWorkbenchLayoutService)
+// document.querySelector('#togglePanel')!.addEventListener('click', async () => {
+//   layoutService.setPartHidden(layoutService.isVisible(Parts.PANEL_PART, window), Parts.PANEL_PART)
+// })
 
-document.querySelector('#toggleAuxiliary')!.addEventListener('click', async () => {
-  layoutService.setPartHidden(
-    layoutService.isVisible(Parts.AUXILIARYBAR_PART, window),
-    Parts.AUXILIARYBAR_PART
-  )
-})
+// document.querySelector('#toggleAuxiliary')!.addEventListener('click', async () => {
+//   layoutService.setPartHidden(
+//     layoutService.isVisible(Parts.AUXILIARYBAR_PART, window),
+//     Parts.AUXILIARYBAR_PART
+//   )
+// })
 
 export async function clearStorage(): Promise<void> {
   await userDataProvider.reset()
   await ((await getService(IStorageService)) as BrowserStorageService).clear()
 }
 
-await registerExtension(
-  {
-    name: 'demo',
-    publisher: 'codingame',
-    version: '1.0.0',
-    engines: {
-      vscode: '*'
-    }
-  },
-  ExtensionHostKind.LocalProcess
-).setAsDefaultApi()
+// await registerExtension(
+//   {
+//     name: 'demo',
+//     publisher: 'codingame',
+//     version: '1.0.0',
+//     engines: {
+//       vscode: '*'
+//     }
+//   },
+//   ExtensionHostKind.LocalProcess
+// ).setAsDefaultApi()
 
 export { remoteAuthority }
