@@ -232,101 +232,6 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     ]
   },
   {
-    id: 'project-files',
-    type: 'group',
-    label: 'Project Files',
-    icon: 'files',
-    expandable: true,
-    expandedByDefault: true,
-    visible: true,
-    children: [
-      {
-        id: 'application-code',
-        type: 'group',
-        label: 'Application Code',
-        icon: 'symbol-module',
-        expandable: true,
-        expandedByDefault: true,
-        visible: true,
-        children: [
-          {
-            id: 'src-root',
-            type: 'directory',
-            label: 'src',
-            icon: 'folder',
-            path: 'src',
-            expandable: true,
-            expandedByDefault: false,
-            visible: true
-          }
-        ]
-      },
-      {
-        id: 'headers',
-        type: 'group',
-        label: 'Headers',
-        icon: 'symbol-key',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true,
-        children: [
-          {
-            id: 'include-root',
-            type: 'directory',
-            label: 'include',
-            icon: 'folder',
-            path: 'include',
-            expandable: true,
-            expandedByDefault: false,
-            visible: true
-          }
-        ]
-      },
-      {
-        id: 'local-modules',
-        type: 'group',
-        label: 'Local Modules',
-        icon: 'repo',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true,
-        children: [
-          {
-            id: 'components-root',
-            type: 'directory',
-            label: 'components',
-            icon: 'folder-library',
-            path: 'components',
-            expandable: true,
-            expandedByDefault: false,
-            visible: true
-          }
-        ]
-      },
-      {
-        id: 'assets',
-        type: 'group',
-        label: 'Assets',
-        icon: 'device-camera',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true,
-        children: [
-          {
-            id: 'assets-root',
-            type: 'directory',
-            label: 'assets',
-            icon: 'folder',
-            path: 'assets',
-            expandable: true,
-            expandedByDefault: false,
-            visible: true
-          }
-        ]
-      }
-    ]
-  },
-  {
     id: 'project-config',
     type: 'group',
     label: 'Project Config',
@@ -489,8 +394,8 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
       }
     ]
   },
-  // Generated：§4.3 标记为"条件显示"，§6.3 高级模式才展开
-  // 按当前对齐选择：默认可见但折叠，便于直观呈现完整 7 组结构
+  // Generated：§4.3 条件显示，§6.3 高级模式；MVP 暂隐藏，恢复时取消下方块注释
+  /*
   {
     id: 'generated',
     type: 'group',
@@ -532,6 +437,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
       }
     ]
   }
+  */
 ]
 
 /** 工程根下 node_modules 相对路径 */
