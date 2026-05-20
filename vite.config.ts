@@ -12,6 +12,14 @@ const pkg = JSON.parse(
 const localDependencies = Object.entries(pkg.dependencies as Record<string, string>)
   .filter(([, version]) => version.startsWith('file:../'))
   .map(([name]) => name)
+
+const serveRoots = Array.from(
+  new Set(
+    [__dirname, process.cwd(), fs.realpathSync.native(__dirname), fs.realpathSync.native(process.cwd())]
+      .flatMap((dir) => [dir, path.dirname(dir)])
+  )
+)
+
 export default defineConfig({
   build: {
     target: 'esnext'
@@ -107,7 +115,8 @@ export default defineConfig({
     port: 5174,
     host: '0.0.0.0',
     fs: {
-      allow: ['../'] // allow to load codicon.ttf from monaco-editor in the parent folder
+      // 既允许从 child/aily-coder 软链路径启动，也允许访问真实仓库路径。
+      allow: serveRoots
     }
   },
   define: {
