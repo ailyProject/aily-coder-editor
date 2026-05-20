@@ -8,7 +8,7 @@
     "clean": "tsc -b -c",
     "start": "vite --config vite.config.ts",
     "start:debug": "vite --config vite.config.ts --debug --force",
-    "lint": "eslint '{src/**/*.ts,server/**/*.ts,rollup/*.ts,*.ts}'",
+    "lint": "eslint src server vite.config.ts vite.netlify.config.ts update-local-dependencies.ts",
     "typecheck": "tsc --noEmit",
     "check-build": "npm run lint && npm run typecheck",
     "build": "npm run check-build && vite --config vite.config.ts build",

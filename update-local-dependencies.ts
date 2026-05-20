@@ -1,8 +1,10 @@
 import { PackageJson } from 'type-fest'
 import * as fs from 'node:fs'
 import * as nodePath from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const packageJsonFile = new URL('./package.json', import.meta.url).pathname
+const packageDir = nodePath.dirname(fileURLToPath(import.meta.url))
+const packageJsonFile = fileURLToPath(new URL('./package.json', import.meta.url))
 const packageJson: PackageJson = JSON.parse(
   (await fs.promises.readFile(packageJsonFile)).toString('utf-8')
 )
@@ -14,8 +16,9 @@ const aliases: Record<string, string> = {
   '@codingame/monaco-vscode-editor-api': 'monaco-editor'
 }
 
-const packages = (await fs.promises.readdir(packagesUrl)).map((name) =>
-  nodePath.resolve(packagesUrl.pathname, name)
+const packagesDir = fileURLToPath(packagesUrl)
+const packages = (await fs.promises.readdir(packagesDir)).map((name) =>
+  nodePath.resolve(packagesDir, name)
 )
 
 const allLocalDependencies = await Promise.all(
@@ -27,7 +30,7 @@ const allLocalDependencies = await Promise.all(
 
     return <[string, string]>[
       aliases[packageName] ?? packageName,
-      `file:${nodePath.relative(nodePath.dirname(new URL(import.meta.url).pathname), absoluteDirectory)}`
+      `file:${nodePath.relative(packageDir, absoluteDirectory).replace(/\\/g, '/')}`
     ]
   })
 )

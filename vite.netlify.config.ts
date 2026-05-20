@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite'
 import * as fs from 'fs'
+import { fileURLToPath } from 'node:url'
+
 const pkg = JSON.parse(
-  fs.readFileSync(new URL('./package.json', import.meta.url).pathname).toString()
+  fs.readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8')
 )
 
 const localDependencies = Object.entries(pkg.dependencies as Record<string, string>)

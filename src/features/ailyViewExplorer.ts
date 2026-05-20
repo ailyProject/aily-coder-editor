@@ -1520,7 +1520,7 @@ void getApi().then((vscode) => {
     if (spec == null) {
       const bp = await loadBoardProfileFromWorkspace()
       const items = bp?.frameworkModes
-      if (items != null && items.length > 0) {
+      if (bp != null && items != null && items.length > 0) {
         spec = {
           title: 'Board',
           subtitle: bp.boardNickname?.trim() || bp.boardName?.trim() || undefined,

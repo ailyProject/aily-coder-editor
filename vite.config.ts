@@ -2,8 +2,11 @@ import { defineConfig } from 'vite'
 import importMetaUrlPlugin from '@codingame/esbuild-import-meta-url-plugin'
 import * as fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(
-  fs.readFileSync(new URL('./package.json', import.meta.url).pathname).toString()
+  fs.readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8')
 )
 
 const localDependencies = Object.entries(pkg.dependencies as Record<string, string>)
@@ -55,11 +58,15 @@ export default defineConfig({
         return () => {
           server.middlewares.use(async (req, res, next) => {
             if (req.originalUrl != null) {
-              const pathname = new URL(req.originalUrl, import.meta.url).pathname
+              const pathname = decodeURIComponent(
+                new URL(req.originalUrl, 'http://localhost').pathname
+              )
               if (pathname.endsWith('.html')) {
                 res.setHeader('Content-Type', 'text/html')
                 res.writeHead(200)
-                res.write(fs.readFileSync(path.join(__dirname, pathname)))
+                res.write(
+                  fs.readFileSync(path.join(__dirname, pathname.replace(/^\/+/, '')))
+                )
                 res.end()
               }
             }

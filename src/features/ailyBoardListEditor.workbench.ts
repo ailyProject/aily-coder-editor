@@ -293,7 +293,11 @@ function findAllBoardEditorIdentifiers(editorService: IEditorService): IEditorId
     if (editor.typeId !== AilyBoardListEditorPane.ID) {
       continue
     }
-    for (const item of editorService.findEditors(editor)) {
+    for (const item of editorService.findEditors({
+      typeId: editor.typeId,
+      editorId: editor.editorId,
+      resource: editor.resource ?? uri
+    })) {
       if (!seen.has(item.editor)) {
         seen.add(item.editor)
         out.push(item)
@@ -319,7 +323,7 @@ export async function openAilyBoardListEditor(
   const allBoard = findAllBoardEditorIdentifiers(editorService)
 
   if (allBoard.length > 0) {
-    const keep = allBoard[0]
+    const keep = allBoard[0]!
     if (allBoard.length > 1) {
       await editorService.closeEditors(allBoard.slice(1))
     }
