@@ -241,16 +241,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     expandedByDefault: false,
     visible: true,
     children: [
-      {
-        id: 'project-config-file',
-        type: 'file',
-        label: 'project.aci',
-        icon: 'json',
-        path: 'project.aci',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
+      // project.aci 仅在 Start Here > project-entry，避免与配置索引重复
       {
         id: 'lock-json',
         type: 'file',
@@ -396,8 +387,8 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     ]
   },
   // Generated：§4.3 标记为"条件显示"，§6.3 高级模式才展开
-  // 按当前对齐选择：默认可见但折叠，便于直观呈现完整 6 组结构（不含 Project Files）
-  {
+  // 按当前对齐选择：默认可见但折叠，便于直观呈现完整 6 组结构（不含 Project Files） // 临时注释
+  /* {
     id: 'generated',
     type: 'group',
     label: 'Generated',
@@ -437,7 +428,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
         visible: true
       }
     ]
-  }
+  } */
 ]
 
 /** 工程根下 node_modules 相对路径 */
@@ -970,7 +961,7 @@ const WHEN_DIRECTORY = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:/`
 const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|virtual-file):/`
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
 const WHEN_MAIN_CPP = `${WHEN_VIEW} && viewItem == aily.file:entry-main`
-const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:project-(entry|config-file)$/`
+const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem == aily.file:project-entry`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_DEPS_GROUP =
   `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:platform-packages)`
@@ -1051,7 +1042,7 @@ const { getApi } = registerExtension(
           { command: COMMANDS.newFile, when: WHEN_DIRECTORY, group: '1_directory@10' },
           { command: COMMANDS.newFolder, when: WHEN_DIRECTORY, group: '1_directory@20' },
 
-          // project.aci（Start Here / Project Config 两处）
+          // project.aci（仅 Start Here > project-entry）
           { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_ACI, group: '1_config@10' },
           { command: COMMANDS.openAsJson, when: WHEN_PROJECT_ACI, group: '1_config@20' },
           { command: COMMANDS.validateConfig, when: WHEN_PROJECT_ACI, group: '1_config@30' },
