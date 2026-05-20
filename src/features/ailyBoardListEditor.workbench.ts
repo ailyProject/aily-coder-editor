@@ -29,9 +29,120 @@ import {
   onHostEmbedContextChanged,
   type HostBoardListItemV1,
   type HostBoardProfileV1,
-  type HostEmbedContextV1
+  type HostEmbedContextV1,
+  type HostPlatformPackageV1
 } from '../hostEmbedContext.js'
 import { readNativeFsBinary } from '../parentBackedNativeFs.js'
+
+/** boards.txt：`yun.name=Arduino Yún` */
+const BOARD_NAME_LINE_RE = /^(\w+)\.name=(.+)$/
+
+type BoardsTxtEntry = { readonly id: string; readonly label: string }
+
+/** 从 boards.txt 文本解析全部 `*.name=` 主板类型 */
+function parseBoardTypesFromBoardsTxt(text: string): BoardsTxtEntry[] {
+  const seen = new Set<string>()
+  const out: BoardsTxtEntry[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) {
+      continue
+    }
+    const m = line.match(BOARD_NAME_LINE_RE)
+    if (!m) {
+      continue
+    }
+    const id = m[1]
+    const label = (m[2] ?? '').trim()
+    if (!id || seen.has(id)) {
+      continue
+    }
+    seen.add(id)
+    out.push({ id, label: label || id })
+  }
+  return out
+}
+
+function resolveSdkPackagePath(
+  platformPackages?: readonly HostPlatformPackageV1[]
+): string | undefined {
+  const fromCtx = getHostEmbedContext()?.platformPackages
+  const list = platformPackages ?? fromCtx
+  if (list == null || list.length === 0) {
+    return undefined
+  }
+  const sdk = list.find((p) => p.kind === 'sdk' && p.absolutePath?.trim())
+  return sdk?.absolutePath?.trim() || undefined
+}
+
+function joinFsPath(base: string, ...segments: string[]): string {
+  const sep = base.includes('\\') ? '\\' : '/'
+  return [base.replace(/[/\\]+$/, ''), ...segments].join(sep)
+}
+
+/** 读取 SDK 根目录 boards.txt */
+async function loadBoardTypesFromSdkBoardsTxt(
+  platformPackages?: readonly HostPlatformPackageV1[]
+): Promise<BoardsTxtEntry[] | null> {
+  const sdkRoot = resolveSdkPackagePath(platformPackages)
+  if (!sdkRoot) {
+    return null
+  }
+  const boardsPath = joinFsPath(sdkRoot, 'boards.txt')
+  const bytes = await readNativeFsBinary(boardsPath)
+  if (bytes == null) {
+    return null
+  }
+  const text = new TextDecoder('utf-8').decode(bytes)
+  const entries = parseBoardTypesFromBoardsTxt(text)
+  return entries.length > 0 ? entries : null
+}
+
+function inferSelectedBoardTypeId(
+  boardProfile: HostBoardProfileV1 | undefined,
+  entries: readonly BoardsTxtEntry[]
+): string | undefined {
+  if (entries.length === 0) {
+    return undefined
+  }
+  const selectedMode = boardProfile?.frameworkModes?.find((m) => m.selected)
+  if (selectedMode?.id) {
+    const byId = entries.find((e) => e.id === selectedMode.id)
+    if (byId) {
+      return byId.id
+    }
+    const byLabel = entries.find(
+      (e) => e.label.toLowerCase() === selectedMode.label?.trim().toLowerCase()
+    )
+    if (byLabel) {
+      return byLabel.id
+    }
+  }
+  const boardName = boardProfile?.boardName?.trim()
+  if (boardName) {
+    const exact = entries.find((e) => e.id === boardName)
+    if (exact) {
+      return exact.id
+    }
+    const ci = entries.find((e) => e.label.toLowerCase() === boardName.toLowerCase())
+    if (ci) {
+      return ci.id
+    }
+  }
+  return entries[0]?.id
+}
+
+function boardsTxtEntriesToListItems(
+  entries: readonly BoardsTxtEntry[],
+  boardProfile?: HostBoardProfileV1
+): HostBoardListItemV1[] {
+  const selectedId = inferSelectedBoardTypeId(boardProfile, entries)
+  return entries.map((e) => ({
+    id: e.id,
+    label: e.label,
+    selected: e.id === selectedId
+  }))
+}
 
 /** Board 虚拟属性固定资源键，保证单例标签 */
 export const BOARD_LIST_RESOURCE_KEY = 'board'
@@ -91,8 +202,13 @@ function getWorkspaceRootPath(): string | undefined {
   }
 }
 
-/** 从 `.aily/coder-embed-hints.json` 读取 boardProfile（经宿主 native-fs 桥，避免 IFileService 导入） */
-async function loadBoardSpecFromHintsFile(): Promise<AilyBoardListSpec | null> {
+type CoderEmbedHintsPayload = {
+  boardProfile?: HostBoardProfileV1
+  platformPackages?: readonly HostPlatformPackageV1[]
+}
+
+/** 从 `.aily/coder-embed-hints.json` 读取嵌入提示（经宿主 native-fs 桥） */
+async function loadCoderEmbedHints(): Promise<CoderEmbedHintsPayload | null> {
   const root = getWorkspaceRootPath()
   if (!root) {
     return null
@@ -106,19 +222,44 @@ async function loadBoardSpecFromHintsFile(): Promise<AilyBoardListSpec | null> {
       return null
     }
     const text = new TextDecoder('utf-8').decode(bytes)
-    const parsed = JSON.parse(text) as { boardProfile?: HostBoardProfileV1 }
-    const bp = parsed.boardProfile
-    if (bp == null) {
-      return null
-    }
-    return boardProfileToListSpec(bp)
+    return JSON.parse(text) as CoderEmbedHintsPayload
   } catch {
     return null
   }
 }
 
+/** 从 hints 文件读取 boardProfile */
+async function loadBoardSpecFromHintsFile(): Promise<AilyBoardListSpec | null> {
+  const hints = await loadCoderEmbedHints()
+  const bp = hints?.boardProfile
+  if (bp == null) {
+    return null
+  }
+  return boardProfileToListSpec(bp)
+}
+
+/** 优先用 SDK boards.txt 的 `*.name=` 列表；否则回退 Blockly frameworkModes */
 async function resolveBoardListSpec(resourceKey: string): Promise<AilyBoardListSpec | null> {
   const cached = getAilyBoardListSpec(resourceKey)
+  const ctx = getHostEmbedContext()
+  // 始终读取 hints，避免仅有 Blockly 缓存时丢失 platformPackages（SDK 路径）
+  const hints = await loadCoderEmbedHints()
+  const boardProfile = ctx?.boardProfile ?? hints?.boardProfile
+  const platformPackages = ctx?.platformPackages ?? hints?.platformPackages
+
+  const boardsEntries = await loadBoardTypesFromSdkBoardsTxt(platformPackages)
+  if (boardsEntries != null && boardsEntries.length > 0) {
+    const items = boardsTxtEntriesToListItems(boardsEntries, boardProfile)
+    return {
+      title: 'Board',
+      subtitle:
+        boardProfile?.boardNickname?.trim() ||
+        boardProfile?.boardName?.trim() ||
+        undefined,
+      items
+    }
+  }
+
   if (cached != null) {
     return cached
   }
@@ -126,7 +267,7 @@ async function resolveBoardListSpec(resourceKey: string): Promise<AilyBoardListS
   if (fromHost != null) {
     return fromHost
   }
-  return await loadBoardSpecFromHintsFile()
+  return boardProfile != null ? boardProfileToListSpec(boardProfile) : null
 }
 
 function applyBoardProfilePayload(bp: HostBoardProfileV1 | undefined): void {
@@ -212,12 +353,258 @@ function renderEmptyState(container: HTMLElement, loading: boolean): void {
   const p = document.createElement('p')
   p.className = 'aily-board-list-editor__empty'
   p.textContent = loading
-    ? '正在加载开发板类型列表…'
-    : '暂无开发板类型列表。'
+    ? '正在从 SDK boards.txt 加载主板类型…'
+    : '未找到 SDK boards.txt 或主板类型列表为空。'
   container.appendChild(p)
 }
 
+/** 挂到 document.body 的下拉层，避免被编辑器 overflow 裁剪 */
+type BoardSelectPortalState = {
+  panel: HTMLElement
+  trigger: HTMLElement
+  wrap: HTMLElement
+}
+
+let boardSelectPortal: BoardSelectPortalState | null = null
+let boardSelectOutsideListener: ((ev: MouseEvent) => void) | null = null
+let boardSelectRepositionListener: (() => void) | null = null
+
+/** 从 workbench 同步到 portal 面板的 VS Code 主题变量 */
+const VSCODE_THEME_VARS_FOR_PORTAL = [
+  '--vscode-dropdown-background',
+  '--vscode-dropdown-foreground',
+  '--vscode-editor-background',
+  '--vscode-editor-foreground',
+  '--vscode-panel-border',
+  '--vscode-input-border',
+  '--vscode-list-hoverBackground',
+  '--vscode-list-activeSelectionBackground',
+  '--vscode-list-activeSelectionForeground',
+  '--vscode-focusBorder',
+  '--vscode-descriptionForeground',
+  '--vscode-scrollbarSlider-background',
+  '--vscode-scrollbarSlider-hoverBackground',
+  '--vscode-widget-shadow'
+] as const
+
+function resolveBoardEditorThemeRoot(anchor: HTMLElement): HTMLElement {
+  return (
+    anchor.closest('.aily-board-list-editor') ??
+    anchor.closest('.monaco-workbench') ??
+    document.body ??
+    document.documentElement
+  )
+}
+
+/** portal 在 body 上，须把当前明暗主题的 CSS 变量写到面板根节点 */
+function applyPortalPanelTheme(panel: HTMLElement, themeAnchor: HTMLElement): void {
+  const themeRoot = resolveBoardEditorThemeRoot(themeAnchor)
+  const cs = getComputedStyle(themeRoot)
+  const docCs = getComputedStyle(document.documentElement)
+  for (const name of VSCODE_THEME_VARS_FOR_PORTAL) {
+    const v = cs.getPropertyValue(name).trim() || docCs.getPropertyValue(name).trim()
+    if (v) {
+      panel.style.setProperty(name, v)
+    }
+  }
+  const isLight =
+    document.body.classList.contains('vscode-light') ||
+    document.documentElement.classList.contains('vscode-light') ||
+    themeRoot.classList.contains('vscode-light')
+  panel.style.colorScheme = isLight ? 'light' : 'dark'
+}
+
+function positionBoardSelectPanel(panel: HTMLElement, trigger: HTMLElement): void {
+  const rect = trigger.getBoundingClientRect()
+  const gap = 4
+  const maxH = Math.min(320, Math.max(120, window.innerHeight - rect.bottom - gap - 12))
+  panel.style.left = `${rect.left}px`
+  panel.style.top = `${rect.bottom + gap}px`
+  panel.style.width = `${Math.max(rect.width, 280)}px`
+  panel.style.maxHeight = `${maxH}px`
+  panel.style.minHeight = '80px'
+  panel.style.zIndex = '100000'
+}
+
+function detachBoardSelectRepositionListener(): void {
+  if (boardSelectRepositionListener != null) {
+    window.removeEventListener('resize', boardSelectRepositionListener)
+    window.removeEventListener('scroll', boardSelectRepositionListener, true)
+    boardSelectRepositionListener = null
+  }
+}
+
+function closeBoardSelectPanel(): void {
+  if (boardSelectPortal != null) {
+    boardSelectPortal.panel.remove()
+    boardSelectPortal.wrap.classList.remove('is-open')
+    boardSelectPortal.trigger.setAttribute('aria-expanded', 'false')
+    boardSelectPortal = null
+  }
+  if (boardSelectOutsideListener != null) {
+    document.removeEventListener('mousedown', boardSelectOutsideListener, true)
+    boardSelectOutsideListener = null
+  }
+  detachBoardSelectRepositionListener()
+}
+
+function applyBoardTypeSelection(
+  item: AilyBoardListItem,
+  triggerText: HTMLElement,
+  outputEl: HTMLElement,
+  panel: HTMLElement
+): void {
+  const label = item.label?.trim() || item.id
+  triggerText.textContent = label
+  outputEl.textContent = `已选择：${label}（${item.id}）`
+  console.log('[AilyBoardListEditor] board type selected:', { id: item.id, label })
+
+  for (const row of panel.querySelectorAll('.aily-board-select__option')) {
+    const el = row as HTMLElement
+    const isSel = el.dataset.boardId === item.id
+    el.classList.toggle('is-selected', isSel)
+    el.setAttribute('aria-selected', isSel ? 'true' : 'false')
+  }
+
+  closeBoardSelectPanel()
+}
+
+function renderBoardTypeDropdown(container: HTMLElement, spec: AilyBoardListSpec): void {
+  let currentSelectedId =
+    spec.items.find((i) => i.selected)?.id ?? spec.items[0]?.id ?? ''
+  const selected =
+    spec.items.find((i) => i.id === currentSelectedId) ?? spec.items[0]
+
+  const field = document.createElement('div')
+  field.className = 'aily-board-list-editor__field'
+
+  const fieldLabel = document.createElement('label')
+  fieldLabel.className = 'aily-board-list-editor__field-label'
+  fieldLabel.textContent = '主板类型'
+  field.appendChild(fieldLabel)
+
+  const wrap = document.createElement('div')
+  wrap.className = 'aily-board-select'
+
+  const trigger = document.createElement('button')
+  trigger.type = 'button'
+  trigger.className = 'aily-board-select__trigger'
+  trigger.setAttribute('aria-haspopup', 'listbox')
+  trigger.setAttribute('aria-expanded', 'false')
+
+  const triggerText = document.createElement('span')
+  triggerText.className = 'aily-board-select__trigger-text'
+  triggerText.textContent = selected?.label?.trim() || selected?.id || '—'
+  trigger.appendChild(triggerText)
+
+  const chevron = document.createElement('span')
+  chevron.className = 'aily-board-select__chevron'
+  chevron.setAttribute('aria-hidden', 'true')
+  chevron.textContent = '▾'
+  trigger.appendChild(chevron)
+
+  const outputEl = document.createElement('div')
+  outputEl.className = 'aily-board-list-editor__selection-output vsfont'
+  if (selected != null) {
+    const label = selected.label?.trim() || selected.id
+    outputEl.textContent = `已选择：${label}（${selected.id}）`
+  }
+
+  const openPanel = (): void => {
+    ensureBoardSelectPortalStyles()
+    closeBoardSelectPanel()
+    const panel = document.createElement('ul')
+    panel.className = 'aily-board-select__panel aily-board-select__panel--portal'
+    panel.setAttribute('role', 'listbox')
+    panel.setAttribute('aria-label', '主板类型列表')
+
+    for (const item of spec.items) {
+      const opt = document.createElement('li')
+      opt.className = 'aily-board-select__option'
+      opt.dataset.boardId = item.id
+      opt.setAttribute('role', 'option')
+      opt.setAttribute('aria-selected', item.id === currentSelectedId ? 'true' : 'false')
+      if (item.id === currentSelectedId) {
+        opt.classList.add('is-selected')
+      }
+
+      const optLabel = document.createElement('span')
+      optLabel.className = 'aily-board-select__option-label'
+      optLabel.textContent = item.label?.trim() || item.id
+      opt.appendChild(optLabel)
+
+      const optId = document.createElement('span')
+      optId.className = 'aily-board-select__option-id'
+      optId.textContent = item.id
+      opt.appendChild(optId)
+
+      opt.addEventListener('mousedown', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+      })
+      opt.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        currentSelectedId = item.id
+        applyBoardTypeSelection(item, triggerText, outputEl, panel)
+      })
+
+      panel.appendChild(opt)
+    }
+
+    panel.addEventListener('wheel', (ev) => {
+      ev.stopPropagation()
+    }, { passive: true })
+
+    applyPortalPanelTheme(panel, container)
+    positionBoardSelectPanel(panel, trigger)
+    document.body.appendChild(panel)
+    wrap.classList.add('is-open')
+    trigger.setAttribute('aria-expanded', 'true')
+    boardSelectPortal = { panel, trigger, wrap }
+
+    boardSelectRepositionListener = () => {
+      if (boardSelectPortal?.panel === panel) {
+        applyPortalPanelTheme(panel, container)
+        positionBoardSelectPanel(panel, trigger)
+      }
+    }
+    window.addEventListener('resize', boardSelectRepositionListener)
+    window.addEventListener('scroll', boardSelectRepositionListener, true)
+
+    boardSelectOutsideListener = (ev: MouseEvent) => {
+      const t = ev.target as Node
+      if (panel.contains(t) || trigger.contains(t) || wrap.contains(t)) {
+        return
+      }
+      closeBoardSelectPanel()
+    }
+    document.addEventListener('mousedown', boardSelectOutsideListener, true)
+  }
+
+  trigger.addEventListener('click', (ev) => {
+    ev.stopPropagation()
+    if (boardSelectPortal != null) {
+      closeBoardSelectPanel()
+      return
+    }
+    openPanel()
+  })
+
+  wrap.appendChild(trigger)
+  field.appendChild(wrap)
+  field.appendChild(outputEl)
+
+  const meta = document.createElement('p')
+  meta.className = 'aily-board-list-editor__meta'
+  meta.textContent = `共 ${spec.items.length} 种主板类型 · 数据来自 SDK boards.txt`
+  field.appendChild(meta)
+
+  container.appendChild(field)
+}
+
 function renderListDom(container: HTMLElement, spec: AilyBoardListSpec): void {
+  closeBoardSelectPanel()
   container.className = 'aily-board-list-editor'
   container.innerHTML = ''
   ensureListEditorStyles(container)
@@ -239,50 +626,11 @@ function renderListDom(container: HTMLElement, spec: AilyBoardListSpec): void {
 
   const hint = document.createElement('p')
   hint.className = 'aily-board-list-editor__hint'
-  hint.textContent = '当前开发板支持的框架 / 类型（与 Blockly 主板包 mode 一致）'
+  hint.textContent = 'SDK 主板包支持的主板类型（boards.txt）'
   header.appendChild(hint)
 
   container.appendChild(header)
-
-  const list = document.createElement('ul')
-  list.className = 'aily-board-list-editor__list'
-  list.setAttribute('role', 'list')
-
-  for (const item of spec.items) {
-    const row = document.createElement('li')
-    row.className = 'aily-board-list-editor__row'
-    if (item.selected) {
-      row.classList.add('is-selected')
-    }
-
-    const labelWrap = document.createElement('div')
-    labelWrap.className = 'aily-board-list-editor__label-wrap'
-
-    const label = document.createElement('span')
-    label.className = 'aily-board-list-editor__label'
-    label.textContent = item.label?.trim() || item.id
-    labelWrap.appendChild(label)
-
-    if (item.description != null && item.description.trim().length > 0) {
-      const desc = document.createElement('span')
-      desc.className = 'aily-board-list-editor__desc'
-      desc.textContent = item.description
-      labelWrap.appendChild(desc)
-    }
-
-    row.appendChild(labelWrap)
-
-    if (item.selected) {
-      const badge = document.createElement('span')
-      badge.className = 'aily-board-list-editor__badge'
-      badge.textContent = '当前'
-      row.appendChild(badge)
-    }
-
-    list.appendChild(row)
-  }
-
-  container.appendChild(list)
+  renderBoardTypeDropdown(container, spec)
 }
 
 const LIST_EDITOR_STYLE_CSS = `
@@ -312,44 +660,112 @@ const LIST_EDITOR_STYLE_CSS = `
     font-size: 12px;
     color: var(--vscode-descriptionForeground, #888);
   }
-  .aily-board-list-editor__list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    border: 1px solid var(--vscode-panel-border, #3c3c3c);
-    border-radius: 5px;
-    overflow: hidden;
+  .aily-board-list-editor__field {
+    max-width: 520px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
-  .aily-board-list-editor__row {
+  .aily-board-list-editor__field-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--vscode-descriptionForeground, #a5a5a5);
+    letter-spacing: 0.02em;
+  }
+  .aily-board-list-editor__meta {
+    margin: 0;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #777);
+  }
+  .aily-board-list-editor__selection-output {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 4px;
+    background: var(--vscode-textCodeBlock-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, #3c3c3c);
+    font-size: 12px;
+    color: var(--vscode-editor-foreground, #d4d4d4);
+    word-break: break-all;
+  }
+  .aily-board-select {
+    position: relative;
+    width: 100%;
+  }
+  .aily-board-select__trigger {
+    box-sizing: border-box;
+    width: 100%;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+    padding: 8px 12px;
+    border: 1px solid var(--vscode-input-border, #4a4c4f);
+    border-radius: 5px;
+    background: var(--vscode-input-background, #3a3c3f);
+    color: var(--vscode-input-foreground, #d4d4d4);
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
   }
-  .aily-board-list-editor__row:last-child { border-bottom: none; }
-  .aily-board-list-editor__row.is-selected {
-    background: rgba(24, 144, 255, 0.1);
+  .aily-board-select__trigger:hover {
+    border-color: var(--vscode-inputOption-hoverBackground, #5a5c5f);
+    background: var(--vscode-list-hoverBackground, #3f3f3f);
   }
-  .aily-board-list-editor__label-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+  .aily-board-select.is-open .aily-board-select__trigger,
+  .aily-board-select__trigger:focus-visible {
+    outline: none;
+    border-color: var(--vscode-focusBorder, #007acc);
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.25);
+  }
+  .aily-board-select__trigger-text {
+    flex: 1;
     min-width: 0;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
   }
-  .aily-board-list-editor__label { font-weight: 500; }
-  .aily-board-list-editor__desc {
+  .aily-board-select__chevron {
+    flex-shrink: 0;
     font-size: 12px;
     color: var(--vscode-descriptionForeground, #999);
+    transition: transform 0.2s;
   }
-  .aily-board-list-editor__badge {
+  .aily-board-select.is-open .aily-board-select__chevron {
+    transform: rotate(180deg);
+    color: var(--vscode-focusBorder, #007acc);
+  }
+  .aily-board-select__option {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .aily-board-select__option:hover {
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+  }
+  .aily-board-select__option.is-selected {
+    background: var(--vscode-list-activeSelectionBackground, rgba(24, 144, 255, 0.12));
+  }
+  .aily-board-select__option.is-selected .aily-board-select__option-label {
+    color: var(--vscode-focusBorder, #3794ff);
+  }
+  .aily-board-select__option-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .aily-board-select__option-id {
     flex-shrink: 0;
     font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--vscode-badge-background, #007acc);
-    color: var(--vscode-badge-foreground, #fff);
+    font-family: Consolas, "Courier New", monospace;
+    color: var(--vscode-descriptionForeground, #888);
   }
   .aily-board-list-editor__empty {
     margin: 0;
@@ -357,7 +773,109 @@ const LIST_EDITOR_STYLE_CSS = `
   }
 `
 
+/**
+ * Portal 下拉挂到 document.body：样式使用 VS Code 变量（由 applyPortalPanelTheme 注入），
+ * fallback 覆盖暗色 / 亮色默认。
+ */
+const BOARD_SELECT_PORTAL_STYLE_CSS = `
+  ul.aily-board-select__panel.aily-board-select__panel--portal {
+    box-sizing: border-box;
+    display: block;
+    position: fixed;
+    margin: 0;
+    padding: 4px 0;
+    list-style: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--vscode-panel-border, #3c3c3c);
+    border-radius: 5px;
+    background-color: var(--vscode-dropdown-background, #2d2d2d);
+    color: var(--vscode-dropdown-foreground, var(--vscode-editor-foreground, #d4d4d4));
+    font-family: "MiSans Regular", -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    box-shadow: 0 6px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+    scrollbar-width: thin;
+    scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4))
+      var(--vscode-dropdown-background, #2d2d2d);
+    pointer-events: auto;
+    isolation: isolate;
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal::-webkit-scrollbar {
+    width: 8px;
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal::-webkit-scrollbar-track {
+    background: var(--vscode-dropdown-background, #2d2d2d);
+    border-radius: 4px;
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+    border-radius: 4px;
+    border: 2px solid var(--vscode-dropdown-background, #2d2d2d);
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal::-webkit-scrollbar-thumb:hover {
+    background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal > li.aily-board-select__option {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    margin: 0;
+    cursor: pointer;
+    background: transparent;
+    color: var(--vscode-dropdown-foreground, var(--vscode-editor-foreground, #d4d4d4));
+    transition: background 0.15s, color 0.15s;
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal > li.aily-board-select__option:hover {
+    background: var(--vscode-list-hoverBackground, #2a2d2e);
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal > li.aily-board-select__option.is-selected {
+    background: var(--vscode-list-activeSelectionBackground, rgba(24, 144, 255, 0.12));
+    color: var(--vscode-list-activeSelectionForeground, var(--vscode-focusBorder, #3794ff));
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal > li.aily-board-select__option.is-selected .aily-board-select__option-label {
+    color: inherit;
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal .aily-board-select__option-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  ul.aily-board-select__panel.aily-board-select__panel--portal .aily-board-select__option-id {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-family: Consolas, "Courier New", monospace;
+    color: var(--vscode-descriptionForeground, #888);
+  }
+  @media (prefers-color-scheme: light) {
+    ul.aily-board-select__panel.aily-board-select__panel--portal:not([style*="--vscode-dropdown-background"]) {
+      background-color: #ffffff;
+      color: #333333;
+      border-color: #cecece;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      scrollbar-color: rgba(0, 0, 0, 0.25) #ffffff;
+    }
+  }
+`
+
+function ensureBoardSelectPortalStyles(): void {
+  if (document.head.querySelector('style[data-aily-board-select-portal]')) {
+    return
+  }
+  const style = document.createElement('style')
+  style.setAttribute('data-aily-board-select-portal', 'true')
+  style.textContent = BOARD_SELECT_PORTAL_STYLE_CSS
+  document.head.appendChild(style)
+}
+
 function ensureListEditorStyles(container: HTMLElement): void {
+  ensureBoardSelectPortalStyles()
   if (container.querySelector(':scope > style[data-aily-board-list-editor]')) {
     return
   }
@@ -408,6 +926,7 @@ class AilyBoardListEditorPane extends SimpleEditorPane {
 
     return {
       dispose: () => {
+        closeBoardSelectPanel()
         boardListPanes.delete(this)
         this.#hostCtxUnsub?.()
         this.#hostCtxUnsub = undefined
