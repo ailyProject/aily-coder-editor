@@ -22,6 +22,7 @@ yarn.lock
 .settings/
 *.sublime-workspace
 *.local.*
+.cursor/
 
 # Visual Studio Code
 .vscode/*
