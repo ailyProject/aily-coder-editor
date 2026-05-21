@@ -5,7 +5,6 @@
 import { Emitter, Event } from '@codingame/monaco-vscode-api/vscode/vs/base/common/event'
 import { newWriteableStream } from '@codingame/monaco-vscode-api/vscode/vs/base/common/stream'
 import { VSBuffer } from '@codingame/monaco-vscode-api/vscode/vs/base/common/buffer'
-import { Disposable } from '@codingame/monaco-vscode-api/vscode/vs/base/common/lifecycle'
 import { URI } from '@codingame/monaco-vscode-api/vscode/vs/base/common/uri'
 import {
   FileChangeType,
@@ -19,6 +18,18 @@ import type { IFileChange } from '@codingame/monaco-vscode-api/vscode/vs/platfor
 
 const CHANNEL = 'aily-coder-native-fs'
 export const CODEMBED_NATIVE_FS_REPLY = 'aily-coder-native-fs-reply'
+/** 宿主 → iframe：磁盘 watch 事件推送 */
+export const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-native-fs-watch-event'
+
+interface NativeFsWatchEventPayload {
+  watchId?: number
+  eventType?: string
+  filename?: string
+}
+
+type NativeFsWatchCallback = (ev: NativeFsWatchEventPayload) => void
+
+const watchCallbacksById = new Map<number, NativeFsWatchCallback>()
 
 interface PendingEntry {
   resolve: (value: unknown) => void
@@ -95,6 +106,37 @@ export function installParentBackedNativeFsReplyListener(): void {
     }
     entry.resolve(d.result)
   })
+}
+
+/** 挂载宿主 push 的 fs.watch 事件（与 reply listener 同级尽早调用）。 */
+export function installParentBackedNativeFsWatchListener(): void {
+  window.addEventListener('message', (ev: MessageEvent) => {
+    if (!window.parent || ev.source !== window.parent) {
+      return
+    }
+    const d = ev.data as { channel?: string; watchId?: number }
+    if (d?.channel !== CODEMBED_NATIVE_FS_WATCH_EVENT || typeof d.watchId !== 'number') {
+      return
+    }
+    watchCallbacksById.get(d.watchId)?.(d as NativeFsWatchEventPayload)
+  })
+}
+
+function mapWatchEventToFileChanges(
+  watchRoot: string,
+  ev: NativeFsWatchEventPayload,
+): IFileChange[] {
+  const root = normalizeFsPathSep(watchRoot).replace(/\/$/, '')
+  let targetPath = root
+  if (ev.filename) {
+    const rel = normalizeFsPathSep(ev.filename)
+    // 仅当 filename 已是绝对路径时才直接使用；含 '/' 的相对路径（如 src/main.cpp）仍要拼到 watchRoot
+    const isAbsolute =
+      rel.startsWith('/') ||
+      /^[a-zA-Z]:\//.test(rel)
+    targetPath = isAbsolute ? rel : `${root}/${rel}`
+  }
+  return [{ type: FileChangeType.UPDATED, resource: URI.file(targetPath) }]
 }
 
 function assertUnderRoot(rootNorm: string, fsPathNorm: string): void {
@@ -309,8 +351,42 @@ export class ParentBackedNativeFsProvider {
     )
   }
 
-  watch() {
-    return Disposable.None
+  watch(resource: URI, opts: { recursive?: boolean; excludes?: readonly string[] }) {
+    const path = this.uriPath(resource)
+    const recursive = !!opts?.recursive
+    let watchId: number | undefined
+    let disposed = false
+
+    const disposeWatch = () => {
+      if (disposed) {
+        return
+      }
+      disposed = true
+      if (watchId !== undefined) {
+        watchCallbacksById.delete(watchId)
+        void rpc('nativeFsWatchStop', { watchId })
+      }
+    }
+
+    void rpc<{ watchId: number }>('nativeFsWatchStart', { path, recursive })
+      .then(({ watchId: id }) => {
+        if (disposed) {
+          void rpc('nativeFsWatchStop', { watchId: id })
+          return
+        }
+        watchId = id
+        watchCallbacksById.set(id, (ev) => {
+          const changes = mapWatchEventToFileChanges(path, ev)
+          if (changes.length > 0) {
+            this._fire(...changes)
+          }
+        })
+      })
+      .catch(() => {
+        /* 宿主 fs.watch 不可用时静默降级 */
+      })
+
+    return { dispose: disposeWatch }
   }
 
   private _fire(...changes: IFileChange[]) {

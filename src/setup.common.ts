@@ -84,7 +84,8 @@ import defaultConfiguration from './user/configuration.json?raw'
 // import { TerminalBackend } from './features/terminal.js'
 import {
   ParentBackedNativeFsProvider,
-  installParentBackedNativeFsReplyListener
+  installParentBackedNativeFsReplyListener,
+  installParentBackedNativeFsWatchListener
 } from './parentBackedNativeFs.js'
 import { installHostEmbedContextListener } from './hostEmbedContext.js'
 import { setCoderUseEmbedHostNativeFsBridge } from './coderEmbedEnv.js'
@@ -363,6 +364,7 @@ h1 {
 
   if (useEmbedHostLocalFolder && embedFolderAbsolute) {
     installParentBackedNativeFsReplyListener()
+    installParentBackedNativeFsWatchListener()
     registerFileSystemOverlay(1, new ParentBackedNativeFsProvider(embedFolderAbsolute))
   }
 }
