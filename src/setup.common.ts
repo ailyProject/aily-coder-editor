@@ -62,7 +62,7 @@ import getExtensionServiceOverride from '@codingame/monaco-vscode-extensions-ser
 // import getEmmetServiceOverride from '@codingame/monaco-vscode-emmet-service-override'
 // import getInteractiveServiceOverride from '@codingame/monaco-vscode-interactive-service-override'
 // import getIssueServiceOverride from '@codingame/monaco-vscode-issue-service-override'
-// import getMultiDiffEditorServiceOverride from '@codingame/monaco-vscode-multi-diff-editor-service-override'
+import getMultiDiffEditorServiceOverride from '@codingame/monaco-vscode-multi-diff-editor-service-override'
 // import getPerformanceServiceOverride from '@codingame/monaco-vscode-performance-service-override'
 // import getRelauncherServiceOverride from '@codingame/monaco-vscode-relauncher-service-override'
 // import getShareServiceOverride from '@codingame/monaco-vscode-share-service-override'
@@ -599,7 +599,7 @@ export const commonServices: IEditorOverrideServices = {
   // ...getEmmetServiceOverride(),
   // ...getInteractiveServiceOverride(),
   // ...getIssueServiceOverride(),
-  // ...getMultiDiffEditorServiceOverride(),
+  ...getMultiDiffEditorServiceOverride(),
   // ...getPerformanceServiceOverride(),
   // ...getRelauncherServiceOverride(),
   // ...getShareServiceOverride(),
