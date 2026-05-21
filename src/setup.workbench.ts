@@ -34,6 +34,8 @@ import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
 import { installEmbedLayoutSync } from './embedLayoutSync'
 import { installEmbedWorkbenchStyles } from './embedWorkbenchStyles'
 import { installEmbedSidebarTopBar } from './embedSidebarTopBar'
+import { setCoderWorkbenchQueryRoot } from './coderWorkbenchDom.js'
+import { installAilyViewInlineRenameHost } from './features/ailyViewInlineRename.js'
 
 /** 与宿主 `?theme=` 共用：dark→Default Dark+、light→Default Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -66,6 +68,9 @@ if (container == null) {
     container = workbenchElement
   }
 }
+
+setCoderWorkbenchQueryRoot(container)
+installAilyViewInlineRenameHost()
 
 // const buttons = document.createElement('div')
 // buttons.innerHTML = `

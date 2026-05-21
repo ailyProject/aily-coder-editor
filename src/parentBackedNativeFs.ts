@@ -21,13 +21,13 @@ export const CODEMBED_NATIVE_FS_REPLY = 'aily-coder-native-fs-reply'
 /** 宿主 → iframe：磁盘 watch 事件推送 */
 export const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-native-fs-watch-event'
 
-interface NativeFsWatchEventPayload {
+export interface NativeFsWatchEventPayload {
   watchId?: number
   eventType?: string
   filename?: string
 }
 
-type NativeFsWatchCallback = (ev: NativeFsWatchEventPayload) => void
+export type NativeFsWatchCallback = (ev: NativeFsWatchEventPayload) => void
 
 const watchCallbacksById = new Map<number, NativeFsWatchCallback>()
 
@@ -106,6 +106,43 @@ export function installParentBackedNativeFsReplyListener(): void {
     }
     entry.resolve(d.result)
   })
+}
+
+/**
+ * 在工程根注册递归 nativeFs watch（复制/删除/移动等系统级变更）。
+ * 返回 dispose；无父窗口时 resolve 空 dispose。
+ */
+export async function startWorkspaceNativeWatch(
+  workspaceRootAbs: string,
+  onEvent: NativeFsWatchCallback
+): Promise<() => void> {
+  if (!window.parent || window.parent === window) {
+    return () => {}
+  }
+  const { watchId } = await rpc<{ watchId: number }>('nativeFsWatchStart', {
+    path: workspaceRootAbs,
+    recursive: true
+  })
+  watchCallbacksById.set(watchId, onEvent)
+  return () => {
+    watchCallbacksById.delete(watchId)
+    void rpc('nativeFsWatchStop', { watchId }).catch(() => {})
+  }
+}
+
+/** 是否应刷新 Start Here（src 下 .cpp 增删改；filename 为空时保守刷新） */
+export function shouldRefreshStartHereNativeWatch(filename: string | undefined): boolean {
+  if (filename == null || filename.trim().length === 0) {
+    return true
+  }
+  const norm = filename.replace(/\\/g, '/').toLowerCase()
+  return (
+    norm.endsWith('.cpp') ||
+    norm.includes('/src/') ||
+    norm.startsWith('src/') ||
+    norm === 'src' ||
+    norm.endsWith('/src')
+  )
 }
 
 /** 挂载宿主 push 的 fs.watch 事件（与 reply listener 同级尽早调用）。 */

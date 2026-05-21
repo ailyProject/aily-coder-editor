@@ -17,6 +17,14 @@ import {
   buildBoardListSpecFromHost,
   openAilyBoardListEditor
 } from './ailyBoardListEditor.workbench.js'
+import {
+  startVirtualTreeInlineRename,
+  validateRenameEntryName
+} from './ailyViewInlineRename.js'
+import {
+  shouldRefreshStartHereNativeWatch,
+  startWorkspaceNativeWatch
+} from '../parentBackedNativeFs.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -210,16 +218,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     expandedByDefault: true,
     visible: true,
     children: [
-      {
-        id: 'entry-main',
-        type: 'file',
-        label: 'main.cpp',
-        icon: 'file-code',
-        path: 'src/main.cpp',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
+      // src/*.cpp 由 getChildren('start-here') 按磁盘动态注入，见 listSrcCppRelPaths
       {
         id: 'project-entry',
         type: 'file',
@@ -434,6 +433,12 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
 /** 工程根下 node_modules 相对路径 */
 const NODE_MODULES_REL = 'node_modules'
 
+/** Start Here 下镜像的源码目录（仅展示该目录内全部 .cpp） */
+const SRC_REL = 'src'
+
+/** Start Here 动态 .cpp 节点 id 前缀：`entry-src-<path-with-slashes-as-dashes>` */
+const ENTRY_SRC_NODE_PREFIX = 'entry-src-'
+
 /** Installed Libraries 无依赖时的占位节点 id（§9.4） */
 const INSTALLED_LIBRARIES_EMPTY_ID = 'installed-libraries-empty'
 
@@ -495,6 +500,16 @@ function isPlatformPackageProjectNode(node: ProjectTreeNode | undefined): boolea
   return node?.id.startsWith(PLATFORM_PKG_NODE_PREFIX) === true
 }
 
+function isRenameTargetDirectory(element: ExplorerTreeElement | undefined): boolean {
+  if (element?.kind === 'fs') {
+    return element.isDirectory
+  }
+  if (element?.kind === 'project') {
+    return element.node.type === 'directory'
+  }
+  return false
+}
+
 /** 平台包条目：左键仅选中，右键 Open Folder 才在系统中打开真实目录 */
 function platformPackageToTreeNode(entry: HostPlatformPackageV1): ProjectTreeNode {
   const displayLabel = formatPlatformPackageTreeLabel(entry)
@@ -528,8 +543,159 @@ type ExplorerTreeElement =
   | { readonly kind: 'project'; readonly node: ProjectTreeNode }
   | FsTreeElement
 
+/** 蓝图静态文件节点重命名后的运行时覆盖（label + path） */
+const blueprintPathOverrides = new Map<string, { label: string; path: string }>()
+
+/** Start Here 下由 src/ 扫描得到的 .cpp 节点（id → 节点） */
+const dynamicSrcCppEntryNodes = new Map<string, ProjectTreeNode>()
+
+function entryNodeIdForRelPath(relPath: string): string {
+  return `${ENTRY_SRC_NODE_PREFIX}${fsContextSuffix(relPath)}`
+}
+
+function isSrcCppEntryNodeId(id: string): boolean {
+  return id.startsWith(ENTRY_SRC_NODE_PREFIX)
+}
+
+/** 读取 project.aci 中的默认编译入口（相对工程根） */
+async function readProjectAciEntry(vscodeApi: typeof vscode): Promise<string | undefined> {
+  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
+  if (root == null) {
+    return undefined
+  }
+  try {
+    const uri = vscodeApi.Uri.joinPath(root, 'project.aci')
+    const raw = await vscodeApi.workspace.fs.readFile(uri)
+    const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
+    const entry = doc.entry?.trim()
+    return entry != null && entry.length > 0 ? entry.replace(/\\/g, '/') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 递归列出 src/ 下全部 .cpp（相对工程根，如 src/main.cpp） */
+async function listSrcCppRelPaths(vscodeApi: typeof vscode): Promise<string[]> {
+  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
+  if (root == null) {
+    return []
+  }
+
+  const out: string[] = []
+
+  const walk = async (relDir: string): Promise<void> => {
+    const segments = relDir.split('/').filter((s) => s.length > 0)
+    const dirUri = vscodeApi.Uri.joinPath(root, ...segments)
+    let entries: [string, vscode.FileType][]
+    try {
+      entries = await vscodeApi.workspace.fs.readDirectory(dirUri)
+    } catch {
+      return
+    }
+    for (const [name, fileType] of entries) {
+      if (name.startsWith('.')) {
+        continue
+      }
+      const childRel = relDir.length > 0 ? `${relDir}/${name}` : name
+      if (isFsDirectory(vscodeApi, fileType)) {
+        await walk(childRel)
+      } else if (name.toLowerCase().endsWith('.cpp')) {
+        out.push(childRel.replace(/\\/g, '/'))
+      }
+    }
+  }
+
+  await walk(SRC_REL)
+  return out
+}
+
+function sortCppEntryRelPaths(paths: readonly string[], mainEntry?: string): string[] {
+  const main = mainEntry?.replace(/\\/g, '/')
+  return [...paths].sort((a, b) => {
+    if (main != null && main.length > 0) {
+      if (a === main) {
+        return -1
+      }
+      if (b === main) {
+        return 1
+      }
+    }
+    return a.localeCompare(b)
+  })
+}
+
+function buildSrcCppEntryNode(relPath: string, mainEntry?: string): ProjectTreeNode {
+  const norm = relPath.replace(/\\/g, '/')
+  const label = norm.split('/').pop() ?? norm
+  const isMain = mainEntry != null && norm === mainEntry.replace(/\\/g, '/')
+  return {
+    id: entryNodeIdForRelPath(norm),
+    type: 'file',
+    label,
+    icon: 'file-code',
+    path: norm,
+    expandable: false,
+    expandedByDefault: false,
+    visible: true,
+    ...(isMain
+      ? {
+          badges: [
+            {
+              id: 'main-entry',
+              text: 'Entry',
+              tone: 'info' as BadgeTone,
+              priority: 10
+            }
+          ]
+        }
+      : {})
+  }
+}
+
+async function buildStartHereCppEntryNodes(vscodeApi: typeof vscode): Promise<ProjectTreeNode[]> {
+  const mainEntry = await readProjectAciEntry(vscodeApi)
+  const rawPaths = await listSrcCppRelPaths(vscodeApi)
+  const paths = sortCppEntryRelPaths(rawPaths, mainEntry)
+  dynamicSrcCppEntryNodes.clear()
+  const nodes: ProjectTreeNode[] = []
+  for (const rel of paths) {
+    const node = buildSrcCppEntryNode(rel, mainEntry)
+    dynamicSrcCppEntryNodes.set(node.id, node)
+    nodes.push(node)
+  }
+  return nodes
+}
+
+function resolveBlueprintNode(node: ProjectTreeNode): ProjectTreeNode {
+  const o = blueprintPathOverrides.get(node.id)
+  if (o == null) {
+    return node
+  }
+  return { ...node, label: o.label, path: o.path }
+}
+
 function wrap(node: ProjectTreeNode): ExplorerTreeElement {
-  return { kind: 'project', node }
+  return { kind: 'project', node: resolveBlueprintNode(node) }
+}
+
+/**
+ * 与 getChildren 根层返回同一 ExplorerTreeElement 引用；
+ * TreeDataProvider.refresh(element) 依赖引用相等，否则子树不会重新拉取。
+ */
+const stableBlueprintElements = new Map<string, ExplorerTreeElement>()
+
+function getStableBlueprintElement(nodeId: string): ExplorerTreeElement | undefined {
+  let el = stableBlueprintElements.get(nodeId)
+  if (el != null) {
+    return el
+  }
+  const node = findBlueprintNode(nodeId)
+  if (node == null) {
+    return undefined
+  }
+  el = wrap(node)
+  stableBlueprintElements.set(nodeId, el)
+  return el
 }
 
 /** Installed Libraries 顶层分组节点（展开/折叠时同步宿主库管理侧栏） */
@@ -541,6 +707,10 @@ function isInstalledLibrariesGroup(
 
 /** 在蓝图树中按 id 查找节点（用于定向 refresh，避免全树 refresh 与自定义编辑器打开竞态） */
 function findBlueprintNode(id: string): ProjectTreeNode | undefined {
+  const dynamic = dynamicSrcCppEntryNodes.get(id)
+  if (dynamic != null) {
+    return resolveBlueprintNode(dynamic)
+  }
   const walk = (nodes: readonly ProjectTreeNode[]): ProjectTreeNode | undefined => {
     for (const n of nodes) {
       if (n.id === id) {
@@ -558,8 +728,44 @@ function findBlueprintNode(id: string): ProjectTreeNode | undefined {
   return walk(ailyViewBlueprint)
 }
 
+/** 按相对工程根路径查找蓝图节点 id（含运行时 override） */
+function findBlueprintNodeIdByRelPath(relPath: string): string | undefined {
+  const norm = relPath.replace(/\\/g, '/')
+  for (const [id, o] of blueprintPathOverrides) {
+    if (o.path.replace(/\\/g, '/') === norm) {
+      return id
+    }
+  }
+  const walk = (nodes: readonly ProjectTreeNode[]): string | undefined => {
+    for (const n of nodes) {
+      if (n.path?.replace(/\\/g, '/') === norm) {
+        return n.id
+      }
+      if (n.children != null) {
+        const hit = walk(n.children)
+        if (hit != null) {
+          return hit
+        }
+      }
+    }
+    return undefined
+  }
+  const hit = walk(ailyViewBlueprint)
+  if (hit != null) {
+    return hit
+  }
+  for (const [, node] of dynamicSrcCppEntryNodes) {
+    const resolved = resolveBlueprintNode(node)
+    if (resolved.path?.replace(/\\/g, '/') === norm) {
+      return resolved.id
+    }
+  }
+  return undefined
+}
+
 /** 宿主上下文 / 动态子树变更时刷新的蓝图节点（勿 refresh(undefined)） */
 const DYNAMIC_REFRESH_BLUEPRINT_IDS = [
+  'start-here',
   'board-platform',
   'build-outputs',
   'framework',
@@ -910,7 +1116,12 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   async getChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
-      return ailyViewBlueprint.filter((nd) => nd.visible).map(wrap)
+      return ailyViewBlueprint.filter((nd) => nd.visible).map((nd) => {
+        if (nd.id === 'start-here') {
+          return getStableBlueprintElement('start-here') ?? wrap(nd)
+        }
+        return wrap(nd)
+      })
     }
 
     // node_modules 内目录：递归列出真实子文件/子目录
@@ -941,6 +1152,12 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       return packages.map((entry) => wrap(platformPackageToTreeNode(entry)))
     }
 
+    if (node.id === 'start-here') {
+      const cppNodes = await buildStartHereCppEntryNodes(this.#vscode)
+      const staticChildren = (node.children ?? []).filter((nd) => nd.visible).map(wrap)
+      return [...cppNodes.map(wrap), ...staticChildren]
+    }
+
     const children = node.children ?? []
     let out = children.filter((nd) => nd.visible).map(wrap)
     if (element.node.id === 'framework') {
@@ -959,8 +1176,11 @@ const WHEN_VIEW = 'view == ailyView'
 const WHEN_FILE_LIKE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|virtual-file):/`
 const WHEN_DIRECTORY = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:/`
 const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|virtual-file):/`
+/** 可重命名：src 下 .cpp 入口、工作区目录（不含 Platform Packages）、node_modules 动态文件 */
+const WHEN_RENAMEABLE = `${WHEN_VIEW} && (viewItem =~ /^aily\\.file:entry-src-/ || (viewItem =~ /^aily\\.directory:/ && viewItem !~ /platform-pkg-/) || viewItem =~ /^aily\\.file:fs-/)`
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
-const WHEN_MAIN_CPP = `${WHEN_VIEW} && viewItem == aily.file:entry-main`
+/** Start Here 下 src 镜像的 .cpp 文件 */
+const WHEN_SRC_CPP_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-/`
 const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem == aily.file:project-entry`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_DEPS_GROUP =
@@ -1034,13 +1254,14 @@ const { getApi } = registerExtension(
           { command: COMMANDS.revealInFilesView, when: WHEN_REVEALABLE, group: 'navigation@20' },
           { command: COMMANDS.copyRelativePath, when: WHEN_REVEALABLE, group: 'navigation@30' },
 
-          // main.cpp 额外
-          { command: COMMANDS.setAsMainEntry, when: WHEN_MAIN_CPP, group: '1_main@10' },
-          { command: COMMANDS.rename, when: WHEN_MAIN_CPP, group: '1_main@20' },
+          // src/*.cpp 入口
+          { command: COMMANDS.setAsMainEntry, when: WHEN_SRC_CPP_ENTRY, group: '1_main@10' },
 
           // 真实目录额外
           { command: COMMANDS.newFile, when: WHEN_DIRECTORY, group: '1_directory@10' },
           { command: COMMANDS.newFolder, when: WHEN_DIRECTORY, group: '1_directory@20' },
+          // 单条 Rename：避免同一 command 在多个 group 重复出现
+          { command: COMMANDS.rename, when: WHEN_RENAMEABLE, group: '7_modification@20' },
 
           // project.aci（仅 Start Here > project-entry）
           { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_ACI, group: '1_config@10' },
@@ -1465,10 +1686,6 @@ void getApi().then((vscode) => {
     }
   )
 
-  // main.cpp（§7.2）
-  vscode.commands.registerCommand(COMMANDS.setAsMainEntry, placeholder('Set as Main Entry'))
-  vscode.commands.registerCommand(COMMANDS.rename, placeholder('Rename'))
-
   // 真实目录（§7.2）
   vscode.commands.registerCommand(COMMANDS.newFile, placeholder('New File'))
   vscode.commands.registerCommand(COMMANDS.newFolder, placeholder('New Folder'))
@@ -1617,6 +1834,89 @@ void getApi().then((vscode) => {
     loadPlatformPackagesFromWorkspace
   )
 
+  const basenameOfUri = (uri: vscode.Uri): string => {
+    const normalized = uri.fsPath.replace(/\\/g, '/')
+    const idx = normalized.lastIndexOf('/')
+    return idx >= 0 ? normalized.slice(idx + 1) : normalized
+  }
+
+  const syncProjectAciEntry = async (entryRel: string): Promise<void> => {
+    const aciUri = resolveProjectUri('project.aci')
+    if (aciUri == null) {
+      return
+    }
+    try {
+      const raw = await vscode.workspace.fs.readFile(aciUri)
+      const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
+      doc.entry = entryRel.replace(/\\/g, '/')
+      const out = `${JSON.stringify(doc, null, 2)}\n`
+      await vscode.workspace.fs.writeFile(aciUri, new TextEncoder().encode(out))
+    } catch {
+      /* 非致命：磁盘已重命名，aci 可稍后手动修复 */
+    }
+  }
+
+  // src/*.cpp：写入 project.aci entry（§7.2）
+  vscode.commands.registerCommand(COMMANDS.setAsMainEntry, async (element?: ExplorerTreeElement) => {
+    if (element?.kind !== 'project' || !isSrcCppEntryNodeId(element.node.id)) {
+      return
+    }
+    const rel = element.node.path?.trim()
+    if (rel == null || rel.length === 0) {
+      await vscode.window.showWarningMessage('无法设为入口：未找到文件路径。')
+      return
+    }
+    await syncProjectAciEntry(rel)
+    const startHereEl = getStableBlueprintElement('start-here')
+    if (startHereEl != null) {
+      provider.refresh(startHereEl)
+    } else {
+      provider.refresh()
+    }
+    await vscode.window.showInformationMessage(`已将编译入口设为：${rel.replace(/\\/g, '/')}`)
+  })
+
+  /** 原生 Explorer 重命名完成后，同步 Aily View 蓝图节点与 project.aci */
+  vscode.workspace.onDidRenameFiles((event) => {
+    for (const { oldUri, newUri } of event.files) {
+      const oldRel = vscode.workspace.asRelativePath(oldUri, false).replace(/\\/g, '/')
+      const newRel = vscode.workspace.asRelativePath(newUri, false).replace(/\\/g, '/')
+      const newLabel = basenameOfUri(newUri)
+      const nodeId = findBlueprintNodeIdByRelPath(oldRel)
+
+      if (nodeId == null) {
+        if (
+          shouldRefreshStartHereNativeWatch(oldRel) ||
+          shouldRefreshStartHereNativeWatch(newRel)
+        ) {
+          refreshStartHereGroup()
+        } else {
+          provider.refresh()
+        }
+        continue
+      }
+
+      if (isSrcCppEntryNodeId(nodeId)) {
+        void (async () => {
+          const mainEntry = await readProjectAciEntry(vscode)
+          if (mainEntry != null && oldRel.replace(/\\/g, '/') === mainEntry) {
+            await syncProjectAciEntry(newRel)
+          }
+        })()
+        const startHereEl = getStableBlueprintElement('start-here')
+        if (startHereEl != null) {
+          provider.refresh(startHereEl)
+        } else {
+          provider.refresh()
+        }
+        continue
+      }
+
+      blueprintPathOverrides.set(nodeId, { label: newLabel, path: newRel })
+      provider.refresh()
+    }
+  })
+
   vscode.commands.registerCommand(COMMANDS.refreshPackages, async () => {
     provider.refresh()
   })
@@ -1624,6 +1924,61 @@ void getApi().then((vscode) => {
   const treeView = vscode.window.createTreeView(AILY_VIEW_ID, {
     treeDataProvider: provider,
     showCollapseAll: true
+  })
+
+  vscode.commands.registerCommand(COMMANDS.rename, async (element?: ExplorerTreeElement) => {
+    const label = elementLabel(element)
+
+    if (element?.kind === 'project' && isPlatformPackageProjectNode(element.node)) {
+      await vscode.window.showWarningMessage(`无法重命名 ${label}：平台包目录为只读。`)
+      return
+    }
+
+    const uri = resolveUriForElement(element)
+
+    if (uri == null) {
+      await vscode.window.showWarningMessage(`无法重命名 ${label}：未找到磁盘路径。`)
+      return
+    }
+    if (!isUriUnderWorkspace(uri)) {
+      await vscode.window.showWarningMessage(`无法重命名 ${label}：仅支持工作区内路径。`)
+      return
+    }
+
+    const currentName =
+      element?.kind === 'fs' ? element.label : basenameOfUri(uri)
+
+    const result = await startVirtualTreeInlineRename({
+      treeView,
+      element,
+      currentName,
+      isDirectory: isRenameTargetDirectory(element),
+      validateName: validateRenameEntryName,
+      onCommit: async (newName) => {
+        const targetUri = vscode.Uri.joinPath(vscode.Uri.joinPath(uri, '..'), newName)
+        try {
+          await vscode.workspace.fs.stat(targetUri)
+          throw new Error(`「${newName}」已存在`)
+        } catch (err) {
+          if (err instanceof Error && err.message.includes('已存在')) {
+            throw err
+          }
+          /* 目标不存在，可继续 */
+        }
+        await vscode.workspace.fs.rename(uri, targetUri, { overwrite: false })
+      }
+    }).catch(async (err: unknown) => {
+      if (err instanceof Error && err.message.length > 0) {
+        await vscode.window.showErrorMessage(`重命名 ${label} 失败：${err.message}`)
+      }
+      return 'cancelled' as const
+    })
+
+    if (result === 'unavailable') {
+      await vscode.window.showWarningMessage(
+        `无法在 Aily View 中开启内联重命名：${label}。请确认节点已选中后重试。`
+      )
+    }
   })
 
   /** Installed Libraries 树节点展开/折叠 ↔ 宿主右上角库管理侧栏 */
@@ -1659,9 +2014,96 @@ void getApi().then((vscode) => {
   }
   setupNodeModulesWatcher()
 
+  const refreshStartHereGroup = (): void => {
+    const startHereEl = getStableBlueprintElement('start-here')
+    if (startHereEl != null) {
+      provider.refresh(startHereEl)
+    } else {
+      provider.refresh()
+    }
+  }
+
+  const bumpStartHereFromUri = (uri?: vscode.Uri): void => {
+    const fsPath = uri?.fsPath?.replace(/\\/g, '/') ?? ''
+    if (fsPath.length > 0 && !shouldRefreshStartHereNativeWatch(fsPath)) {
+      return
+    }
+    refreshStartHereGroup()
+  }
+
+  /** src/ 下 .cpp 增删时刷新 Start Here（非嵌入模式兜底） */
+  let srcWatcher: vscode.FileSystemWatcher | undefined
+  const setupSrcWatcher = (): void => {
+    srcWatcher?.dispose()
+    srcWatcher = undefined
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (root == null) {
+      return
+    }
+    srcWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, `${SRC_REL}/**`)
+    )
+    srcWatcher.onDidCreate((uri) => bumpStartHereFromUri(uri))
+    srcWatcher.onDidDelete((uri) => bumpStartHereFromUri(uri))
+    srcWatcher.onDidChange((uri) => bumpStartHereFromUri(uri))
+  }
+  setupSrcWatcher()
+
+  /** 嵌入 Electron：系统级复制/删除/移动走宿主 fs.watch */
+  let disposeEmbedSrcWatch: (() => void) | undefined
+  const setupEmbedSrcNativeWatcher = (): void => {
+    disposeEmbedSrcWatch?.()
+    disposeEmbedSrcWatch = undefined
+    if (!coderUseEmbedHostNativeFsBridge) {
+      return
+    }
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (root == null) {
+      return
+    }
+    void startWorkspaceNativeWatch(root.uri.fsPath, (ev) => {
+      if (!shouldRefreshStartHereNativeWatch(ev.filename)) {
+        return
+      }
+      refreshStartHereGroup()
+    })
+      .then((dispose) => {
+        disposeEmbedSrcWatch = dispose
+      })
+      .catch(() => {})
+  }
+  setupEmbedSrcNativeWatcher()
+
+  let projectAciWatcher: vscode.FileSystemWatcher | undefined
+  const setupProjectAciWatcher = (): void => {
+    projectAciWatcher?.dispose()
+    projectAciWatcher = undefined
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (root == null) {
+      return
+    }
+    projectAciWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, 'project.aci')
+    )
+    projectAciWatcher.onDidChange(() => refreshStartHereGroup())
+  }
+  setupProjectAciWatcher()
+
+  /** VS Code 工作区内删除文件（嵌入模式补充） */
+  if (typeof vscode.workspace.onDidDeleteFiles === 'function') {
+    vscode.workspace.onDidDeleteFiles((event) => {
+      for (const uri of event.files) {
+        bumpStartHereFromUri(uri)
+      }
+    })
+  }
+
   vscode.workspace.onDidChangeWorkspaceFolders(() => {
     buildOutputsCache = undefined
     setupNodeModulesWatcher()
+    setupSrcWatcher()
+    setupEmbedSrcNativeWatcher()
+    setupProjectAciWatcher()
     provider.refresh()
   })
 
