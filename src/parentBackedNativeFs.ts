@@ -62,6 +62,25 @@ export function base64ToBytes(base64: string): Uint8Array {
   return bytes
 }
 
+/** 经宿主校验绝对路径是否为普通文件（含 aily-builder 全局编译缓存目录） */
+export async function statAbsolutePathViaHost(
+  absPath: string
+): Promise<{ exists: boolean; isFile: boolean }> {
+  if (!absPath?.trim() || !window.parent || window.parent === window) {
+    return { exists: false, isFile: false }
+  }
+  try {
+    const r = await rpc<{
+      exists: boolean
+      _isFile?: boolean
+      _isDirectory?: boolean
+    }>('nativeFsStat', { path: absPath.trim() })
+    return { exists: !!r.exists, isFile: !!r._isFile && !r._isDirectory }
+  } catch {
+    return { exists: false, isFile: false }
+  }
+}
+
 function rpc<T>(op: string, payload: Record<string, unknown>, timeoutMs = 120000): Promise<T> {
   if (!window.parent || window.parent === window) {
     return Promise.reject(new Error('Coder：无父窗口，无法调用本地文件系统'))
@@ -142,6 +161,24 @@ export function shouldRefreshStartHereNativeWatch(filename: string | undefined):
     norm.startsWith('src/') ||
     norm === 'src' ||
     norm.endsWith('/src')
+  )
+}
+
+/** 是否应刷新 Framework 下编译产物虚拟节点（.aily/build 与 coder-embed-hints 变更） */
+export function shouldRefreshFrameworkBuildOutputsNativeWatch(
+  filename: string | undefined
+): boolean {
+  if (filename == null || filename.trim().length === 0) {
+    return false
+  }
+  const norm = filename.replace(/\\/g, '/').toLowerCase()
+  return (
+    norm.includes('/.aily/build/') ||
+    norm.startsWith('.aily/build/') ||
+    norm.endsWith('/.aily/build') ||
+    norm === '.aily/build' ||
+    norm.endsWith('/coder-embed-hints.json') ||
+    norm === 'coder-embed-hints.json'
   )
 }
 

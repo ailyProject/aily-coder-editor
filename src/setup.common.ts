@@ -30,7 +30,7 @@ import getLanguagesServiceOverride from '@codingame/monaco-vscode-languages-serv
 import getStatusBarServiceOverride from '@codingame/monaco-vscode-view-status-bar-service-override'
 // import getTitleBarServiceOverride from '@codingame/monaco-vscode-view-title-bar-service-override'
 // import getDebugServiceOverride from '@codingame/monaco-vscode-debug-service-override'
-// import getPreferencesServiceOverride from '@codingame/monaco-vscode-preferences-service-override'
+import getPreferencesServiceOverride from '@codingame/monaco-vscode-preferences-service-override'
 // import getSnippetServiceOverride from '@codingame/monaco-vscode-snippets-service-override'
 // import getOutputServiceOverride from '@codingame/monaco-vscode-output-service-override'
 // import getTerminalServiceOverride from '@codingame/monaco-vscode-terminal-service-override'
@@ -90,6 +90,14 @@ import {
 import { installHostEmbedContextListener } from './hostEmbedContext.js'
 import { setCoderUseEmbedHostNativeFsBridge } from './coderEmbedEnv.js'
 import 'vscode/localExtensionHost'
+
+/** Explorer 默认：Aily View 在上、Folders 在下（仅无本地缓存时 fallback 生效） */
+const explorerViewsStateFallback = {
+  'workbench.explorer.views.state': JSON.stringify({
+    ailyView: { order: 0 },
+    'workbench.explorer.fileView': { order: 1 }
+  }),
+} as const
 
 /** 宿主注入构建路径等；不依赖本地 FS overlay 是否启用。 */
 installHostEmbedContextListener()
@@ -493,15 +501,8 @@ export const constructOptions: IWorkbenchConstructionOptions = {
             groups: [{ size: 1 }, { size: 1 }]
           }
         },
-    views: [
-      {
-        id: 'custom-view'
-      },
-      {
-        id: 'ailyView'
-      }
-    ],
-    force: resetLayout
+    views: [{ id: 'ailyView' }, { id: 'workbench.explorer.fileView' }],
+    force: resetLayout || useEmbedHostLocalFolder
   },
   // welcomeBanner: {
   //   message: 'Welcome in monaco-vscode-api demo'
@@ -518,6 +519,8 @@ export const constructOptions: IWorkbenchConstructionOptions = {
   //   }
   // }
 }
+
+console.log('constructOptions', constructOptions)
 
 export const envOptions: EnvironmentOverride = {
   // Otherwise, VSCode detect it as the first open workspace folder
@@ -542,7 +545,7 @@ export const commonServices: IEditorOverrideServices = {
   ...getThemeServiceOverride(),  // ✅
   ...getLanguagesServiceOverride(),  // ✅
   // ...getDebugServiceOverride(),
-  // ...getPreferencesServiceOverride(),
+  ...getPreferencesServiceOverride(),
   // ...getOutlineServiceOverride(),
   // ...getTimelineServiceOverride(),
   // ...getBannerServiceOverride(),
@@ -557,7 +560,8 @@ export const commonServices: IEditorOverrideServices = {
   // ...getLanguageDetectionWorkerServiceOverride(),
   ...getStorageServiceOverride({
     fallbackOverride: {
-      'workbench.activity.showAccounts': false
+      'workbench.activity.showAccounts': false,
+      ...explorerViewsStateFallback
     }
   }),
   // ...getRemoteAgentServiceOverride({ scanRemoteExtensions: true }),

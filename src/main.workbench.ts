@@ -27,7 +27,7 @@ if (remoteAuthority != null) {
 // })
 
 // document.querySelector('#clearStorage')!.addEventListener('click', async () => {
-//   await clearStorage()
+  // await clearStorage()
 // })
 
 // document.querySelector('#toggleShadowDom')!.addEventListener('click', async () => {

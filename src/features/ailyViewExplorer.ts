@@ -22,8 +22,10 @@ import {
   validateRenameEntryName
 } from './ailyViewInlineRename.js'
 import {
+  shouldRefreshFrameworkBuildOutputsNativeWatch,
   shouldRefreshStartHereNativeWatch,
-  startWorkspaceNativeWatch
+  startWorkspaceNativeWatch,
+  statAbsolutePathViaHost
 } from '../parentBackedNativeFs.js'
 
 // Aily View 节点模型
@@ -775,11 +777,16 @@ const DYNAMIC_REFRESH_BLUEPRINT_IDS = [
 
 function refreshDynamicBlueprintSections(provider: AilyExplorerProvider): void {
   for (const id of DYNAMIC_REFRESH_BLUEPRINT_IDS) {
-    const node = findBlueprintNode(id)
-    if (node != null) {
-      provider.refresh({ kind: 'project', node })
+    const el = getStableBlueprintElement(id)
+    if (el != null) {
+      provider.refresh(el)
     }
   }
+}
+
+/** 蓝图静态节点：与 getChildren 返回同一 ExplorerTreeElement 引用，refresh 才能命中子树 */
+function wrapBlueprintChild(node: ProjectTreeNode): ExplorerTreeElement {
+  return getStableBlueprintElement(node.id) ?? wrap(node)
 }
 
 /** 将相对路径转为可用于 contextValue 的安全片段 */
@@ -947,14 +954,15 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   /**
    * 仅当产物在磁盘上真实存在时才展示虚拟节点。
-   * 工作区外路径（如 aily-builder 缓存）无法用 workspace.fs.stat，改信任宿主 Electron fs 解析结果。
+   * 工作区外路径（如 aily-builder 缓存）经宿主 nativeFsStat 校验，避免删除后仍展示 stale 节点。
    */
   async #artifactExistsOnDisk(abs?: string, rel?: string): Promise<boolean> {
     const vs = this.#vscode
     const absTrim = abs?.trim()
     if (absTrim) {
       if (!this.#isAbsPathUnderWorkspace(absTrim)) {
-        return true
+        const hostStat = await statAbsolutePathViaHost(absTrim)
+        return hostStat.exists && hostStat.isFile
       }
       try {
         const stat = await vs.workspace.fs.stat(vs.Uri.file(absTrim))
@@ -1116,12 +1124,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   async getChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
-      return ailyViewBlueprint.filter((nd) => nd.visible).map((nd) => {
-        if (nd.id === 'start-here') {
-          return getStableBlueprintElement('start-here') ?? wrap(nd)
-        }
-        return wrap(nd)
-      })
+      return ailyViewBlueprint.filter((nd) => nd.visible).map((nd) => wrapBlueprintChild(nd))
     }
 
     // node_modules 内目录：递归列出真实子文件/子目录
@@ -1159,7 +1162,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     }
 
     const children = node.children ?? []
-    let out = children.filter((nd) => nd.visible).map(wrap)
+    let out = children.filter((nd) => nd.visible).map((nd) => wrapBlueprintChild(nd))
     if (element.node.id === 'framework') {
       const artifactNodes = await this.#injectFrameworkBuildArtifactChildren()
       if (artifactNodes.length > 0) {
@@ -2023,6 +2026,25 @@ void getApi().then((vscode) => {
     }
   }
 
+  /** Framework 下编译产物虚拟节点：失效 hints 缓存并定向刷新 framework 子树 */
+  const refreshFrameworkBuildOutputs = (): void => {
+    buildOutputsCache = undefined
+    const frameworkEl = getStableBlueprintElement('framework')
+    if (frameworkEl != null) {
+      provider.refresh(frameworkEl)
+    } else {
+      refreshDynamicBlueprintSections(provider)
+    }
+  }
+
+  const bumpFrameworkBuildOutputsFromUri = (uri?: vscode.Uri): void => {
+    const fsPath = uri?.fsPath?.replace(/\\/g, '/') ?? ''
+    if (fsPath.length > 0 && !shouldRefreshFrameworkBuildOutputsNativeWatch(fsPath)) {
+      return
+    }
+    refreshFrameworkBuildOutputs()
+  }
+
   const bumpStartHereFromUri = (uri?: vscode.Uri): void => {
     const fsPath = uri?.fsPath?.replace(/\\/g, '/') ?? ''
     if (fsPath.length > 0 && !shouldRefreshStartHereNativeWatch(fsPath)) {
@@ -2049,6 +2071,24 @@ void getApi().then((vscode) => {
   }
   setupSrcWatcher()
 
+  /** .aily/build 与 coder-embed-hints 变更时刷新 Framework 产物虚拟节点（非嵌入模式兜底） */
+  let buildOutputsWatcher: vscode.FileSystemWatcher | undefined
+  const setupBuildOutputsWatcher = (): void => {
+    buildOutputsWatcher?.dispose()
+    buildOutputsWatcher = undefined
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (root == null) {
+      return
+    }
+    buildOutputsWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, '.aily/{build/**,coder-embed-hints.json}')
+    )
+    buildOutputsWatcher.onDidCreate((uri) => bumpFrameworkBuildOutputsFromUri(uri))
+    buildOutputsWatcher.onDidDelete((uri) => bumpFrameworkBuildOutputsFromUri(uri))
+    buildOutputsWatcher.onDidChange((uri) => bumpFrameworkBuildOutputsFromUri(uri))
+  }
+  setupBuildOutputsWatcher()
+
   /** 嵌入 Electron：系统级复制/删除/移动走宿主 fs.watch */
   let disposeEmbedSrcWatch: (() => void) | undefined
   const setupEmbedSrcNativeWatcher = (): void => {
@@ -2062,10 +2102,12 @@ void getApi().then((vscode) => {
       return
     }
     void startWorkspaceNativeWatch(root.uri.fsPath, (ev) => {
-      if (!shouldRefreshStartHereNativeWatch(ev.filename)) {
-        return
+      if (shouldRefreshStartHereNativeWatch(ev.filename)) {
+        refreshStartHereGroup()
       }
-      refreshStartHereGroup()
+      if (shouldRefreshFrameworkBuildOutputsNativeWatch(ev.filename)) {
+        refreshFrameworkBuildOutputs()
+      }
     })
       .then((dispose) => {
         disposeEmbedSrcWatch = dispose
@@ -2102,6 +2144,7 @@ void getApi().then((vscode) => {
     buildOutputsCache = undefined
     setupNodeModulesWatcher()
     setupSrcWatcher()
+    setupBuildOutputsWatcher()
     setupEmbedSrcNativeWatcher()
     setupProjectAciWatcher()
     provider.refresh()
