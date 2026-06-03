@@ -135,7 +135,7 @@ npm start
 
 ### 可选：行间 AI 补全
 
-复制 `.env.example` 为 `.env`，配置 `VITE_AI_INLINE_*`。此为**编辑器内辅助能力**，与 Aily Blockly 主 AI 工具链无关；未配置时使用本地 mock。
+复制 `.env.example` 为 `.env`，配置 `VITE_AI_INLINE_*`。默认 **FIM 模式**（LM Studio 0.4+ 走 `POST /api/v1/chat`；旧 OpenAI 兼容为 `/v1/completions`）；此为**编辑器内辅助能力**，与 Aily Blockly 主 AI 工具链无关；未配置 URL 时使用本地 mock。
 
 ---
 

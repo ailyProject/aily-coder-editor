@@ -8,34 +8,121 @@ import {
 /** 不限定语言：所有已注册的文本模型均可获得行间补全 */
 const inlineCompletionDocumentSelector: vscode.DocumentSelector = '*'
 
-/** OpenAI 兼容：`POST {apiBaseUrl}/chat/completions` */
+/** DeepSeek Coder base 模型原生 FIM 特殊 token（勿改为普通 ASCII 占位符） */
+export const DEEPSEEK_FIM_BEGIN = '<｜fim▁begin｜>'
+export const DEEPSEEK_FIM_HOLE = '<｜fim▁hole｜>'
+export const DEEPSEEK_FIM_END = '<｜fim▁end｜>'
+
+const DEFAULT_STOP_SEQUENCES = ['\n\n', '```']
+
+/** LM Studio `/api/v1` 等原生 URL 归一化为 OpenAI 兼容 `/v1`（FIM 必须走 `/completions`） */
+export function normalizeOpenAiCompatBaseUrl(apiBaseUrl: string): string {
+  const trimmed = apiBaseUrl.replace(/\/$/, '')
+  if (/^https?:\/\/[^/]+$/i.test(trimmed)) {
+    return `${trimmed}/v1`
+  }
+  if (/\/api\/v\d+$/i.test(trimmed)) {
+    return trimmed.replace(/\/api\/v\d+$/i, '/v1')
+  }
+  if (/\/api\/v\d+\//i.test(trimmed)) {
+    return trimmed.replace(/\/api\/v\d+/i, '/v1')
+  }
+  return trimmed.replace(/\/(completions|chat\/completions|chat)$/, '')
+}
+
+/** OpenAI 兼容：`POST {apiBaseUrl}/chat/completions`（legacy chat 模式） */
 export interface ModelInlineCompletionRequest {
   prompt: string
-  /** 例如 `https://api.openai.com/v1` */
   apiBaseUrl: string
   apiKey?: string
   model?: string
   signal?: AbortSignal
 }
 
+/** FIM：`POST {apiBaseUrl}/completions` */
+export interface FimInlineCompletionRequest {
+  prompt: string
+  apiBaseUrl: string
+  apiKey?: string
+  model?: string
+  signal?: AbortSignal
+  maxTokens?: number
+  temperature?: number
+  topP?: number
+  stop?: string[]
+}
+
+export type InlineCompletionMode = 'fim' | 'chat'
+
+/** LM Studio 原生 `/api/v1/chat` | OpenAI 兼容 `/v1/completions` */
+export type InlineCompletionApiKind = 'lmstudio-v1' | 'openai-compat'
+
 function readViteEnv(key: string): string | undefined {
   return (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[key]
 }
 
+function parseInlineMode(): InlineCompletionMode {
+  const raw = readViteEnv('VITE_AI_INLINE_MODE')?.trim().toLowerCase()
+  return raw === 'chat' ? 'chat' : 'fim'
+}
+
+/** 根据 URL 或 `VITE_AI_INLINE_API` 选择 LM Studio v1 或 OpenAI 兼容端点 */
+export function resolveInlineCompletionApiKind(apiBaseUrl: string): InlineCompletionApiKind {
+  const raw = readViteEnv('VITE_AI_INLINE_API')?.trim().toLowerCase()
+  if (raw === 'lmstudio-v1' || raw === 'v1' || raw === 'native') {
+    return 'lmstudio-v1'
+  }
+  if (raw === 'openai-compat' || raw === 'openai') {
+    return 'openai-compat'
+  }
+  const normalized = apiBaseUrl.replace(/\/$/, '').toLowerCase()
+  if (normalized.endsWith('/api/v1') || normalized.includes('/api/v1/')) {
+    return 'lmstudio-v1'
+  }
+  return 'openai-compat'
+}
+
+function parseInferenceParams(): {
+  maxTokens: number
+  temperature: number
+  topP: number
+  stop: string[]
+} {
+  const maxTokens = Number.parseInt(readViteEnv('VITE_AI_INLINE_MAX_TOKENS') ?? '', 10)
+  const temperature = Number.parseFloat(readViteEnv('VITE_AI_INLINE_TEMPERATURE') ?? '')
+  const topP = Number.parseFloat(readViteEnv('VITE_AI_INLINE_TOP_P') ?? '')
+  return {
+    maxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? Math.min(maxTokens, 256) : 64,
+    temperature: Number.isFinite(temperature) ? temperature : 0.15,
+    topP: Number.isFinite(topP) ? topP : 0.9,
+    stop: DEFAULT_STOP_SEQUENCES
+  }
+}
+
+function resolveFimMarkers(): { begin: string; hole: string; end: string } {
+  return {
+    begin: readViteEnv('VITE_AI_INLINE_FIM_BEGIN') ?? DEEPSEEK_FIM_BEGIN,
+    hole: readViteEnv('VITE_AI_INLINE_FIM_HOLE') ?? DEEPSEEK_FIM_HOLE,
+    end: readViteEnv('VITE_AI_INLINE_FIM_END') ?? DEEPSEEK_FIM_END
+  }
+}
 
 function resolveInlineCompletionConfig(): {
   apiBaseUrl: string | undefined
   apiKey: string | undefined
   model: string | undefined
+  mode: InlineCompletionMode
 } {
   const params = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null
+  const modeParam = params?.get('aiInlineMode')?.trim().toLowerCase()
   return {
     apiBaseUrl:
       params?.get('aiInlineUrl') ??
       readViteEnv('VITE_AI_INLINE_COMPLETION_URL') ??
       readViteEnv('VITE_OPENAI_BASE_URL'),
     apiKey: readViteEnv('VITE_AI_INLINE_COMPLETION_KEY') ?? readViteEnv('VITE_OPENAI_API_KEY'),
-    model: readViteEnv('VITE_AI_INLINE_COMPLETION_MODEL') ?? undefined
+    model: readViteEnv('VITE_AI_INLINE_COMPLETION_MODEL') ?? undefined,
+    mode: modeParam === 'chat' ? 'chat' : modeParam === 'fim' ? 'fim' : parseInlineMode()
   }
 }
 
@@ -80,10 +167,6 @@ function parseDebounceMs(): number {
   return Math.min(n, 10_000)
 }
 
-/**
- * 仅延迟，不监听 `CancellationToken`。宿主在新一次行间补全时会使上一轮 token 报错取消，
- * 若在此阶段 reject，防抖永远跑不完（日志里大量 `debounce aborted`）。
- */
 function sleepDebounceMs(ms: number): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve()
@@ -104,13 +187,232 @@ function parseChatCompletionContent(json: unknown): string {
   return typeof raw === 'string' ? raw.trimEnd() : ''
 }
 
+function parseCompletionText(json: unknown): string {
+  if (typeof json !== 'object' || json === null) {
+    return ''
+  }
+  const o = json as { choices?: Array<{ text?: unknown }> }
+  const raw = o.choices?.[0]?.text
+  return typeof raw === 'string' ? raw : ''
+}
+
+/** LM Studio 原生 v1：`POST /api/v1/chat` → `output[].content` */
+function parseLmStudioV1ChatOutput(json: unknown): string {
+  if (typeof json !== 'object' || json === null) {
+    return ''
+  }
+  const output = (json as { output?: Array<{ type?: unknown; content?: unknown }> }).output
+  if (!Array.isArray(output)) {
+    return ''
+  }
+  const parts: string[] = []
+  for (const item of output) {
+    if (item?.type === 'message' && typeof item.content === 'string') {
+      parts.push(item.content)
+    }
+  }
+  return parts.join('')
+}
+
+/** 去掉模型偶发的 markdown / 多余空行，与 stop 序列形成双保险 */
+export function sanitizeInlineCompletionOutput(raw: string): string {
+  let t = raw.trimStart()
+  if (t.startsWith('```')) {
+    t = t.replace(/^```[\w-]*\n?/, '')
+    const fenceEnd = t.indexOf('\n```')
+    if (fenceEnd !== -1) {
+      t = t.slice(0, fenceEnd)
+    } else {
+      t = t.replace(/```[\s\S]*$/, '')
+    }
+  }
+  const doubleNl = t.indexOf('\n\n')
+  if (doubleNl !== -1) {
+    t = t.slice(0, doubleNl)
+  }
+  return t.trimEnd()
+}
+
+export function buildFimPrompt(params: {
+  prefix: string
+  suffix: string
+  filePath: string
+  languageId: string
+  visibleSymbols: string
+  fimBegin?: string
+  fimHole?: string
+  fimEnd?: string
+}): string {
+  const markers = {
+    begin: params.fimBegin ?? DEEPSEEK_FIM_BEGIN,
+    hole: params.fimHole ?? DEEPSEEK_FIM_HOLE,
+    end: params.fimEnd ?? DEEPSEEK_FIM_END
+  }
+  // base 模型 FIM：仅原生 token 块，勿加 chat 式 system rules（会触发 instruct 式乱续写）
+  return [markers.begin, params.prefix, markers.hole, params.suffix, markers.end].join('')
+}
+
+function splitPrefixSuffix(document: vscode.TextDocument, position: vscode.Position): {
+  prefix: string
+  suffix: string
+} {
+  const full = document.getText()
+  const offset = document.offsetAt(position)
+  let prefix = full.slice(0, offset)
+  let suffix = full.slice(offset)
+  const { beforeMax, afterMax } = parsePromptCharCaps()
+  if (prefix.length > beforeMax) {
+    prefix = prefix.slice(-beforeMax)
+  }
+  if (suffix.length > afterMax) {
+    suffix = suffix.slice(0, afterMax)
+  }
+  return { prefix, suffix }
+}
+
+async function collectVisibleSymbols(
+  commands: typeof vscode.commands,
+  document: vscode.TextDocument
+): Promise<string> {
+  try {
+    const syms = await commands.executeCommand<vscode.DocumentSymbol[]>(
+      'vscode.executeDocumentSymbolProvider',
+      document.uri
+    )
+    if (!Array.isArray(syms) || syms.length === 0) {
+      return '(none)'
+    }
+    const names: string[] = []
+    const walk = (items: vscode.DocumentSymbol[], depth: number) => {
+      for (const s of items) {
+        if (depth < 3 && s.name.length > 0) {
+          names.push(s.name)
+        }
+        if (s.children?.length) {
+          walk(s.children, depth + 1)
+        }
+      }
+    }
+    walk(syms, 0)
+    const unique = [...new Set(names)]
+    return unique.length > 0 ? unique.slice(0, 48).join(', ') : '(none)'
+  } catch {
+    return '(none)'
+  }
+}
+
 /**
- * 调用兼容 OpenAI 的 Chat Completions 接口，解析首条 assistant 文本为插入内容（脚本/单测可复用）。
+ * LM Studio 原生 REST API v1：`POST /api/v1/chat`。
+ * FIM / chat 均将完整 prompt 放入 `input`（v1 无独立 /completions）。
+ */
+async function fetchLmStudioV1InlineCompletion(req: FimInlineCompletionRequest): Promise<string> {
+  const base = req.apiBaseUrl.replace(/\/$/, '')
+  const url = `${base}/chat`
+  const model = req.model ?? 'deepseek-coder-1.3b-base'
+  const defaults = parseInferenceParams()
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(req.apiKey != null && req.apiKey.length > 0
+        ? { Authorization: `Bearer ${req.apiKey}` }
+        : {})
+    },
+    body: JSON.stringify({
+      model,
+      input: req.prompt,
+      max_output_tokens: req.maxTokens ?? defaults.maxTokens,
+      temperature: req.temperature ?? defaults.temperature,
+      top_p: req.topP ?? defaults.topP,
+      stream: false,
+      store: false
+    }),
+    signal: req.signal
+  })
+
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(`inline completion (lmstudio-v1): HTTP ${res.status} ${t.slice(0, 400)}`)
+  }
+
+  const json: unknown = await res.json()
+  return sanitizeInlineCompletionOutput(parseLmStudioV1ChatOutput(json))
+}
+
+/**
+ * OpenAI 兼容 FIM：`POST /v1/completions`（LM Studio 旧端点）。
+ */
+async function fetchOpenAiCompatFimInlineCompletion(req: FimInlineCompletionRequest): Promise<string> {
+  const base = req.apiBaseUrl.replace(/\/$/, '')
+  const url = `${base}/completions`
+  const model = req.model ?? 'deepseek-coder-1.3b-base'
+  const defaults = parseInferenceParams()
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(req.apiKey != null && req.apiKey.length > 0
+        ? { Authorization: `Bearer ${req.apiKey}` }
+        : {})
+    },
+    body: JSON.stringify({
+      model,
+      prompt: req.prompt,
+      max_tokens: req.maxTokens ?? defaults.maxTokens,
+      temperature: req.temperature ?? defaults.temperature,
+      top_p: req.topP ?? defaults.topP,
+      stop: req.stop ?? defaults.stop,
+      stream: false
+    }),
+    signal: req.signal
+  })
+
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(`inline completion (fim): HTTP ${res.status} ${t.slice(0, 400)}`)
+  }
+
+  const json: unknown = await res.json()
+  return sanitizeInlineCompletionOutput(parseCompletionText(json))
+}
+
+/**
+ * FIM 模式：始终走 OpenAI 兼容 `POST /v1/completions`。
+ * LM Studio `/api/v1/chat` 会把 FIM prompt 当对话输入，base 模型会输出 markdown / 无关片段。
+ */
+export async function fetchFimInlineCompletion(req: FimInlineCompletionRequest): Promise<string> {
+  const fimMarkers = resolveFimMarkers()
+  const compatBase = normalizeOpenAiCompatBaseUrl(req.apiBaseUrl)
+  const defaults = parseInferenceParams()
+  const stop = [
+    ...new Set([
+      ...(req.stop ?? defaults.stop),
+      fimMarkers.begin,
+      fimMarkers.hole,
+      fimMarkers.end
+    ])
+  ]
+  return fetchOpenAiCompatFimInlineCompletion({
+    ...req,
+    apiBaseUrl: compatBase,
+    stop
+  })
+}
+
+/**
+ * Chat 模式（legacy）：LM Studio v1 走 `/api/v1/chat`，否则 OpenAI `/v1/chat/completions`。
  */
 export async function fetchModelInlineCompletion(req: ModelInlineCompletionRequest): Promise<string> {
+  if (resolveInlineCompletionApiKind(req.apiBaseUrl) === 'lmstudio-v1') {
+    return fetchLmStudioV1InlineCompletion(req)
+  }
+
   const base = req.apiBaseUrl.replace(/\/$/, '')
   const url = `${base}/chat/completions`
   const model = req.model ?? 'gpt-4o-mini'
+  const defaults = parseInferenceParams()
 
   const res = await fetch(url, {
     method: 'POST',
@@ -123,32 +425,25 @@ export async function fetchModelInlineCompletion(req: ModelInlineCompletionReque
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: req.prompt }],
-      temperature: 0.2
+      temperature: defaults.temperature,
+      max_tokens: defaults.maxTokens,
+      stop: defaults.stop
     }),
     signal: req.signal
   })
 
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(`inline completion: HTTP ${res.status} ${t.slice(0, 400)}`)
+    throw new Error(`inline completion (chat): HTTP ${res.status} ${t.slice(0, 400)}`)
   }
 
   const json: unknown = await res.json()
-  return parseChatCompletionContent(json)
+  return sanitizeInlineCompletionOutput(parseChatCompletionContent(json))
 }
 
-function buildPrompt(document: vscode.TextDocument, position: vscode.Position): string {
-  const full = document.getText()
-  const offset = document.offsetAt(position)
-  let before = full.slice(0, offset)
-  let after = full.slice(offset)
-  const { beforeMax, afterMax } = parsePromptCharCaps()
-  if (before.length > beforeMax) {
-    before = before.slice(-beforeMax)
-  }
-  if (after.length > afterMax) {
-    after = after.slice(0, afterMax)
-  }
+/** legacy chat prompt（`VITE_AI_INLINE_MODE=chat`） */
+function buildChatPrompt(document: vscode.TextDocument, position: vscode.Position): string {
+  const { prefix, suffix } = splitPrefixSuffix(document, position)
   const langHint =
     document.languageId && document.languageId.length > 0
       ? `You complete ${document.languageId} code at the cursor. `
@@ -158,16 +453,12 @@ function buildPrompt(document: vscode.TextDocument, position: vscode.Position): 
       'Output ONLY the raw code to insert at the cursor — no markdown fences, no explanation.',
     '',
     '--- text before cursor ---',
-    before,
+    prefix,
     '--- text after cursor ---',
-    after
+    suffix
   ].join('\n')
 }
 
-/**
- * {@link vscode.InlineCompletionContext.selectedCompletionInfo} 存在时：`insertText` 必须以所选补全条目 `text`
- * 为前缀，且 `range` 须与该条目一致，宿主才会渲染灰字（见 vscode.d.ts 文档示例）。
- */
 function mergeInsertExtendingSelected(ai: string, selectedText: string): string {
   if (selectedText.length === 0 || ai.startsWith(selectedText)) {
     return ai
@@ -217,6 +508,8 @@ const { getApi } = registerExtension(aiInlineManifest, ExtensionHostKind.LocalPr
 
 void getApi().then((api) => {
   const hostDebounce = parseHostDebounceDelayMs()
+  const fimMarkers = resolveFimMarkers()
+  const inference = parseInferenceParams()
 
   api.languages.registerInlineCompletionItemProvider(
     inlineCompletionDocumentSelector,
@@ -242,13 +535,28 @@ void getApi().then((api) => {
         }
 
         try {
-          const { apiBaseUrl, apiKey, model } = resolveInlineCompletionConfig()
-          let prompt = buildPrompt(document, position)
+          const { apiBaseUrl, apiKey, model, mode } = resolveInlineCompletionConfig()
+          const { prefix, suffix } = splitPrefixSuffix(document, position)
+          const visibleSymbols = await collectVisibleSymbols(api.commands, document)
+
+          let prompt: string
+          if (mode === 'fim') {
+            prompt = buildFimPrompt({
+              prefix,
+              suffix,
+              filePath: document.uri.fsPath || document.fileName,
+              languageId: document.languageId,
+              visibleSymbols,
+              ...fimMarkers
+            })
+          } else {
+            prompt = buildChatPrompt(document, position)
+          }
+
           if (selected != null) {
             prompt = augmentPromptWhenSuggestSelected(prompt, selected)
           }
 
-          /** 仅在即将发网络请求时顶替上一轮：`ESC`/抖动若在防抖内只会抬升 epoch，不会误 abort 未完成 fetch */
           inlineLatestFetchAbort?.abort()
           const myFetchAbort = new AbortController()
           inlineLatestFetchAbort = myFetchAbort
@@ -257,13 +565,24 @@ void getApi().then((api) => {
           let insertText: string
           const useApi = apiBaseUrl != null && apiBaseUrl.length > 0
           if (useApi) {
-            insertText = await fetchModelInlineCompletion({
-              prompt,
-              apiBaseUrl,
-              apiKey,
-              model,
-              signal: fetchSignal
-            })
+            if (mode === 'fim') {
+              insertText = await fetchFimInlineCompletion({
+                prompt,
+                apiBaseUrl,
+                apiKey,
+                model,
+                signal: fetchSignal,
+                ...inference
+              })
+            } else {
+              insertText = await fetchModelInlineCompletion({
+                prompt,
+                apiBaseUrl,
+                apiKey,
+                model,
+                signal: fetchSignal
+              })
+            }
           } else {
             insertText = await mockInlineText(fetchSignal)
           }
@@ -288,7 +607,6 @@ void getApi().then((api) => {
             return list
           }
 
-          // range: cursor → line end（prompt 要求在光标处插入，range.start 不应退到词首）
           const lineEndCol = Math.max(document.lineAt(position.line).range.end.character, position.character + 1)
           const replaceRange = new api.Range(position.line, position.character, position.line, lineEndCol)
           const item = new api.InlineCompletionItem(insertText, replaceRange)
