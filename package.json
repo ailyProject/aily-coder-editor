@@ -17,6 +17,7 @@
     "uiIndex": "dist/index.html"
   },
   "ailySubapp": {
+    "id": "aily-coder",
     "app": {
       "icon": "fa-light fa-code",
       "enabled": true
