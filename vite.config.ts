@@ -9,7 +9,11 @@ const pkg = JSON.parse(
   fs.readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8')
 )
 
-const localDependencies = Object.entries(pkg.dependencies as Record<string, string>)
+const declaredDependencies: Record<string, string> = {
+  ...(pkg.dependencies ?? {}),
+  ...(pkg.devDependencies ?? {})
+}
+const localDependencies = Object.entries(declaredDependencies)
   .filter(([, version]) => version.startsWith('file:../'))
   .map(([name]) => name)
 

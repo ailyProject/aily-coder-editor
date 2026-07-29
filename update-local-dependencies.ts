@@ -45,18 +45,18 @@ const newPackageJson = {
   ...packageJson,
   dependencies: {
     ...Object.fromEntries(
-      Object.entries(packageJson.dependencies!).filter(
+      Object.entries(packageJson.dependencies ?? {}).filter(
         ([, version]) => !version!.startsWith('file:')
       )
-    ),
-    ...localDependencies
+    )
   },
   devDependencies: {
     ...Object.fromEntries(
-      Object.entries(packageJson.devDependencies!).filter(
+      Object.entries(packageJson.devDependencies ?? {}).filter(
         ([, version]) => !version!.startsWith('file:')
       )
     ),
+    ...localDependencies,
     ...localDevDependencies
   }
 }

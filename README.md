@@ -108,6 +108,26 @@ aily-coder/
 
 ---
 
+## 独立依赖包
+
+Coder 以 `@aily-project/subapp-aily-coder` 发布，不再复制到 Aily Blockly 的
+`child/aily-coder` 目录。包内包含：
+
+- `dist/`：生产 Workbench 静态资源；
+- `index.js`：与其它 Aily 子应用一致的 `serve --host --port` 入口；
+- `aily.uiIndex` / `ailySubapp.runtime`：供宿主发现 UI 和启动超时配置。
+
+Aily Blockly 在用户首次选择 Coder 模式时，将包安装到用户级
+`npm-global/app/node_modules`，然后通过标准子应用会话启动。Blockly 模式不依赖
+该包。
+
+发布前可执行：
+
+```bash
+npm run build:subapp
+npm pack --dry-run
+```
+
 ## 本地开发
 
 ### 环境要求
@@ -130,6 +150,9 @@ npm start
 |------|------|
 | `npm start` | 开发服务器 |
 | `npm run build` | 类型检查 + 生产构建 |
+| `npm run build:subapp` | 构建可发布的 Coder 子应用包 |
+| `npm run dev:link` | 链接到 Aily Blockly 用户级子应用安装目录 |
+| `npm run dev:unlink` | 移除开发链接并恢复原安装包 |
 | `npm run lint` | ESLint |
 | `npm run lsp-proxy` | 启动 LSP WebSocket 代理（配合 clangd） |
 
@@ -141,7 +164,8 @@ npm start
 
 ## 在 Aily Blockly 中嵌入
 
-生产环境中，本应用作为静态资源由 **Aily Blockly** 构建产物引用，以 iframe 形式嵌入代码编辑区域。宿主需：
+生产环境中，本应用作为独立 npm 子应用依赖安装，并由 **Aily Blockly** 通过
+`node index.js serve --host 127.0.0.1 --port 0` 启动，再以 iframe 形式嵌入代码编辑区域。宿主需：
 
 1. 传入工作区路径（如 `?folder=`）并建立 `parentBackedNativeFs`（Electron 场景）。
 2. 通过 `aily-coder-host-context` 通道推送 `HostEmbedContextV1`。

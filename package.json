@@ -1,8 +1,30 @@
 {
-  "name": "aily-coder",
-  "private": true,
-  "version": "0.0.1",
+  "name": "@aily-project/subapp-aily-coder",
+  "version": "0.1.0",
   "type": "module",
+  "main": "index.js",
+  "files": [
+    "dist",
+    "!dist/**/*.map",
+    "index.js",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "aily": {
+    "uiIndex": "dist/index.html"
+  },
+  "ailySubapp": {
+    "app": {
+      "icon": "fa-light fa-code",
+      "enabled": true
+    },
+    "runtime": {
+      "startupTimeoutMs": 30000
+    }
+  },
   "scripts": {
     "update-local-dependencies": "tsx update-local-dependencies.ts",
     "clean": "tsc -b -c",
@@ -12,7 +34,11 @@
     "typecheck": "tsc --noEmit",
     "check-build": "npm run lint && npm run typecheck",
     "build": "npm run check-build && vite --config vite.config.ts build",
+    "build:subapp": "npm run build",
     "build:netlify": "npm run check-build && vite --config vite.netlify.config.ts build",
+    "dev:link": "node scripts/link-dev.mjs",
+    "dev:unlink": "node scripts/link-dev.mjs --unlink",
+    "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts"
   },
@@ -53,22 +79,6 @@
   },
   "devDependencies": {
     "@codingame/esbuild-import-meta-url-plugin": "^1.0.3",
-    "@codingame/monaco-vscode-rollup-extension-directory-plugin": "^31.0.1",
-    "@codingame/monaco-vscode-rollup-vsix-plugin": "^31.0.1",
-    "@eslint/js": "^9.20.0",
-    "@types/dockerode": "^4.0.1",
-    "@types/express": "^5.0.6",
-    "@types/node": "^22.19.7",
-    "@types/wicg-file-system-access": "^2023.10.7",
-    "@types/ws": "^8.18.1",
-    "eslint": "^9.20.1",
-    "tsx": "^4.20.6",
-    "type-fest": "^5.6.0",
-    "typescript": "~5.9.3",
-    "typescript-eslint": "^8.24.1",
-    "vite": "~8.0.3"
-  },
-  "dependencies": {
     "@codingame/monaco-vscode-accessibility-service-override": "^31.0.1",
     "@codingame/monaco-vscode-ai-service-override": "^31.0.1",
     "@codingame/monaco-vscode-all-default-extensions": "^31.0.1",
@@ -249,11 +259,25 @@
     "@codingame/monaco-vscode-xterm-addons-common": "^31.0.1",
     "@codingame/monaco-vscode-xterm-common": "^31.0.1",
     "@codingame/monaco-vscode-yaml-default-extension": "^31.0.1",
+    "@codingame/monaco-vscode-rollup-extension-directory-plugin": "^31.0.1",
+    "@codingame/monaco-vscode-rollup-vsix-plugin": "^31.0.1",
+    "@eslint/js": "^9.20.0",
     "ansi-colors": "^4.1.3",
     "dockerode": "^4.0.10",
     "express": "^5.2.1",
+    "@types/dockerode": "^4.0.1",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.19.7",
+    "@types/wicg-file-system-access": "^2023.10.7",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9.20.1",
     "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^31.0.1",
     "monaco-languageclient": "^10.7.0",
+    "tsx": "^4.20.6",
+    "type-fest": "^5.6.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.24.1",
+    "vite": "~8.0.3",
     "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1",
     "ws": "^8.20.0"
   }
