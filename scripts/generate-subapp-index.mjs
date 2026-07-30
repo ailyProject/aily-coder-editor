@@ -158,11 +158,15 @@ async function generateIndex() {
   }
   const locales = await loadTranslations(metadata)
   const appMetadata = isObject(subapp.app) ? subapp.app : {}
+  // Spread all ailySubapp fields first (runtime, extension, compatibility, …),
+  // then overwrite with computed index fields so generation config cannot leak.
   const entry = {
+    ...subapp,
     id,
     titleKey,
     namespace,
     app: {
+      ...appMetadata,
       name: titleKey,
       description: descriptionKey,
       icon: appMetadata.icon || fallbackIcon,
@@ -174,10 +178,6 @@ async function generateIndex() {
       defaultLocale,
       locales
     }
-  }
-
-  if (isObject(subapp.compatibility)) {
-    entry.compatibility = subapp.compatibility
   }
 
   return { [id]: entry }
