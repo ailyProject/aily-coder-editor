@@ -1,6 +1,7 @@
 {
   "name": "@aily-project/subapp-aily-coder",
   "version": "0.1.0",
+  "hide": false,
   "type": "module",
   "main": "index.js",
   "files": [
@@ -19,7 +20,8 @@
   "ailySubapp": {
     "app": {
       "icon": "fa-light fa-code",
-      "enabled": true
+      "enabled": true,
+      "extension": true
     },
     "runtime": {
       "startupTimeoutMs": 30000
