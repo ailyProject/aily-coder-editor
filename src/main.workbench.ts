@@ -1,11 +1,14 @@
 import { IEditorService, StandaloneServices, createInstance } from '@codingame/monaco-vscode-api'
 import { clearStorage, remoteAuthority } from './setup.workbench'
 import { CustomEditorInput } from './features/customView.workbench'
+import { announceAilyCoderWorkbenchReady } from './embedLifecycle'
 import './main.common'
 
 if (remoteAuthority != null) {
   void import('./features/remoteExtension')
 }
+
+await announceAilyCoderWorkbenchReady()
 
 // document.querySelector('#customEditorPanel')!.addEventListener('click', async () => {
 //   const input = await createInstance(CustomEditorInput, undefined)

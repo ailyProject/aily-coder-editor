@@ -1,3 +1,5 @@
+import { announceAilyCoderReadyProtocol } from './embedLifecycle'
+
 const searchParams = new URLSearchParams(window.location.search)
 const locale = searchParams.get('locale')
 
@@ -57,6 +59,10 @@ if (locale != null) {
 
 const mode = searchParams.get('mode')
 const sandboxed = searchParams.has('sandboxed')
+
+if (mode === 'full-workbench') {
+  announceAilyCoderReadyProtocol()
+}
 
 declare global {
   interface Window {
