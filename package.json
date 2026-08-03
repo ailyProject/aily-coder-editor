@@ -1,7 +1,7 @@
 {
   "name": "@aily-project/subapp-aily-coder",
   "version": "0.1.1",
-  "hide": false,
+  "hide": true,
   "type": "module",
   "main": "index.js",
   "files": [
