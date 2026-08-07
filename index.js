@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const packageRoot = path.dirname(fileURLToPath(import.meta.url))
-const uiRoot = path.join(packageRoot, 'dist')
+const uiRoot = path.join(packageRoot, 'ui')
 const indexPath = path.join(uiRoot, 'index.html')
 
 function write(message) {
@@ -72,12 +72,26 @@ function serveFile(request, response, filePath) {
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Resource-Policy': 'cross-origin',
   }
+  response.writeHead(200, headers)
   if (request.method === 'HEAD') {
-    response.writeHead(200, headers)
     response.end()
     return
   }
-  response.writeHead(200, headers)
+  if (filePath === indexPath) {
+    const markerPath = path.join(packageRoot, '.aily-dev.json')
+    try {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+      const reloadUrl = new URL(String(marker.reloadUrl || ''))
+      if (reloadUrl.hostname === '127.0.0.1' || reloadUrl.hostname === 'localhost') {
+        const reloadScript = `<script>new EventSource(${JSON.stringify(reloadUrl.toString())}).addEventListener('reload',()=>location.reload())</script>`
+        const html = readFileSync(indexPath, 'utf8').replace(/<\/body>/i, `${reloadScript}</body>`)
+        response.end(html)
+        return
+      }
+    } catch {
+      // Production and one-shot links do not have a development marker.
+    }
+  }
   createReadStream(filePath)
     .once('error', () => {
       if (!response.headersSent) response.writeHead(500)

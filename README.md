@@ -113,9 +113,10 @@ aily-coder/
 Coder 以 `@aily-project/subapp-aily-coder` 发布，不再复制到 Aily Blockly 的
 `child/aily-coder` 目录。包内包含：
 
-- `dist/`：生产 Workbench 静态资源；
+- `ui/`：符合统一子应用契约的生产 Workbench 静态资源；
 - `index.js`：与其它 Aily 子应用一致的 `serve --host --port` 入口；
-- `aily.uiIndex` / `ailySubapp.runtime`：供宿主发现 UI 和启动超时配置。
+- `i18n/`：供本地开发目录和远端子应用目录使用的标题、描述；
+- `aily.uiIndex` / `ailySubapp`：供宿主发现 UI、extension 属性和启动超时配置。
 
 Aily Blockly 在用户首次选择 Coder 模式时，将包安装到用户级
 `npm-global/app/node_modules`，然后通过标准子应用会话启动。Blockly 模式不依赖
@@ -149,12 +150,18 @@ npm start
 | 命令 | 说明 |
 |------|------|
 | `npm start` | 开发服务器 |
+| `npm run dev` | 构建并链接到宿主正式安装目录，监听改动并自动刷新 iframe |
 | `npm run build` | 类型检查 + 生产构建 |
 | `npm run build:subapp` | 构建可发布的 Coder 子应用包 |
-| `npm run dev:link` | 链接到 Aily Blockly 用户级子应用安装目录 |
-| `npm run dev:unlink` | 移除开发链接并恢复原安装包 |
+| `npm run dev:link` | 一次性构建并链接到 Aily Blockly 用户级子应用安装目录 |
+| `npm run dev:unlink` | 移除开发链接并恢复原安装包、依赖声明和目录索引 |
 | `npm run lint` | ESLint |
 | `npm run lsp-proxy` | 启动 LSP WebSocket 代理（配合 clangd） |
+
+`dev` / `dev:link` 与其它 Aily 子应用使用同一条用户级 npm 发现链路：源码包
+链接到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`，本地目录合入
+`subapp-index.json` 并设置 `dev: true`。不再依赖主软件扫描源码目录或 Coder
+专用 Vite 启动入口。结束联调后执行 `npm run dev:unlink`。
 
 ### 可选：行间 AI 补全
 

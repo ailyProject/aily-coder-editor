@@ -4,8 +4,9 @@
   "type": "module",
   "main": "index.js",
   "files": [
-    "dist",
-    "!dist/**/*.map",
+    "ui",
+    "!ui/**/*.map",
+    "i18n",
     "index.js",
     "LICENSE",
     "README.md"
@@ -14,12 +15,17 @@
     "node": ">=20"
   },
   "aily": {
-    "uiIndex": "dist/index.html"
+    "uiIndex": "ui/index.html"
   },
   "ailySubapp": {
+    "id": "aily-coder",
+    "package": "@aily-project/subapp-aily-coder",
+    "namespace": "AILY_CODER",
+    "titleKey": "AILY_CODER.TITLE",
     "app": {
       "icon": "fa-light fa-code",
-      "enabled": true
+      "enabled": true,
+      "extension": true
     },
     "runtime": {
       "startupTimeoutMs": 30000
@@ -30,14 +36,17 @@
     "clean": "tsc -b -c",
     "start": "vite --config vite.config.ts",
     "start:debug": "vite --config vite.config.ts --debug --force",
+    "dev": "node scripts/link-dev.mjs --watch",
     "lint": "eslint src server vite.config.ts vite.netlify.config.ts update-local-dependencies.ts",
     "typecheck": "tsc --noEmit",
     "check-build": "npm run lint && npm run typecheck",
     "build": "npm run check-build && vite --config vite.config.ts build",
+    "build:watch": "vite --config vite.config.ts build --watch",
     "build:subapp": "npm run build",
     "build:netlify": "npm run check-build && vite --config vite.netlify.config.ts build",
     "dev:link": "node scripts/link-dev.mjs",
     "dev:unlink": "node scripts/link-dev.mjs --unlink",
+    "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts"

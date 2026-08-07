@@ -26,6 +26,8 @@ const serveRoots = Array.from(
 
 export default defineConfig({
   build: {
+    outDir: 'ui',
+    emptyOutDir: true,
     target: 'esnext'
   },
   worker: {
