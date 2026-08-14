@@ -105,7 +105,7 @@ await initializeMonacoService(
 // 嵌入壳：拦截命令面板，避免 Ctrl/Cmd+Shift+P 弹出 VS Code 全局命令列表
 installEmbedCommandPaletteBlock()
 
-// 嵌入壳：Activity Bar 隐藏 + Cursor 式侧栏顶栏（文件/搜索/分支）
+// 嵌入壳：Activity Bar 隐藏 + Cursor 式侧栏顶栏（文件/搜索）
 installEmbedWorkbenchStyles(container)
 void installEmbedSidebarTopBar(container)
 

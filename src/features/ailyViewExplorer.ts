@@ -7,7 +7,6 @@ import {
   onHostEmbedContextChanged,
   requestHostCloseLibraryManager,
   requestHostClipboardWriteText,
-  requestHostOpenBoardSelector,
   requestHostOpenLibraryManager,
   type HostBoardProfileV1,
   type HostEmbedContextV1,
@@ -22,7 +21,7 @@ import {
   validateRenameEntryName
 } from './ailyViewInlineRename.js'
 import {
-  shouldRefreshFrameworkBuildOutputsNativeWatch,
+  shouldRefreshBuildOutputsNativeWatch,
   shouldRefreshStartHereNativeWatch,
   startWorkspaceNativeWatch,
   statAbsolutePathViaHost
@@ -111,16 +110,16 @@ function mergeBuildArtifactsFromHostAndHint(
 
   const fromHost = hostCtx?.buildArtifacts
   if (fromHost != null) {
-    for (const a of fromHost) {
-      push(a.label, a.absPath, a.relPath)
+    for (const artifact of fromHost) {
+      push(artifact.label, artifact.absPath, artifact.relPath)
     }
   }
   if (hostCtx?.mainHexAbsPath?.trim()) {
     push('main.hex', hostCtx.mainHexAbsPath, hostCtx.mainHexRelPath)
   }
 
-  for (const a of hint.artifacts) {
-    push(a.label, a.abs, a.rel)
+  for (const artifact of hint.artifacts) {
+    push(artifact.label, artifact.abs, artifact.rel)
   }
 
   return out
@@ -154,7 +153,7 @@ const COMMANDS = {
   openAsJson: 'ailyView.openAsJson',
   validateConfig: 'ailyView.validateConfig',
   regenerateLockFile: 'ailyView.regenerateLockFile',
-  // §7.2 property (Board / MCU / Framework / Upload / Monitor)
+  // §7.2 Board property
   openSettings: 'ailyView.openSettings',
   changeValue: 'ailyView.changeValue',
   revealBackingConfig: 'ailyView.revealBackingConfig',
@@ -175,20 +174,11 @@ const COMMANDS = {
   revealGeneratedSources: 'ailyView.revealGeneratedSources',
   revealBridgeFiles: 'ailyView.revealBridgeFiles',
   openCompileCommands: 'ailyView.openCompileCommands',
-  // MCU：单击请求宿主打开切换开发板弹窗
-  openBoardSelector: 'ailyView.openBoardSelector',
   /** 虚拟 Board：在内嵌编辑区打开「列表」型自定义面板 */
   openBoardProperty: 'ailyView.openBoardProperty',
   // 内部占位：其余 property / status 节点的默认单击行为
   showNodeInfo: 'ailyView.showNodeInfo'
 } as const
-
-/** MCU 虚拟属性节点：单击打开切换开发板弹窗（Board 仅展示，不触发切换） */
-const BOARD_SELECTOR_PROPERTY_IDS = new Set(['mcu'])
-
-function isBoardSelectorPropertyNode(node: ProjectTreeNode | undefined): boolean {
-  return node?.type === 'property' && BOARD_SELECTOR_PROPERTY_IDS.has(node.id)
-}
 
 /** 虚拟 Board：单击打开列表型自定义编辑器（非切换弹窗） */
 function isBoardListNode(node: ProjectTreeNode | undefined): boolean {
@@ -256,60 +246,13 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     ]
   },
   {
-    id: 'board-platform',
-    type: 'group',
-    label: 'Board & Platform',
-    icon: 'chip',
-    expandable: true,
+    id: 'board',
+    type: 'property',
+    label: 'Board',
+    icon: 'circuit-board',
+    expandable: false,
     expandedByDefault: false,
-    visible: true,
-    children: [
-      {
-        id: 'board',
-        type: 'property',
-        label: 'Board',
-        icon: 'circuit-board',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'mcu',
-        type: 'property',
-        label: 'MCU',
-        icon: 'chip',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'framework',
-        type: 'property',
-        label: 'Framework',
-        icon: 'server-process',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'upload',
-        type: 'property',
-        label: 'Upload',
-        icon: 'arrow-up',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'monitor',
-        type: 'property',
-        label: 'Monitor',
-        icon: 'terminal',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      }
-    ]
+    visible: true
   },
   {
     id: 'dependencies',
@@ -477,7 +420,7 @@ const PLATFORM_PACKAGES_EMPTY: ProjectTreeNode = {
   visible: true
 }
 
-/** 平台包节点 codicon：与 Board & Platform 语义区分 */
+/** 平台包节点 codicon：与一级 Board 节点语义区分 */
 function iconForPlatformPackageKind(kind: HostPlatformPackageV1['kind']): string {
   if (kind === 'sdk') {
     return 'server-process'
@@ -768,9 +711,9 @@ function findBlueprintNodeIdByRelPath(relPath: string): string | undefined {
 /** 宿主上下文 / 动态子树变更时刷新的蓝图节点（勿 refresh(undefined)） */
 const DYNAMIC_REFRESH_BLUEPRINT_IDS = [
   'start-here',
-  'board-platform',
+  'board',
   'build-outputs',
-  'framework',
+  'build-release',
   'platform-packages',
   'installed-libraries'
 ] as const
@@ -898,22 +841,22 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     this.#onDidChangeTreeData.fire(element)
   }
 
-  /** 为 Framework 节点注入编译产物虚拟文件（Build Outputs 暂仅保留 debug/release/simulator 分组） */
-  async #injectFrameworkBuildArtifactChildren(): Promise<ExplorerTreeElement[]> {
+  /** 为 Build Outputs / release 注入真实编译产物虚拟文件。 */
+  async #injectReleaseBuildArtifactChildren(): Promise<ExplorerTreeElement[]> {
     const hostCtx = getHostEmbedContext()
     const hint = await this.#loadBuildOutputs()
     const buildDesc = hostCtx?.buildPath ?? hint.buildPath
     const artifactNodes: ExplorerTreeElement[] = []
     const merged = mergeBuildArtifactsFromHostAndHint(hostCtx, hint)
 
-    for (const art of merged) {
-      let abs = art.abs?.trim() || undefined
-      const rel = art.rel?.trim() || undefined
+    for (const artifact of merged) {
+      let abs = artifact.abs?.trim() || undefined
+      const rel = artifact.rel?.trim() || undefined
 
       if (!abs && rel) {
         const root = this.#vscode.workspace.workspaceFolders?.[0]?.uri
         if (root != null) {
-          const segments = rel.split('/').filter((s) => s.length > 0)
+          const segments = rel.split('/').filter((segment) => segment.length > 0)
           abs = this.#vscode.Uri.joinPath(root, ...segments).fsPath
         }
       }
@@ -922,11 +865,11 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
         continue
       }
 
-      const safeId = art.label.replace(/[^a-zA-Z0-9._-]+/g, '-')
+      const safeId = artifact.label.replace(/[^a-zA-Z0-9._-]+/g, '-')
       const artifactNode: ProjectTreeNode = {
-        id: `framework-artifact-${safeId}`,
+        id: `build-release-artifact-${safeId}`,
         type: 'virtual-file',
-        label: art.label,
+        label: artifact.label,
         icon: 'file-binary',
         path: rel,
         absolutePath: abs,
@@ -947,15 +890,12 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     if (root == null) {
       return false
     }
-    const r = root.fsPath.replace(/\\/g, '/').toLowerCase()
-    const u = absPath.replace(/\\/g, '/').toLowerCase()
-    return u === r || u.startsWith(`${r}/`)
+    const rootPath = root.fsPath.replace(/\\/g, '/').toLowerCase()
+    const candidatePath = absPath.replace(/\\/g, '/').toLowerCase()
+    return candidatePath === rootPath || candidatePath.startsWith(`${rootPath}/`)
   }
 
-  /**
-   * 仅当产物在磁盘上真实存在时才展示虚拟节点。
-   * 工作区外路径（如 aily-builder 缓存）经宿主 nativeFsStat 校验，避免删除后仍展示 stale 节点。
-   */
+  /** 仅展示磁盘上真实存在的产物，避免删除后仍显示 stale 节点。 */
   async #artifactExistsOnDisk(abs?: string, rel?: string): Promise<boolean> {
     const vs = this.#vscode
     const absTrim = abs?.trim()
@@ -971,18 +911,15 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
         return false
       }
     }
+
     const relTrim = rel?.trim()
-    if (!relTrim) {
-      return false
-    }
     const root = vs.workspace.workspaceFolders?.[0]?.uri
-    if (root == null) {
+    if (!relTrim || root == null) {
       return false
     }
-    const segments = relTrim.split('/').filter((s) => s.length > 0)
+    const segments = relTrim.split('/').filter((segment) => segment.length > 0)
     try {
-      const uri = vs.Uri.joinPath(root, ...segments)
-      const stat = await vs.workspace.fs.stat(uri)
+      const stat = await vs.workspace.fs.stat(vs.Uri.joinPath(root, ...segments))
       return stat.type === vs.FileType.File
     } catch {
       return false
@@ -1084,7 +1021,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
     // 单击行为：§9.1
     // file / virtual-file → 打开真实文件（Platform Packages 除外，仅右键打开目录）
-    // MCU → 请求宿主打开切换开发板弹窗；Board → 打开列表型自定义编辑器
+    // Board → 打开列表型自定义编辑器
     // group / directory / Platform Packages → 不挂 command，左键仅选中
     if (
       (node.type === 'file' || node.type === 'virtual-file') &&
@@ -1093,12 +1030,6 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       item.command = {
         command: COMMANDS.open,
         title: 'Open',
-        arguments: [element]
-      }
-    } else if (isBoardSelectorPropertyNode(node)) {
-      item.command = {
-        command: COMMANDS.openBoardSelector,
-        title: 'Change Board',
         arguments: [element]
       }
     } else if (isBoardListNode(node)) {
@@ -1161,15 +1092,12 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       return [...cppNodes.map(wrap), ...staticChildren]
     }
 
-    const children = node.children ?? []
-    let out = children.filter((nd) => nd.visible).map((nd) => wrapBlueprintChild(nd))
-    if (element.node.id === 'framework') {
-      const artifactNodes = await this.#injectFrameworkBuildArtifactChildren()
-      if (artifactNodes.length > 0) {
-        out = [...artifactNodes, ...out]
-      }
+    if (node.id === 'build-release') {
+      return this.#injectReleaseBuildArtifactChildren()
     }
-    return out
+
+    const children = node.children ?? []
+    return children.filter((nd) => nd.visible).map((nd) => wrapBlueprintChild(nd))
   }
 }
 
@@ -1241,7 +1169,6 @@ const { getApi } = registerExtension(
         { command: COMMANDS.revealGeneratedSources, title: 'Reveal Generated Sources' },
         { command: COMMANDS.revealBridgeFiles, title: 'Reveal Bridge Files' },
         { command: COMMANDS.openCompileCommands, title: 'Open Compile Commands' },
-        { command: COMMANDS.openBoardSelector, title: 'Change Board' },
         { command: COMMANDS.openBoardProperty, title: 'Open Board Types' },
         { command: COMMANDS.showNodeInfo, title: 'Show Node Info' }
       ],
@@ -1272,7 +1199,7 @@ const { getApi } = registerExtension(
           { command: COMMANDS.validateConfig, when: WHEN_PROJECT_ACI, group: '1_config@30' },
           { command: COMMANDS.regenerateLockFile, when: WHEN_PROJECT_ACI, group: '1_config@40' },
 
-          // Board / MCU / Framework / Upload / Monitor
+          // Board
           { command: COMMANDS.openSettings, when: WHEN_PROPERTY, group: '1_property@10' },
           { command: COMMANDS.changeValue, when: WHEN_PROPERTY, group: '1_property@20' },
           { command: COMMANDS.revealBackingConfig, when: WHEN_PROPERTY, group: '1_property@30' },
@@ -1707,9 +1634,6 @@ void getApi().then((vscode) => {
 
   // property 节点（§7.2）
   vscode.commands.registerCommand(COMMANDS.openSettings, placeholder('Open Settings'))
-  vscode.commands.registerCommand(COMMANDS.openBoardSelector, () => {
-    requestHostOpenBoardSelector()
-  })
   const loadBoardProfileFromWorkspace = async (): Promise<HostBoardProfileV1 | undefined> => {
     const fromHost = getHostEmbedContext()?.boardProfile
     if (fromHost?.frameworkModes != null && fromHost.frameworkModes.length > 0) {
@@ -1750,13 +1674,7 @@ void getApi().then((vscode) => {
     }
     await openAilyBoardListEditor(spec, 'board')
   })
-  vscode.commands.registerCommand(COMMANDS.changeValue, async (element?: ExplorerTreeElement) => {
-    if (element?.kind === 'project' && isBoardSelectorPropertyNode(element.node)) {
-      requestHostOpenBoardSelector()
-      return
-    }
-    await placeholder('Change Value')(element)
-  })
+  vscode.commands.registerCommand(COMMANDS.changeValue, placeholder('Change Value'))
   vscode.commands.registerCommand(
     COMMANDS.revealBackingConfig,
     placeholder('Reveal Backing Config')
@@ -2026,23 +1944,23 @@ void getApi().then((vscode) => {
     }
   }
 
-  /** Framework 下编译产物虚拟节点：失效 hints 缓存并定向刷新 framework 子树 */
-  const refreshFrameworkBuildOutputs = (): void => {
+  /** Build Outputs / release 编译产物：失效 hints 缓存并定向刷新 release 子树。 */
+  const refreshReleaseBuildOutputs = (): void => {
     buildOutputsCache = undefined
-    const frameworkEl = getStableBlueprintElement('framework')
-    if (frameworkEl != null) {
-      provider.refresh(frameworkEl)
+    const releaseEl = getStableBlueprintElement('build-release')
+    if (releaseEl != null) {
+      provider.refresh(releaseEl)
     } else {
       refreshDynamicBlueprintSections(provider)
     }
   }
 
-  const bumpFrameworkBuildOutputsFromUri = (uri?: vscode.Uri): void => {
+  const bumpReleaseBuildOutputsFromUri = (uri?: vscode.Uri): void => {
     const fsPath = uri?.fsPath?.replace(/\\/g, '/') ?? ''
-    if (fsPath.length > 0 && !shouldRefreshFrameworkBuildOutputsNativeWatch(fsPath)) {
+    if (fsPath.length > 0 && !shouldRefreshBuildOutputsNativeWatch(fsPath)) {
       return
     }
-    refreshFrameworkBuildOutputs()
+    refreshReleaseBuildOutputs()
   }
 
   const bumpStartHereFromUri = (uri?: vscode.Uri): void => {
@@ -2071,7 +1989,7 @@ void getApi().then((vscode) => {
   }
   setupSrcWatcher()
 
-  /** .aily/build 与 coder-embed-hints 变更时刷新 Framework 产物虚拟节点（非嵌入模式兜底） */
+  /** .aily/build 与 coder-embed-hints 变更时刷新 release 产物虚拟节点（非嵌入模式兜底） */
   let buildOutputsWatcher: vscode.FileSystemWatcher | undefined
   const setupBuildOutputsWatcher = (): void => {
     buildOutputsWatcher?.dispose()
@@ -2083,9 +2001,9 @@ void getApi().then((vscode) => {
     buildOutputsWatcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(root, '.aily/{build/**,coder-embed-hints.json}')
     )
-    buildOutputsWatcher.onDidCreate((uri) => bumpFrameworkBuildOutputsFromUri(uri))
-    buildOutputsWatcher.onDidDelete((uri) => bumpFrameworkBuildOutputsFromUri(uri))
-    buildOutputsWatcher.onDidChange((uri) => bumpFrameworkBuildOutputsFromUri(uri))
+    buildOutputsWatcher.onDidCreate((uri) => bumpReleaseBuildOutputsFromUri(uri))
+    buildOutputsWatcher.onDidDelete((uri) => bumpReleaseBuildOutputsFromUri(uri))
+    buildOutputsWatcher.onDidChange((uri) => bumpReleaseBuildOutputsFromUri(uri))
   }
   setupBuildOutputsWatcher()
 
@@ -2105,8 +2023,8 @@ void getApi().then((vscode) => {
       if (shouldRefreshStartHereNativeWatch(ev.filename)) {
         refreshStartHereGroup()
       }
-      if (shouldRefreshFrameworkBuildOutputsNativeWatch(ev.filename)) {
-        refreshFrameworkBuildOutputs()
+      if (shouldRefreshBuildOutputsNativeWatch(ev.filename)) {
+        refreshReleaseBuildOutputs()
       }
     })
       .then((dispose) => {

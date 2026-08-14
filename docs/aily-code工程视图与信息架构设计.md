@@ -75,12 +75,7 @@ Aily View
 │       └── assets/
 ├── Project Config
 │   └── aily.lock.json
-├── Board & Platform
-│   ├── Board
-│   ├── MCU
-│   ├── Framework
-│   ├── Upload
-│   └── Monitor
+├── Board
 ├── Dependencies
 │   ├── Installed Libraries
 │   ├── Platform Packages
@@ -88,6 +83,7 @@ Aily View
 ├── Build Outputs
 │   ├── debug
 │   ├── release
+│   │   └── 编译产物
 │   └── simulator
 └── Generated
     ├── Generated Sources
@@ -177,7 +173,7 @@ interface ProjectTreeNode {
 | 1 | `start-here` | `Start Here` | `group` | `home` | 是 | 是 | 固定结构 |
 | 2 | `project-files` | `Project Files` | `group` | `files` | 是 | 是 | 固定结构 |
 | 3 | `project-config` | `Project Config` | `group` | `settings-gear` | 否 | 是 | 配置索引 |
-| 4 | `board-platform` | `Board & Platform` | `group` | `chip` | 否 | 是 | target 配置 |
+| 4 | `board` | `Board` | `property` | `circuit-board` | - | 是 | target 配置 |
 | 5 | `dependencies` | `Dependencies` | `group` | `package` | 否 | 是 | 依赖解析结果 |
 | 6 | `build-outputs` | `Build Outputs` | `group` | `tools` | 否 | 是 | 构建状态服务 |
 | 7 | `generated` | `Generated` | `group` | `layers` | 否 | 条件显示 | bridge/generated 索引 |
@@ -211,15 +207,11 @@ interface ProjectTreeNode {
 | `project-config-file` | `project.aci` | `file` | `json` | 打开可视化配置页，支持切换文本 |
 | `lock-json` | `aily.lock.json` | `file` | `lock` | 打开锁文件或只读详情面板 |
 
-#### Board & Platform
+#### Board
 
 | `id` | 标题 | `type` | 图标 | `description` 来源 |
 |------|------|--------|------|--------------------|
 | `board` | `Board` | `property` | `circuit-board` | `target.board` |
-| `mcu` | `MCU` | `property` | `chip` | `target.mcu` |
-| `framework` | `Framework` | `property` | `server-process` | `target.framework` |
-| `upload` | `Upload` | `property` | `arrow-up` | `upload.defaultMethod` |
-| `monitor` | `Monitor` | `property` | `terminal` | `monitor.baudRate` |
 
 #### Dependencies
 
@@ -268,7 +260,7 @@ MVP 直接使用 VS Code 风格 icon token 或 codicon 风格命名，不自定�
 | `Project Config` | `settings-gear` |
 | `project.aci` | `json` |
 | `aily.lock.json` | `lock` |
-| `Board & Platform` | `chip` |
+| `Board` | `circuit-board` |
 | `Dependencies` | `package` |
 | `Package Status` | `pulse` |
 | `Build Outputs` | `tools` |
@@ -295,7 +287,7 @@ MVP 只允许三档颜色语义：
 3. `Project Files` 展开。
 4. `Application Code` 展开到 `src/`。
 5. `Project Config` 可见但默认折叠。
-6. `Board & Platform` 可见但默认折叠。
+6. 一级 `Board` 节点可见。
 7. `Dependencies` 可见但默认折叠。
 8. `Build Outputs` 折叠。
 9. `Generated` 默认隐藏。
@@ -351,7 +343,7 @@ MVP 只允许三档颜色语义：
 3. `Validate Config`
 4. `Regenerate Lock File`
 
-#### Board / MCU / Framework / Upload / Monitor
+#### Board
 
 1. `Open Settings`
 2. `Change Value`
@@ -503,7 +495,7 @@ MVP 只允许：
 1. 新项目首次打开时能直接看到并打开 `main.cpp`，并能同时看到 `project.aci`。
 2. `Project Files` 和 `Dependencies` 语义清晰分离。
 3. `components/` 不再被误解为 installed libraries。
-4. `Board & Platform` 能以对象形式展示当前值。
+4. 一级 `Board` 节点能展示当前值并打开 Board 列表。
 5. `Dependencies` 能显示已安装库、平台包和状态汇总。
 6. `Build Outputs` 和 `Generated` 支持折叠与空状态。
 7. 关键节点具备可用的右键菜单和 badge 提示。

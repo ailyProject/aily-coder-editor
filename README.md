@@ -61,7 +61,7 @@ flowchart TB
 ## 本仓库提供什么
 
 - **内嵌代码工作台**：基于 `@codingame/monaco-vscode-*` 的暗色 IDE 风格 UI，与 Aily Blockly 视觉规范对齐。
-- **Aily View**：按工程语义展示逻辑树（`Start Here`、`Project Files`、`Dependencies`、`Board & Platform` 等），详见 `docs/aily-code工程视图与信息架构设计.md`。
+- **Aily View**：按工程语义展示逻辑树（`Start Here`、`Project Files`、一级 `Board`、`Dependencies` 等），详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
 - **语言服务桥接**：`monacoStdioLspClient` + `server/lspWsProxy.ts`，对接 clangd 等 LSP（需配合影子工作区 / `compile_commands`）。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。

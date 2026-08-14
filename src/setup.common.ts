@@ -479,6 +479,16 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     "workbench.activityBar.location": "hidden",
     "workbench.statusBar.visible": false,
     "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "files.exclude": {
+      "**/.aily": true,
+      "**/.log": true,
+      "**/.workspace-history": true
+    },
+    "search.exclude": {
+      "**/.aily": true,
+      "**/.log": true,
+      "**/.workspace-history": true
+    }
   },
   defaultLayout: {
     editors: skipCoderDemoWorkbenchEditors

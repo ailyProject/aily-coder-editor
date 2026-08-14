@@ -164,8 +164,8 @@ export function shouldRefreshStartHereNativeWatch(filename: string | undefined):
   )
 }
 
-/** 是否应刷新 Framework 下编译产物虚拟节点（.aily/build 与 coder-embed-hints 变更） */
-export function shouldRefreshFrameworkBuildOutputsNativeWatch(
+/** 是否应刷新 Build Outputs 下编译产物虚拟节点（.aily/build 与 coder-embed-hints 变更） */
+export function shouldRefreshBuildOutputsNativeWatch(
   filename: string | undefined
 ): boolean {
   if (filename == null || filename.trim().length === 0) {
