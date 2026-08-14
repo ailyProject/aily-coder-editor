@@ -62,8 +62,8 @@ export type HostEmbedContextV1 = {
   platformPackages?: readonly HostPlatformPackageV1[]
   /** 虚拟 Board 节点：Blockly 主板支持的 framework / mode 列表 */
   boardProfile?: HostBoardProfileV1
-  /** 预留：版本号、板型等 */
-  meta?: Record<string, unknown>
+  /** 宿主轻量上下文；theme 更新不应触发 Runtime 或 iframe 重启。 */
+  meta?: Record<string, unknown> & { theme?: 'dark' | 'light' }
 }
 
 export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-host-context'

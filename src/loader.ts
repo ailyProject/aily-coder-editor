@@ -90,6 +90,11 @@ window._VSCODE_PRODUCT_JSON = {
     }
   }
 }
+
+if (window.parent && window.parent !== window) {
+  window.parent.postMessage({ channel: 'aily-coder-ready-protocol', version: 1 }, '*')
+}
+
 ;(async () => {
   if (sandboxed) {
     window.vscodeContainer = await new Promise<HTMLElement>((resolve) => {
