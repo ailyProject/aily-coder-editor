@@ -74,6 +74,9 @@ export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manage
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL 须一致 */
 export const AILY_EMBED_OPEN_LIBRARY_MANAGER_BC = 'aily-embed-open-library-manager'
 
+/** 宿主右侧库面板的内容视图。 */
+export type HostLibraryManagerView = 'packages' | 'components'
+
 /** iframe → Angular：请求打开切换开发板弹窗（与 Header board-select 同源） */
 export const HOST_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-open-board-selector'
 
@@ -87,11 +90,14 @@ export const HOST_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-clipboard-write'
 export const AILY_EMBED_CLIPBOARD_WRITE_BC = 'aily-embed-clipboard-write'
 
 /** 与宿主同步库管理侧栏：`open` 为 true 展开，false 收起 */
-export function syncHostLibraryManager(open: boolean): void {
+export function syncHostLibraryManager(
+  open: boolean,
+  view: HostLibraryManagerView = 'packages'
+): void {
   if (typeof window === 'undefined') {
     return
   }
-  const payload = { channel: HOST_OPEN_LIBRARY_MANAGER_CHANNEL, open }
+  const payload = { channel: HOST_OPEN_LIBRARY_MANAGER_CHANNEL, open, view }
   if (window.parent != null && window.parent !== window) {
     try {
       window.parent.postMessage(payload, '*')
@@ -105,7 +111,7 @@ export function syncHostLibraryManager(open: boolean): void {
   }
   try {
     const ch = new BroadcastChannel(AILY_EMBED_OPEN_LIBRARY_MANAGER_BC)
-    ch.postMessage({ open })
+    ch.postMessage({ open, view })
     setTimeout(() => {
       try {
         ch.close()
@@ -120,7 +126,12 @@ export function syncHostLibraryManager(open: boolean): void {
 
 /** 向 Electron 宿主请求展开库管理侧栏 */
 export function requestHostOpenLibraryManager(): void {
-  syncHostLibraryManager(true)
+  syncHostLibraryManager(true, 'packages')
+}
+
+/** 向 Electron 宿主请求展开 Coder 组件库侧栏。 */
+export function requestHostOpenComponentLibraryManager(): void {
+  syncHostLibraryManager(true, 'components')
 }
 
 /** 向 Electron 宿主请求收起库管理侧栏 */

@@ -18,12 +18,12 @@ const SIDEBAR_NAV_ITEMS = [
     icon: 'codicon-search',
     title: '搜索'
   },
-  // {
-  //   id: 'scm',
-  //   command: 'workbench.view.scm',
-  //   icon: 'codicon-source-control',
-  //   title: '源代码管理'
-  // }
+  {
+    id: 'scm',
+    command: 'workbench.view.scm',
+    icon: 'codicon-source-control',
+    title: 'Git'
+  }
 ] as const
 
 type SidebarNavId = (typeof SIDEBAR_NAV_ITEMS)[number]['id']
@@ -101,7 +101,7 @@ function setActiveNavButton(nav: HTMLElement, activeId: SidebarNavId): void {
 }
 
 /**
- * 构建并插入 Cursor 式横向顶栏（文件 / 搜索）。
+ * 构建并插入 Cursor 式横向顶栏（文件 / 搜索 / Git）。
  */
 function mountSidebarNav(sidebar: HTMLElement): void {
   if (sidebar.querySelector(`[${SIDEBAR_NAV_ATTR}]`)) {

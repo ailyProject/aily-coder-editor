@@ -24,7 +24,7 @@ import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-over
 import getLanguagesServiceOverride from '@codingame/monaco-vscode-languages-service-override'
 // import getSecretStorageServiceOverride from '@codingame/monaco-vscode-secret-storage-service-override'
 // import getAuthenticationServiceOverride from '@codingame/monaco-vscode-authentication-service-override'
-// import getScmServiceOverride from '@codingame/monaco-vscode-scm-service-override'
+import getScmServiceOverride from '@codingame/monaco-vscode-scm-service-override'
 // import getExtensionGalleryServiceOverride from '@codingame/monaco-vscode-extension-gallery-service-override'
 // import getBannerServiceOverride from '@codingame/monaco-vscode-view-banner-service-override'
 import getStatusBarServiceOverride from '@codingame/monaco-vscode-view-status-bar-service-override'
@@ -579,7 +579,7 @@ export const commonServices: IEditorOverrideServices = {
   // ...getEnvironmentServiceOverride(),
   // ...getWorkspaceTrustOverride(),
   // ...getWorkingCopyServiceOverride(),
-  // ...getScmServiceOverride(),
+  ...getScmServiceOverride(),
   // ...getTestingServiceOverride(),
   // ...getChatServiceOverride({
   //   defaultAccount: {

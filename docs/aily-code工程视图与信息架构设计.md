@@ -41,7 +41,8 @@ MVP 默认打开 `Aily View`，而不是直接打开物理目录树。
 1. `Project Files`：项目自己拥有、自己维护、随仓库一起提交的文件和目录。
 2. `Dependencies`：通过配置声明、由解析器安装和维护的外部依赖结果。
 
-`components/` 属于 `Project Files`，不属于 `Dependencies`。
+`components/` 的源码所有权仍属于 `Project Files`。`Dependencies` 下可提供
+`Component Libraries` 只读投影与安装入口，但不得把这些目录误标为包管理器维护的外部依赖。
 
 ### 2.3 project.aci 与 main.cpp 角色分离
 
@@ -77,6 +78,7 @@ Aily View
 │   └── aily.lock.json
 ├── Board
 ├── Dependencies
+│   ├── Component Libraries      // components/ 的快捷投影与平台公共库入口
 │   ├── Installed Libraries
 │   ├── Platform Packages
 │   └── Package Status
@@ -217,6 +219,7 @@ interface ProjectTreeNode {
 
 | `id` | 标题 | `type` | 图标 | 说明 |
 |------|------|--------|------|------|
+| `component-libraries` | `Component Libraries` | `group` | `library` | 映射 `components/` 一级库目录；展开时打开平台公共 Arduino 库列表 |
 | `installed-libraries` | `Installed Libraries` | `group` | `package` | 外部通用库依赖 |
 | `platform-packages` | `Platform Packages` | `group` | `package` | SDK、框架附加包、工具包 |
 | `package-status` | `Package Status` | `status` | `pulse` | 依赖解析状态汇总 |
@@ -494,7 +497,7 @@ MVP 只允许：
 
 1. 新项目首次打开时能直接看到并打开 `main.cpp`，并能同时看到 `project.aci`。
 2. `Project Files` 和 `Dependencies` 语义清晰分离。
-3. `components/` 不再被误解为 installed libraries。
+3. `components/` 在 `Component Libraries` 中可快捷访问，但不被误解为 installed libraries。
 4. 一级 `Board` 节点能展示当前值并打开 Board 列表。
 5. `Dependencies` 能显示已安装库、平台包和状态汇总。
 6. `Build Outputs` 和 `Generated` 支持折叠与空状态。
@@ -504,4 +507,4 @@ MVP 只允许：
 
 ## 12. 一句话结论
 
-Aily Code 的左侧工程树在 MVP 中应被实现为一棵“逻辑工程树”，其中根目录 `project.aci` 是项目发现入口，`src/main.cpp` 是默认源码入口，`Project Files` 表示项目自有代码与资源，`Dependencies` 表示外部依赖结果，前端只负责稳定渲染这套投影后的节点模型，而不直接暴露底层物理目录结构。
+Aily Code 的左侧工程树在 MVP 中应被实现为一棵“逻辑工程树”，其中根目录 `project.aci` 是项目发现入口，`src/main.cpp` 是默认源码入口，`Project Files` 表示项目自有代码与资源，`Dependencies` 表示外部依赖结果并提供 `components/` 的组件库快捷投影，前端只负责稳定渲染这套投影后的节点模型，而不改变源码所有权。

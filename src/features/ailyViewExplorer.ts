@@ -7,6 +7,7 @@ import {
   onHostEmbedContextChanged,
   requestHostCloseLibraryManager,
   requestHostClipboardWriteText,
+  requestHostOpenComponentLibraryManager,
   requestHostOpenLibraryManager,
   type HostBoardProfileV1,
   type HostEmbedContextV1,
@@ -273,6 +274,15 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
         visible: true
       },
       {
+        id: 'component-libraries',
+        type: 'group',
+        label: 'Component Libraries',
+        icon: 'folder-library',
+        expandable: true,
+        expandedByDefault: false,
+        visible: true
+      },
+      {
         id: 'platform-packages',
         type: 'group',
         label: 'Platform Packages',
@@ -378,6 +388,9 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
 /** 工程根下 node_modules 相对路径 */
 const NODE_MODULES_REL = 'node_modules'
 
+/** Coder 本地库源码根；每个直接子目录是一份库。 */
+const COMPONENTS_REL = 'components'
+
 /** Start Here 下镜像的源码目录（仅展示该目录内全部 .cpp） */
 const SRC_REL = 'src'
 
@@ -386,6 +399,9 @@ const ENTRY_SRC_NODE_PREFIX = 'entry-src-'
 
 /** Installed Libraries 无依赖时的占位节点 id（§9.4） */
 const INSTALLED_LIBRARIES_EMPTY_ID = 'installed-libraries-empty'
+
+/** Component Libraries 无本地库时的占位节点 id */
+const COMPONENT_LIBRARIES_EMPTY_ID = 'component-libraries-empty'
 
 /** Platform Packages 未解析到主板平台依赖时的占位节点 id（§9.4） */
 const PLATFORM_PACKAGES_EMPTY_ID = 'platform-packages-empty'
@@ -403,6 +419,18 @@ const INSTALLED_LIBRARIES_EMPTY: ProjectTreeNode = {
   label: 'No external libraries installed yet.',
   icon: 'info',
   description: NODE_MODULES_REL,
+  expandable: false,
+  expandedByDefault: false,
+  visible: true
+}
+
+/** Component Libraries 空状态文案 */
+const COMPONENT_LIBRARIES_EMPTY: ProjectTreeNode = {
+  id: COMPONENT_LIBRARIES_EMPTY_ID,
+  type: 'status',
+  label: 'No project component libraries yet.',
+  icon: 'info',
+  description: COMPONENTS_REL,
   expandable: false,
   expandedByDefault: false,
   visible: true
@@ -650,6 +678,13 @@ function isInstalledLibrariesGroup(
   return element?.kind === 'project' && element.node.id === 'installed-libraries'
 }
 
+/** Component Libraries 顶层分组节点（工程 components/ 镜像 + 宿主公共库列表） */
+function isComponentLibrariesGroup(
+  element: ExplorerTreeElement | undefined
+): boolean {
+  return element?.kind === 'project' && element.node.id === 'component-libraries'
+}
+
 /** 在蓝图树中按 id 查找节点（用于定向 refresh，避免全树 refresh 与自定义编辑器打开竞态） */
 function findBlueprintNode(id: string): ProjectTreeNode | undefined {
   const dynamic = dynamicSrcCppEntryNodes.get(id)
@@ -715,6 +750,7 @@ const DYNAMIC_REFRESH_BLUEPRINT_IDS = [
   'build-outputs',
   'build-release',
   'platform-packages',
+  'component-libraries',
   'installed-libraries'
 ] as const
 
@@ -767,7 +803,7 @@ function isFsDirectory(
   return fileType === dir || Number(fileType) === Number(dir)
 }
 
-/** 列出目录真实子项；在 node_modules 下展示全部条目（含点文件），仅顶层跳过 .bin/.cache */
+/** 列出目录真实子项；node_modules 与 components 的直接子目录用库图标。 */
 async function listFsDirectoryChildren(
   vscodeApi: typeof vscode,
   relPath: string
@@ -802,7 +838,8 @@ async function listFsDirectoryChildren(
       relPath: childRel,
       label: name,
       isDirectory,
-      isTopLevelPackage: relPath === NODE_MODULES_REL && isDirectory
+      isTopLevelPackage:
+        (relPath === NODE_MODULES_REL || relPath === COMPONENTS_REL) && isDirectory
     })
   }
 
@@ -926,7 +963,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     }
   }
 
-  /** node_modules 动态节点：映射真实磁盘路径，支持打开与 Files View 定位 */
+  /** node_modules / components 动态节点：映射真实磁盘路径。 */
   #getFsTreeItem(element: FsTreeElement): vscode.TreeItem {
     const vs = this.#vscode
     const collapsibleState = element.isDirectory
@@ -1077,6 +1114,15 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       return items
     }
 
+    // Component Libraries：每个 components/ 直接子目录是一份本地库源码根
+    if (node.id === 'component-libraries') {
+      const items = await listFsDirectoryChildren(this.#vscode, COMPONENTS_REL)
+      if (items.length === 0) {
+        return [wrap(COMPONENT_LIBRARIES_EMPTY)]
+      }
+      return items
+    }
+
     // Platform Packages：主板 boardDependencies 中的 sdk / compiler / tool（appdata/aily-project 下真实目录）
     if (node.id === 'platform-packages') {
       const packages = await this.#loadPlatformPackages()
@@ -1115,7 +1161,7 @@ const WHEN_SRC_CPP_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-
 const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem == aily.file:project-entry`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_DEPS_GROUP =
-  `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:platform-packages)`
+  `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:component-libraries || viewItem == aily.group:platform-packages)`
 const WHEN_PACKAGE_STATUS = `${WHEN_VIEW} && viewItem == aily.status:package-status`
 // §7.2 Build Outputs 的四个动作仅挂在 Build Outputs 顶层；子节点 debug/release/simulator 不再重复
 const WHEN_BUILD = `${WHEN_VIEW} && viewItem == aily.group:build-outputs`
@@ -1681,11 +1727,18 @@ void getApi().then((vscode) => {
   )
 
   // Dependencies 分组（§7.2）
-  vscode.commands.registerCommand(COMMANDS.addDependency, () => {
+  const openDependencyManager = (element?: ExplorerTreeElement): void => {
+    if (isComponentLibrariesGroup(element)) {
+      requestHostOpenComponentLibraryManager()
+      return
+    }
     requestHostOpenLibraryManager()
+  }
+  vscode.commands.registerCommand(COMMANDS.addDependency, (element?: ExplorerTreeElement) => {
+    openDependencyManager(element)
   })
-  vscode.commands.registerCommand(COMMANDS.openDependencyPanel, () => {
-    requestHostOpenLibraryManager()
+  vscode.commands.registerCommand(COMMANDS.openDependencyPanel, (element?: ExplorerTreeElement) => {
+    openDependencyManager(element)
   })
 
   // Package Status（§7.2）
@@ -1906,10 +1959,12 @@ void getApi().then((vscode) => {
   treeView.onDidExpandElement((ev) => {
     if (isInstalledLibrariesGroup(ev.element)) {
       requestHostOpenLibraryManager()
+    } else if (isComponentLibrariesGroup(ev.element)) {
+      requestHostOpenComponentLibraryManager()
     }
   })
   treeView.onDidCollapseElement((ev) => {
-    if (isInstalledLibrariesGroup(ev.element)) {
+    if (isInstalledLibrariesGroup(ev.element) || isComponentLibrariesGroup(ev.element)) {
       requestHostCloseLibraryManager()
     }
   })
@@ -1934,6 +1989,28 @@ void getApi().then((vscode) => {
     nodeModulesWatcher.onDidChange(bump)
   }
   setupNodeModulesWatcher()
+
+  /** components/ 变更时刷新 Component Libraries 子树 */
+  let componentsWatcher: vscode.FileSystemWatcher | undefined
+  const setupComponentsWatcher = (): void => {
+    componentsWatcher?.dispose()
+    componentsWatcher = undefined
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (root == null) {
+      return
+    }
+    componentsWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, `${COMPONENTS_REL}/**`)
+    )
+    const bump = (): void => {
+      const componentEl = getStableBlueprintElement('component-libraries')
+      provider.refresh(componentEl)
+    }
+    componentsWatcher.onDidCreate(bump)
+    componentsWatcher.onDidDelete(bump)
+    componentsWatcher.onDidChange(bump)
+  }
+  setupComponentsWatcher()
 
   const refreshStartHereGroup = (): void => {
     const startHereEl = getStableBlueprintElement('start-here')
@@ -2061,6 +2138,7 @@ void getApi().then((vscode) => {
   vscode.workspace.onDidChangeWorkspaceFolders(() => {
     buildOutputsCache = undefined
     setupNodeModulesWatcher()
+    setupComponentsWatcher()
     setupSrcWatcher()
     setupBuildOutputsWatcher()
     setupEmbedSrcNativeWatcher()

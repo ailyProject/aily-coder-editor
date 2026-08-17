@@ -106,6 +106,32 @@ function rpc<T>(op: string, payload: Record<string, unknown>, timeoutMs = 120000
   })
 }
 
+export type NativeGitStatusResult = {
+  repositoryRoot: string
+  status: string
+}
+
+/** 读取当前工作区 Git 状态；宿主只执行固定的只读 Git 参数。 */
+export function readNativeGitStatus(workspaceRoot: string): Promise<NativeGitStatusResult> {
+  return rpc<NativeGitStatusResult>('nativeGitStatus', { workspaceRoot })
+}
+
+/** 从 HEAD 读取工作区相对路径的基线文本，供 SCM diff 使用。 */
+export function readNativeGitHeadFile(
+  workspaceRoot: string,
+  relativePath: string
+): Promise<{ content: string }> {
+  return rpc<{ content: string }>('nativeGitShowHead', { workspaceRoot, relativePath })
+}
+
+/** 保存并提交当前工作区变更；宿主会默认排除 Coder 系统目录。 */
+export function commitNativeGitChanges(
+  workspaceRoot: string,
+  message: string
+): Promise<{ summary: string }> {
+  return rpc<{ summary: string }>('nativeGitCommit', { workspaceRoot, message })
+}
+
 /** 挂载一次应答监听（setup.common 内尽早调用）。 */
 export function installParentBackedNativeFsReplyListener(): void {
   window.addEventListener('message', (ev: MessageEvent) => {
