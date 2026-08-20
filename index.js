@@ -4,6 +4,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { handleComponentLibraryApiRequest } from './server/componentLibraryApi.js'
 
 const packageRoot = path.dirname(fileURLToPath(import.meta.url))
 const uiRoot = path.join(packageRoot, 'ui')
@@ -111,17 +112,25 @@ async function startServeMode(options) {
   let shuttingDown = false
 
   const server = createServer((request, response) => {
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      response.writeHead(405, { Allow: 'GET, HEAD' })
-      response.end()
-      return
-    }
-    try {
-      serveFile(request, response, resolveUiFile(request.url))
-    } catch (error) {
-      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+    void handleComponentLibraryApiRequest(request, response).then(handled => {
+      if (handled) return
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { Allow: 'GET, HEAD' })
+        response.end()
+        return
+      }
+      try {
+        serveFile(request, response, resolveUiFile(request.url))
+      } catch (error) {
+        response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+        response.end(error instanceof Error ? error.message : String(error))
+      }
+    }).catch(error => {
+      if (!response.headersSent) {
+        response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+      }
       response.end(error instanceof Error ? error.message : String(error))
-    }
+    })
   })
 
   const shutdown = () => {

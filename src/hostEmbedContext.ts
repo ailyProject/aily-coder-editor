@@ -68,14 +68,11 @@ export type HostEmbedContextV1 = {
 
 export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-host-context'
 
-/** iframe → Angular：请求打开右上角库管理面板（与 Blockly 库管理 UI 同源） */
+/** iframe → Angular：请求打开右上角 npm 库管理面板（Arduino 公共库归 Coder）。 */
 export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manager'
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL 须一致 */
 export const AILY_EMBED_OPEN_LIBRARY_MANAGER_BC = 'aily-embed-open-library-manager'
-
-/** 宿主右侧库面板的内容视图。 */
-export type HostLibraryManagerView = 'packages' | 'components'
 
 /** iframe → Angular：请求打开切换开发板弹窗（与 Header board-select 同源） */
 export const HOST_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-open-board-selector'
@@ -91,13 +88,12 @@ export const AILY_EMBED_CLIPBOARD_WRITE_BC = 'aily-embed-clipboard-write'
 
 /** 与宿主同步库管理侧栏：`open` 为 true 展开，false 收起 */
 export function syncHostLibraryManager(
-  open: boolean,
-  view: HostLibraryManagerView = 'packages'
+  open: boolean
 ): void {
   if (typeof window === 'undefined') {
     return
   }
-  const payload = { channel: HOST_OPEN_LIBRARY_MANAGER_CHANNEL, open, view }
+  const payload = { channel: HOST_OPEN_LIBRARY_MANAGER_CHANNEL, open }
   if (window.parent != null && window.parent !== window) {
     try {
       window.parent.postMessage(payload, '*')
@@ -111,7 +107,7 @@ export function syncHostLibraryManager(
   }
   try {
     const ch = new BroadcastChannel(AILY_EMBED_OPEN_LIBRARY_MANAGER_BC)
-    ch.postMessage({ open, view })
+    ch.postMessage({ open })
     setTimeout(() => {
       try {
         ch.close()
@@ -126,12 +122,7 @@ export function syncHostLibraryManager(
 
 /** 向 Electron 宿主请求展开库管理侧栏 */
 export function requestHostOpenLibraryManager(): void {
-  syncHostLibraryManager(true, 'packages')
-}
-
-/** 向 Electron 宿主请求展开 Coder 组件库侧栏。 */
-export function requestHostOpenComponentLibraryManager(): void {
-  syncHostLibraryManager(true, 'components')
+  syncHostLibraryManager(true)
 }
 
 /** 向 Electron 宿主请求收起库管理侧栏 */

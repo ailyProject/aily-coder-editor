@@ -7,6 +7,10 @@
     "ui",
     "!ui/**/*.map",
     "i18n",
+    "server/componentLibraryApi.d.ts",
+    "server/componentLibraryApi.js",
+    "server/componentLibraryService.js",
+    "server/arduinoLibraryRegistry.js",
     "index.js",
     "LICENSE",
     "README.md"
@@ -47,6 +51,7 @@
     "dev:link": "node scripts/link-dev.mjs",
     "dev:unlink": "node scripts/link-dev.mjs --unlink",
     "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
+    "test:component-libraries": "node --test server/componentLibraryService.test.js",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts"
@@ -85,6 +90,9 @@
       "@codingame/monaco-vscode-workbench-service-override": "^31.0.1",
       "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1"
     }
+  },
+  "dependencies": {
+    "yauzl": "^3.3.0"
   },
   "devDependencies": {
     "@codingame/esbuild-import-meta-url-plugin": "^1.0.3",

@@ -186,7 +186,7 @@ export const remotePath =
 export const resetLayout = params.has('resetLayout')
 export const useHtmlFileSystemProvider = params.has('htmlFileSystemProvider')
 export const disableShadowDom = params.has('disableShadowDom')
-const embedFolderAbsolute =
+export const embedFolderAbsolute =
   remoteAuthority != null ? undefined : decodeFolderQueryParam(params.get('folder'))
 /** aily Electron 宿主通过 postMessage 桥接磁盘；纯浏览器预览仍为演示工作区 */
 const embedNativeFsBridge = params.get('nativeFsBridge') === 'true'

@@ -1,5 +1,7 @@
 import {
   ConfigurationTarget,
+  IEditorService,
+  IFileService,
   IStorageService,
   IWorkbenchLayoutService,
   IWorkbenchThemeService,
@@ -10,7 +12,12 @@ import getWorkbenchServiceOverride, {
   Parts
 } from '@codingame/monaco-vscode-workbench-service-override'
 import getQuickAccessServiceOverride from '@codingame/monaco-vscode-quickaccess-service-override'
-import { BrowserStorageService } from '@codingame/monaco-vscode-storage-service-override'
+import {
+  BrowserStorageService,
+  StorageScope
+} from '@codingame/monaco-vscode-storage-service-override'
+import { URI } from '@codingame/monaco-vscode-api/vscode/vs/base/common/uri'
+import { StorageTarget } from '@codingame/monaco-vscode-api/vscode/vs/platform/storage/common/storage'
 import { ExtensionHostKind } from '@codingame/monaco-vscode-extensions-service-override'
 import { registerExtension } from '@codingame/monaco-vscode-api/extensions'
 import {
@@ -25,10 +32,12 @@ import {
   coderWorkbenchColorThemeForScheme,
   commonServices,
   constructOptions,
+  embedFolderAbsolute,
   envOptions,
   remoteAuthority,
   userDataProvider,
-  disableShadowDom
+  disableShadowDom,
+  useEmbedHostLocalFolder
 } from './setup.common'
 import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
 import { installEmbedLayoutSync } from './embedLayoutSync'
@@ -101,6 +110,88 @@ await initializeMonacoService(
   constructOptions,
   envOptions
 )
+
+const CODER_WORKSPACE_OPENED_KEY = 'ailyCoder.workspaceOpened'
+const CODER_LAST_ACTIVE_FILE_KEY = 'ailyCoder.lastActiveFile'
+
+function workspaceRelativeFilePath(resource: URI, root: URI): string | undefined {
+  if (resource.scheme !== 'file') {
+    return undefined
+  }
+  const rootPath = root.path.replace(/\/$/, '')
+  const filePath = resource.path
+  const prefix = `${rootPath}/`
+  if (!filePath.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return undefined
+  }
+  return filePath.slice(prefix.length)
+}
+
+/** 首次显示 main.cpp；之后恢复该工程最后一次显示的源码文件。 */
+async function restoreCoderActiveEditor(): Promise<void> {
+  if (!useEmbedHostLocalFolder || !embedFolderAbsolute) {
+    return
+  }
+
+  const storageService = await getService(IStorageService)
+  const editorService = await getService(IEditorService)
+  const workspaceRoot = URI.file(embedFolderAbsolute)
+
+  const rememberActiveFile = (): void => {
+    const resource = editorService.activeEditor?.resource
+    if (resource == null) {
+      return
+    }
+    const relativePath = workspaceRelativeFilePath(resource, workspaceRoot)
+    if (relativePath == null) {
+      return
+    }
+    storageService.store(
+      CODER_LAST_ACTIVE_FILE_KEY,
+      relativePath,
+      StorageScope.WORKSPACE,
+      StorageTarget.MACHINE
+    )
+  }
+  editorService.onDidActiveEditorChange(rememberActiveFile)
+
+  const hasOpened = storageService.getBoolean(
+    CODER_WORKSPACE_OPENED_KEY,
+    StorageScope.WORKSPACE,
+    false
+  )
+  storageService.store(
+    CODER_WORKSPACE_OPENED_KEY,
+    true,
+    StorageScope.WORKSPACE,
+    StorageTarget.MACHINE
+  )
+
+  const rememberedPath = storageService.get(
+    CODER_LAST_ACTIVE_FILE_KEY,
+    StorageScope.WORKSPACE
+  )
+  const targetUri = hasOpened
+    ? rememberedPath
+      ? URI.joinPath(workspaceRoot, rememberedPath)
+      : undefined
+    : URI.joinPath(workspaceRoot, 'src', 'main.cpp')
+  if (targetUri == null || workspaceRelativeFilePath(targetUri, workspaceRoot) == null) {
+    return
+  }
+
+  const fileService = await getService(IFileService)
+  if (!(await fileService.exists(targetUri))) {
+    return
+  }
+
+  await editorService.openEditor({
+    resource: targetUri,
+    options: { pinned: true }
+  })
+}
+
+await restoreCoderActiveEditor()
 
 // 嵌入壳：拦截命令面板，避免 Ctrl/Cmd+Shift+P 弹出 VS Code 全局命令列表
 installEmbedCommandPaletteBlock()

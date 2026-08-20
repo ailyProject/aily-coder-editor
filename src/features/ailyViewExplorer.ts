@@ -7,7 +7,6 @@ import {
   onHostEmbedContextChanged,
   requestHostCloseLibraryManager,
   requestHostClipboardWriteText,
-  requestHostOpenComponentLibraryManager,
   requestHostOpenLibraryManager,
   type HostBoardProfileV1,
   type HostEmbedContextV1,
@@ -17,6 +16,12 @@ import {
   buildBoardListSpecFromHost,
   openAilyBoardListEditor
 } from './ailyBoardListEditor.workbench.js'
+import {
+  AILY_COMPONENT_LIBRARY_CONTAINER_ID,
+  AILY_COMPONENT_LIBRARY_VIEW_ID,
+  openAilyComponentLibraryPanel,
+  registerAilyComponentLibraryView
+} from './ailyComponentLibraryView.js'
 import {
   startVirtualTreeInlineRename,
   validateRenameEntryName
@@ -1177,11 +1182,30 @@ const { getApi } = registerExtension(
       vscode: '*'
     },
     contributes: {
+      viewsContainers: {
+        secondarySidebar: [
+          {
+            id: AILY_COMPONENT_LIBRARY_CONTAINER_ID,
+            title: 'Component Libraries',
+            icon: '$(library)'
+          }
+        ]
+      },
       views: {
         explorer: [
           {
             id: AILY_VIEW_ID,
             name: 'Aily View',
+            icon: '$(project)',
+            visibility: 'visible'
+          }
+        ],
+        [AILY_COMPONENT_LIBRARY_CONTAINER_ID]: [
+          {
+            id: AILY_COMPONENT_LIBRARY_VIEW_ID,
+            name: 'Component Libraries',
+            icon: '$(library)',
+            type: 'webview',
             visibility: 'visible'
           }
         ]
@@ -1290,6 +1314,7 @@ const { getApi } = registerExtension(
 )
 
 void getApi().then((vscode) => {
+  registerAilyComponentLibraryView(vscode)
   let buildOutputsCache: BuildOutputsHint | null | undefined
   let buildOutputsInflight: Promise<BuildOutputsHint> | null = null
 
@@ -1729,7 +1754,7 @@ void getApi().then((vscode) => {
   // Dependencies 分组（§7.2）
   const openDependencyManager = (element?: ExplorerTreeElement): void => {
     if (isComponentLibrariesGroup(element)) {
-      requestHostOpenComponentLibraryManager()
+      void openAilyComponentLibraryPanel()
       return
     }
     requestHostOpenLibraryManager()
@@ -1955,16 +1980,16 @@ void getApi().then((vscode) => {
     }
   })
 
-  /** Installed Libraries 树节点展开/折叠 ↔ 宿主右上角库管理侧栏 */
+  /** npm 库仍使用宿主通用面板；Arduino 公共库页面与安装完全由 Coder 提供。 */
   treeView.onDidExpandElement((ev) => {
     if (isInstalledLibrariesGroup(ev.element)) {
       requestHostOpenLibraryManager()
     } else if (isComponentLibrariesGroup(ev.element)) {
-      requestHostOpenComponentLibraryManager()
+      void openAilyComponentLibraryPanel()
     }
   })
   treeView.onDidCollapseElement((ev) => {
-    if (isInstalledLibrariesGroup(ev.element) || isComponentLibrariesGroup(ev.element)) {
+    if (isInstalledLibrariesGroup(ev.element)) {
       requestHostCloseLibraryManager()
     }
   })
