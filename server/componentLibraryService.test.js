@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { gzip } from 'node:zlib'
+import { promisify } from 'node:util'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,8 +13,12 @@ import {
 import {
   installComponentLibrary,
   parseArduinoLibraryProperties,
+  removeArduinoComponentLibrary,
   scanComponentLibraries,
+  searchArduinoComponentLibraries,
 } from './componentLibraryService.js'
+
+const gzipAsync = promisify(gzip)
 
 test('parses Arduino library.properties metadata', () => {
   assert.deepEqual(
@@ -125,4 +131,100 @@ test('scans SDK libraries and installs a complete component atomically', async t
 
   const after = await scanComponentLibraries({ workspaceRoot, appDataPath })
   assert.equal(after[0].installed, true)
+})
+
+test('removes only an exact Coder-managed Arduino registry library version', async t => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-arduino-remove-'))
+  t.after(async () => {
+    const { rm } = await import('node:fs/promises')
+    await rm(tempRoot, { recursive: true, force: true })
+  })
+
+  const workspaceRoot = path.join(tempRoot, 'project')
+  const appDataPath = path.join(tempRoot, 'appdata')
+  const componentRoot = path.join(workspaceRoot, 'components', 'Servo')
+  const cacheRoot = path.join(appDataPath, 'cache', 'arduino-library-manager')
+  const checksum = `SHA-256:${'a'.repeat(64)}`
+  const indexPayload = {
+    libraries: [{
+      name: 'Servo',
+      version: '1.2.0',
+      author: 'Arduino',
+      sentence: 'Servo library',
+      category: 'Device Control',
+      architectures: ['avr'],
+      types: ['Arduino'],
+      url: 'https://downloads.arduino.cc/libraries/Servo-1.2.0.zip',
+      archiveFileName: 'Servo-1.2.0.zip',
+      size: 123,
+      checksum,
+    }],
+  }
+  const registry = parseArduinoLibraryIndex(indexPayload)
+  const libraryId = registry.libraries[0].id
+
+  await mkdir(componentRoot, { recursive: true })
+  await mkdir(cacheRoot, { recursive: true })
+  await writeFile(path.join(workspaceRoot, 'project.aci'), JSON.stringify({
+    target: { framework: 'arduino' },
+  }))
+  await writeFile(
+    path.join(componentRoot, 'library.properties'),
+    'name=Servo\nversion=1.2.0\narchitectures=avr\n',
+  )
+  await writeFile(
+    path.join(cacheRoot, 'library_index.json.gz'),
+    await gzipAsync(JSON.stringify(indexPayload)),
+  )
+
+  const unmanagedSearch = await searchArduinoComponentLibraries({
+    workspaceRoot,
+    appDataPath,
+    query: 'Servo',
+  })
+  assert.equal(unmanagedSearch.libraries[0].installed, true)
+  assert.equal(unmanagedSearch.libraries[0].managed, false)
+
+  await assert.rejects(
+    removeArduinoComponentLibrary({
+      workspaceRoot,
+      appDataPath,
+      libraryId,
+      version: '1.2.0',
+    }),
+    /no Coder Arduino installation metadata/u,
+  )
+  assert.match(await readFile(path.join(componentRoot, 'library.properties'), 'utf8'), /name=Servo/u)
+  await writeFile(
+    path.join(componentRoot, '.aily-component-library.json'),
+    JSON.stringify({
+      source: 'arduino-library-manager',
+      libraryId,
+      name: 'Servo',
+      version: '1.2.0',
+    }),
+  )
+  const managedSearch = await searchArduinoComponentLibraries({
+    workspaceRoot,
+    appDataPath,
+    query: 'Servo',
+  })
+  assert.equal(managedSearch.libraries[0].managed, true)
+
+  const removed = await removeArduinoComponentLibrary({
+    workspaceRoot,
+    appDataPath,
+    libraryId,
+    version: '1.2.0',
+  })
+  assert.equal(removed.removed, true)
+  assert.equal(removed.folderName, 'Servo')
+
+  const repeated = await removeArduinoComponentLibrary({
+    workspaceRoot,
+    appDataPath,
+    libraryId,
+    version: '1.2.0',
+  })
+  assert.equal(repeated.alreadyRemoved, true)
 })

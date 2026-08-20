@@ -4,6 +4,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { attachCoderAgentRpcServer } from './server/agentRpcServer.js'
 import { handleComponentLibraryApiRequest } from './server/componentLibraryApi.js'
 
 const packageRoot = path.dirname(fileURLToPath(import.meta.url))
@@ -107,6 +108,9 @@ async function startServeMode(options) {
   }
 
   const host = typeof options.host === 'string' ? options.host : '127.0.0.1'
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+    throw new Error('Aily Coder Runtime must listen on a loopback host')
+  }
   const requestedPort = Number(options.port ?? 0)
   const port = Number.isInteger(requestedPort) && requestedPort >= 0 ? requestedPort : 0
   let shuttingDown = false
@@ -132,11 +136,14 @@ async function startServeMode(options) {
       response.end(error instanceof Error ? error.message : String(error))
     })
   })
+  const agentRpc = attachCoderAgentRpcServer(server)
 
   const shutdown = () => {
     if (shuttingDown) return
     shuttingDown = true
-    server.close(() => process.exit(0))
+    void agentRpc.close().finally(() => {
+      server.close(() => process.exit(0))
+    })
     setTimeout(() => process.exit(0), 2000).unref()
   }
 
@@ -152,13 +159,15 @@ async function startServeMode(options) {
   if (!address || typeof address === 'string') {
     throw new Error('Coder server did not expose a TCP address')
   }
-  const origin = `http://${host}:${address.port}`
+  const originHost = host === '::1' ? '[::1]' : host
+  const origin = `http://${originHost}:${address.port}`
   write({
     event: 'ready',
     data: {
       mode: 'serve',
       url: `${origin}/`,
       origin,
+      wsUrl: `ws://${originHost}:${address.port}${agentRpc.wsPath}`,
       port: address.port,
       pid: process.pid,
     },

@@ -7,10 +7,14 @@
     "ui",
     "!ui/**/*.map",
     "i18n",
+    "agent",
+    "skill/aily-coder-library",
     "server/componentLibraryApi.d.ts",
     "server/componentLibraryApi.js",
     "server/componentLibraryService.js",
     "server/arduinoLibraryRegistry.js",
+    "server/agentRpcRouter.js",
+    "server/agentRpcServer.js",
     "index.js",
     "LICENSE",
     "README.md"
@@ -33,6 +37,21 @@
     },
     "runtime": {
       "startupTimeoutMs": 30000
+    },
+    "agent": {
+      "protocolVersion": 1,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "skills": [
+        "skill/aily-coder-library/SKILL.md"
+      ],
+      "tools": {
+        "transport": "aily-child-rpc",
+        "manifest": "agent/tools.json"
+      }
     }
   },
   "scripts": {
@@ -51,7 +70,7 @@
     "dev:link": "node scripts/link-dev.mjs",
     "dev:unlink": "node scripts/link-dev.mjs --unlink",
     "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
-    "test:component-libraries": "node --test server/componentLibraryService.test.js",
+    "test:component-libraries": "node --test server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts"
@@ -92,6 +111,7 @@
     }
   },
   "dependencies": {
+    "ws": "^8.20.0",
     "yauzl": "^3.3.0"
   },
   "devDependencies": {
@@ -295,7 +315,6 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.24.1",
     "vite": "~8.0.3",
-    "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1",
-    "ws": "^8.20.0"
+    "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1"
   }
 }

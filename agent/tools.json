@@ -1,0 +1,164 @@
+{
+  "protocolVersion": 1,
+  "transport": "aily-child-rpc",
+  "tools": [
+    {
+      "name": "coder_arduino_library_search",
+      "description": "Search the official Arduino Library Manager catalog for an Aily Coder project. Returns opaque library IDs, exact versions, architecture compatibility, installed state, and Coder-managed provenance. This does not search Blockly libraries or Aily Coder external packages.",
+      "rpc": {
+        "method": "coder.library.arduino.search"
+      },
+      "permission": "read",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 120000,
+      "maxTimeoutMs": 200000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 65536,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-read",
+        "filesystem": "read",
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Arduino library name or functionality keywords."
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Exact Arduino Library Manager category filter."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Exact Arduino Library Manager type filter."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 25
+          },
+          "forceRefresh": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "coder_arduino_library_install",
+      "description": "Install one exact result from coder_arduino_library_search into the active Aily Coder project's components directory. Requires an opaque official Arduino registry ID and an advertised exact version; it never installs Blockly libraries or guessed packages.",
+      "rpc": {
+        "method": "coder.library.arduino.install"
+      },
+      "permission": "change",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 180000,
+      "maxTimeoutMs": 320000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 49152,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-mutation",
+        "filesystem": "write",
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "libraryId",
+          "version"
+        ],
+        "properties": {
+          "libraryId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Exact opaque ID returned by coder_arduino_library_search."
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Exact advertised version returned by coder_arduino_library_search."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "coder_arduino_library_remove",
+      "description": "Remove one exact Coder-managed official Arduino library from the active Aily Coder project. The Runtime refuses missing or conflicting installation provenance, ambiguous directories, symlinks, and version mismatches so intentional local components are preserved.",
+      "rpc": {
+        "method": "coder.library.arduino.remove"
+      },
+      "permission": "change",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 120000,
+      "maxTimeoutMs": 180000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 49152,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-mutation",
+        "filesystem": "write",
+        "destructive": true,
+        "idempotent": true,
+        "openWorld": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "libraryId",
+          "version"
+        ],
+        "properties": {
+          "libraryId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Exact opaque ID returned by coder_arduino_library_search."
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Exact installedVersion confirmed by coder_arduino_library_search."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

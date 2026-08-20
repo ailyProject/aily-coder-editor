@@ -10,6 +10,7 @@ import {
   realpath,
   rename,
   rm,
+  writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -24,6 +25,16 @@ import {
 } from './arduinoLibraryRegistry.js'
 
 const SAFE_LIBRARY_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u
+const COMPONENT_LIBRARY_RECEIPT = '.aily-component-library.json'
+
+export class ComponentLibraryError extends Error {
+  constructor(code, message, details) {
+    super(message)
+    this.name = 'ComponentLibraryError'
+    this.code = code
+    this.details = details
+  }
+}
 
 export function defaultAilyAppDataPath() {
   if (process.env.AILY_APPDATA_PATH) {
@@ -116,7 +127,10 @@ async function resolveWorkspaceRoot(workspaceRoot) {
   const projectConfig = path.join(root, 'project.aci')
   const configStat = await lstat(projectConfig).catch(() => null)
   if (!configStat?.isFile()) {
-    throw new Error('Workspace root is not an Aily Coder project')
+    throw new ComponentLibraryError(
+      'CODER_PROJECT_REQUIRED',
+      'Workspace root is not an Aily Coder project',
+    )
   }
   return root
 }
@@ -296,9 +310,14 @@ async function listInstalledComponentLibraries(componentsRoot) {
     if (!propertiesStat?.isFile() || propertiesStat.isSymbolicLink()) continue
     const properties = parseArduinoLibraryProperties(await readFile(propertiesPath, 'utf8'))
     if (!properties.name) continue
+    const receipt = await readFile(
+      path.join(componentsRoot, entry.name, COMPONENT_LIBRARY_RECEIPT),
+      'utf8',
+    ).then(value => JSON.parse(value)).catch(() => null)
     installed.set(properties.name.toLocaleLowerCase('en'), {
       folderName: entry.name,
       version: properties.version,
+      receipt,
     })
   }
   return installed
@@ -323,6 +342,13 @@ function releaseIsCompatible(release, activeArchitectures) {
 
 function toRegistryClientLibrary(library, installed, activeArchitectures, selectedVersion) {
   const selected = library.versions.find(item => item.version === selectedVersion) ?? library.versions[0]
+  const managed = Boolean(
+    installed?.receipt
+    && installed.receipt.source === 'arduino-library-manager'
+    && installed.receipt.libraryId === library.id
+    && installed.receipt.name === selected.name
+    && installed.receipt.version === installed.version,
+  )
   return {
     id: library.id,
     source: 'registry',
@@ -342,6 +368,7 @@ function toRegistryClientLibrary(library, installed, activeArchitectures, select
     compatible: releaseIsCompatible(selected, activeArchitectures),
     installed: Boolean(installed),
     installedVersion: installed?.version ?? '',
+    managed,
   }
 }
 
@@ -513,7 +540,19 @@ export async function installArduinoComponentLibrary({
   const registry = await loadArduinoLibraryRegistry({ cacheRoot: appDataRoot })
   const match = findArduinoLibraryRelease(registry, libraryId, version)
   if (!match) {
-    throw new Error('Arduino Library Manager version was not found')
+    throw new ComponentLibraryError(
+      'ARDUINO_LIBRARY_NOT_FOUND',
+      'Arduino Library Manager version was not found',
+    )
+  }
+
+  const sdkRoots = await resolveSdkRoots(projectRoot, appDataRoot)
+  if (!releaseIsCompatible(match.release, activeArduinoArchitectures(sdkRoots))) {
+    throw new ComponentLibraryError(
+      'ARDUINO_LIBRARY_INCOMPATIBLE',
+      `${match.library.name} ${match.release.version} is not compatible with the active Coder architecture`,
+      { architectures: match.release.architectures },
+    )
   }
 
   const componentsRoot = path.join(projectRoot, 'components')
@@ -534,6 +573,17 @@ export async function installArduinoComponentLibrary({
       throw new Error('Arduino library version does not match the registry')
     }
 
+    const receipt = {
+      source: 'arduino-library-manager',
+      libraryId: match.library.id,
+      name: match.library.name,
+      version: match.release.version,
+    }
+    await writeFile(
+      path.join(libraryRoot, COMPONENT_LIBRARY_RECEIPT),
+      JSON.stringify(receipt, null, 2),
+    )
+
     const folderName = canonicalRegistryFolderName(match.release, libraryRoot, extractionRoot)
     const targetPath = path.join(componentsRoot, folderName)
     if (await pathExists(targetPath)) {
@@ -545,25 +595,130 @@ export async function installArduinoComponentLibrary({
         existingProperties?.name.toLocaleLowerCase('en') === match.library.name.toLocaleLowerCase('en')
         && existingProperties?.version === match.release.version
       ) {
+        const existingReceipt = await readFile(
+          path.join(targetPath, COMPONENT_LIBRARY_RECEIPT),
+          'utf8',
+        ).then(value => JSON.parse(value)).catch(() => null)
         return {
           ...toRegistryClientLibrary(match.library, {
             folderName,
             version: match.release.version,
+            receipt: existingReceipt,
           }, new Set(), match.release.version),
           alreadyInstalled: true,
         }
       }
-      throw new Error(`components/${folderName} already exists; remove it before switching versions`)
+      throw new ComponentLibraryError(
+        'COMPONENT_PATH_CONFLICT',
+        `components/${folderName} already exists; remove it before switching versions`,
+      )
     }
     await rename(libraryRoot, targetPath)
     return {
       ...toRegistryClientLibrary(match.library, {
         folderName,
         version: match.release.version,
+        receipt,
       }, new Set(), match.release.version),
       alreadyInstalled: false,
     }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
+  }
+}
+
+export async function removeArduinoComponentLibrary({
+  workspaceRoot,
+  appDataPath,
+  libraryId,
+  version,
+}) {
+  const projectRoot = await resolveWorkspaceRoot(workspaceRoot)
+  const appDataRoot = await resolveAppDataRoot(appDataPath)
+  const registry = await loadArduinoLibraryRegistry({ cacheRoot: appDataRoot })
+  const match = findArduinoLibraryRelease(registry, libraryId, version)
+  if (!match) {
+    throw new ComponentLibraryError(
+      'ARDUINO_LIBRARY_NOT_FOUND',
+      'Arduino Library Manager version was not found',
+    )
+  }
+
+  const componentsRoot = path.join(projectRoot, 'components')
+  const candidates = []
+  for (const entry of await readdir(componentsRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory() || !isSafeComponentLibraryDirectoryName(entry.name)) continue
+    const targetPath = path.join(componentsRoot, entry.name)
+    const targetStat = await lstat(targetPath).catch(() => null)
+    if (!targetStat?.isDirectory() || targetStat.isSymbolicLink()) continue
+    const propertiesPath = path.join(targetPath, 'library.properties')
+    const propertiesStat = await lstat(propertiesPath).catch(() => null)
+    if (!propertiesStat?.isFile() || propertiesStat.isSymbolicLink()) continue
+    const properties = parseArduinoLibraryProperties(await readFile(propertiesPath, 'utf8'))
+    if (properties.name.toLocaleLowerCase('en') === match.library.name.toLocaleLowerCase('en')) {
+      candidates.push({ folderName: entry.name, targetPath, properties })
+    }
+  }
+
+  if (candidates.length === 0) {
+    return {
+      id: match.library.id,
+      source: 'registry',
+      name: match.library.name,
+      version: match.release.version,
+      removed: false,
+      alreadyRemoved: true,
+    }
+  }
+  if (candidates.length > 1) {
+    throw new Error(`Multiple components match Arduino library ${match.library.name}; remove the intended folder manually`)
+  }
+
+  const candidate = candidates[0]
+  if (candidate.properties.version !== match.release.version) {
+    throw new Error(
+      `Installed ${match.library.name} version ${candidate.properties.version || '(unknown)'} does not match requested version ${match.release.version}`,
+    )
+  }
+
+  const receiptPath = path.join(candidate.targetPath, COMPONENT_LIBRARY_RECEIPT)
+  let receipt = null
+  if (await pathExists(receiptPath)) {
+    try {
+      receipt = JSON.parse(await readFile(receiptPath, 'utf8'))
+    } catch {
+      throw new ComponentLibraryError(
+        'COMPONENT_PROVENANCE_CONFLICT',
+        `components/${candidate.folderName} has invalid Arduino library provenance metadata`,
+      )
+    }
+  }
+  if (!receipt) {
+    throw new ComponentLibraryError(
+      'COMPONENT_PROVENANCE_REQUIRED',
+      `components/${candidate.folderName} has no Coder Arduino installation metadata; refusing to remove a possibly local library`,
+    )
+  }
+  if (
+    receipt.source !== 'arduino-library-manager'
+    || receipt.libraryId !== match.library.id
+    || receipt.name !== match.library.name
+    || receipt.version !== match.release.version
+  ) {
+    throw new ComponentLibraryError(
+      'COMPONENT_PROVENANCE_CONFLICT',
+      `components/${candidate.folderName} has conflicting Arduino library provenance metadata`,
+    )
+  }
+
+  await rm(candidate.targetPath, { recursive: true, force: false })
+  return {
+    id: match.library.id,
+    source: 'registry',
+    name: match.library.name,
+    version: match.release.version,
+    folderName: candidate.folderName,
+    removed: true,
+    alreadyRemoved: false,
   }
 }

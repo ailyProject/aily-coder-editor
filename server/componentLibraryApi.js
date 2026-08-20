@@ -3,6 +3,7 @@ import { URL } from 'node:url'
 import {
   installArduinoComponentLibrary,
   installComponentLibrary,
+  removeArduinoComponentLibrary,
   scanComponentLibraries,
   searchArduinoComponentLibraries,
 } from './componentLibraryService.js'
@@ -97,11 +98,25 @@ export async function handleComponentLibraryApiRequest(request, response) {
       })
       return true
     }
+    if (url.pathname === `${API_PREFIX}remove`) {
+      const library = await removeArduinoComponentLibrary({
+        workspaceRoot: body.workspaceRoot,
+        libraryId: body.libraryId,
+        version: body.version,
+      })
+      sendJson(response, 200, {
+        ok: true,
+        library: toClientLibrary(library),
+      })
+      return true
+    }
     sendJson(response, 404, { ok: false, error: 'Unknown component library API route' })
   } catch (error) {
     sendJson(response, 400, {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      ...(typeof error?.code === 'string' ? { errorCode: error.code } : {}),
+      ...(error?.details !== undefined ? { details: error.details } : {}),
     })
   }
   return true
