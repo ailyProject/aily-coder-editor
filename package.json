@@ -3,6 +3,7 @@
   "version": "0.1.1",
   "type": "module",
   "main": "index.js",
+  "hide": true,
   "files": [
     "ui",
     "!ui/**/*.map",
