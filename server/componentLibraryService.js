@@ -124,9 +124,9 @@ async function pathExists(candidate) {
 
 async function resolveWorkspaceRoot(workspaceRoot) {
   const root = await existingRealDirectory(workspaceRoot, 'Workspace root')
-  const projectConfig = path.join(root, 'project.aci')
-  const configStat = await lstat(projectConfig).catch(() => null)
-  if (!configStat?.isFile()) {
+  const projectConfig = path.join(root, 'package.json')
+  const manifest = await readJson(projectConfig, 'package.json').catch(() => null)
+  if (manifest?.type !== 'coder') {
     throw new ComponentLibraryError(
       'CODER_PROJECT_REQUIRED',
       'Workspace root is not an Aily Coder project',
@@ -165,23 +165,29 @@ async function readJson(filePath, label) {
 }
 
 async function resolvePlatformPackageName(projectRoot) {
-  const project = await readJson(path.join(projectRoot, 'project.aci'), 'project.aci')
-  const configured = String(project?.target?.platform ?? '').trim()
+  const project = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+  const configured = String(project?.platform ?? '').trim()
   if (isSafeAilyPackageName(configured, 'platform-')) {
     return configured
   }
 
-  const boardPackage = String(project?.target?.boardPackage ?? '').trim()
+  const dependencyNames = [
+    ...Object.keys(project?.dependencies ?? {}),
+    ...Object.keys(project?.boardDependencies ?? {}),
+  ]
+  const boardPackage = dependencyNames.find(name => (
+    isSafeAilyPackageName(name, 'board-') || isSafeAilyPackageName(name, 'coder-')
+  )) ?? ''
   if (!isSafeAilyPackageName(boardPackage, 'board-')
     && !isSafeAilyPackageName(boardPackage, 'coder-')) {
-    throw new Error('project.aci does not declare a valid board package or platform')
+    throw new Error('package.json does not declare a valid board package or platform')
   }
   const boardManifest = await readJson(
     path.join(packagePath(projectRoot, boardPackage), 'package.json'),
     'Board package',
   )
-  const framework = String(project?.target?.framework ?? '').trim()
-  const boardId = String(project?.target?.board ?? '').trim()
+  const framework = String(project?.framework ?? project?.devmode ?? '').trim()
+  const boardId = String(project?.board ?? '').trim()
   const supported = Array.isArray(boardManifest?.aily?.supportedPlatforms)
     ? boardManifest.aily.supportedPlatforms
     : []

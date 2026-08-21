@@ -154,7 +154,7 @@ const COMMANDS = {
   // §7.2 真实目录额外
   newFile: 'ailyView.newFile',
   newFolder: 'ailyView.newFolder',
-  // §7.2 project.aci
+  // §7.2 package.json project configuration
   openVisualConfig: 'ailyView.openVisualConfig',
   openAsJson: 'ailyView.openAsJson',
   validateConfig: 'ailyView.validateConfig',
@@ -205,7 +205,8 @@ function withHostBoardDescription(node: ProjectTreeNode): ProjectTreeNode {
 }
 
 // 工程视图节点蓝图：只保留用户源码、工程配置与项目库三个入口。
-// User View / Library 直接映射磁盘目录；Config 收纳模板根配置文件。
+// Aily View 的直属节点默认展开；更深层的真实目录仍由用户按需展开。
+// User View / Library 直接映射磁盘目录；Config 收纳根 package.json 工程配置。
 const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
     id: 'user-view',
@@ -223,19 +224,9 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     label: 'Config',
     icon: 'settings-gear',
     expandable: true,
-    expandedByDefault: false,
+    expandedByDefault: true,
     visible: true,
     children: [
-      {
-        id: 'project-entry',
-        type: 'file',
-        label: 'project.aci',
-        icon: 'json',
-        path: 'project.aci',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      },
       {
         id: 'package-json',
         type: 'file',
@@ -255,7 +246,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     icon: 'folder-library',
     path: 'sketch/libraries',
     expandable: true,
-    expandedByDefault: false,
+    expandedByDefault: true,
     visible: true
   }
 ]
@@ -405,14 +396,14 @@ function isSrcCppEntryNodeId(id: string): boolean {
   return id.startsWith(ENTRY_SRC_NODE_PREFIX)
 }
 
-/** 读取 project.aci 中的默认编译入口，并转换为相对工程根的 sketch 路径。 */
-async function readProjectAciEntry(vscodeApi: typeof vscode): Promise<string | undefined> {
+/** 读取 package.json 中的默认编译入口，并转换为相对工程根的 sketch 路径。 */
+async function readProjectPackageEntry(vscodeApi: typeof vscode): Promise<string | undefined> {
   const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
   if (root == null) {
     return undefined
   }
   try {
-    const uri = vscodeApi.Uri.joinPath(root, 'project.aci')
+    const uri = vscodeApi.Uri.joinPath(root, 'package.json')
     const raw = await vscodeApi.workspace.fs.readFile(uri)
     const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
     const entry = doc.entry?.trim()
@@ -503,7 +494,7 @@ function buildSrcCppEntryNode(relPath: string, mainEntry?: string): ProjectTreeN
 }
 
 async function buildStartHereCppEntryNodes(vscodeApi: typeof vscode): Promise<ProjectTreeNode[]> {
-  const mainEntry = await readProjectAciEntry(vscodeApi)
+  const mainEntry = await readProjectPackageEntry(vscodeApi)
   const rawPaths = await listSrcCppRelPaths(vscodeApi)
   const paths = sortCppEntryRelPaths(rawPaths, mainEntry)
   dynamicSrcCppEntryNodes.clear()
@@ -727,7 +718,7 @@ async function listFsDirectoryChildren(
 
 class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElement> {
   readonly #vscode: typeof vscode
-  /** 读 `.aily/coder-embed-hints.json` 与宿主 postMessage（仅真实产物，不回退 project.aci） */
+  /** 读 `.aily/coder-embed-hints.json` 与宿主 postMessage（仅真实产物，不回退工程配置） */
   readonly #loadBuildOutputs: () => Promise<BuildOutputsHint>
   /** 主板 boardDependencies → appdata 下 sdk/tools 等平台包目录 */
   readonly #loadPlatformPackages: () => Promise<readonly HostPlatformPackageV1[]>
@@ -1045,7 +1036,7 @@ const WHEN_RENAMEABLE = `${WHEN_VIEW} && (viewItem =~ /^aily\\.file:entry-src-/ 
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
 /** Start Here 下 src 镜像的 .cpp 文件 */
 const WHEN_SRC_CPP_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-/`
-const WHEN_PROJECT_ACI = `${WHEN_VIEW} && viewItem == aily.file:project-entry`
+const WHEN_PROJECT_CONFIG = `${WHEN_VIEW} && viewItem == aily.file:package-json`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_DEPS_GROUP =
   `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:component-libraries || viewItem == aily.group:platform-packages)`
@@ -1145,11 +1136,11 @@ const { getApi } = registerExtension(
           // 单条 Rename：避免同一 command 在多个 group 重复出现
           { command: COMMANDS.rename, when: WHEN_RENAMEABLE, group: '7_modification@20' },
 
-          // project.aci（仅 Start Here > project-entry）
-          { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_ACI, group: '1_config@10' },
-          { command: COMMANDS.openAsJson, when: WHEN_PROJECT_ACI, group: '1_config@20' },
-          { command: COMMANDS.validateConfig, when: WHEN_PROJECT_ACI, group: '1_config@30' },
-          { command: COMMANDS.regenerateLockFile, when: WHEN_PROJECT_ACI, group: '1_config@40' },
+          // package.json（Config > package-json）
+          { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_CONFIG, group: '1_config@10' },
+          { command: COMMANDS.openAsJson, when: WHEN_PROJECT_CONFIG, group: '1_config@20' },
+          { command: COMMANDS.validateConfig, when: WHEN_PROJECT_CONFIG, group: '1_config@30' },
+          { command: COMMANDS.regenerateLockFile, when: WHEN_PROJECT_CONFIG, group: '1_config@40' },
 
           // Board
           { command: COMMANDS.openSettings, when: WHEN_PROPERTY, group: '1_property@10' },
@@ -1573,14 +1564,14 @@ void getApi().then((vscode) => {
   vscode.commands.registerCommand(COMMANDS.newFile, placeholder('New File'))
   vscode.commands.registerCommand(COMMANDS.newFolder, placeholder('New Folder'))
 
-  // project.aci（§7.2）
+  // package.json project configuration（§7.2）
   // Open as JSON 可立即落地，复用 path；其余先占位
   vscode.commands.registerCommand(COMMANDS.openVisualConfig, placeholder('Open Visual Config'))
   vscode.commands.registerCommand(COMMANDS.openAsJson, async (element?: ExplorerTreeElement) => {
     if (element?.kind !== 'project') {
       return
     }
-    await openByPath(element.node.path, element.node.label ?? 'project.aci')
+    await openByPath(element.node.path, element.node.label ?? 'package.json')
   })
   vscode.commands.registerCommand(COMMANDS.validateConfig, placeholder('Validate Config'))
   vscode.commands.registerCommand(COMMANDS.regenerateLockFile, placeholder('Regenerate Lock File'))
@@ -1721,23 +1712,23 @@ void getApi().then((vscode) => {
     return idx >= 0 ? normalized.slice(idx + 1) : normalized
   }
 
-  const syncProjectAciEntry = async (entryRel: string): Promise<void> => {
-    const aciUri = resolveProjectUri('project.aci')
-    if (aciUri == null) {
+  const syncProjectPackageEntry = async (entryRel: string): Promise<void> => {
+    const packageUri = resolveProjectUri('package.json')
+    if (packageUri == null) {
       return
     }
     try {
-      const raw = await vscode.workspace.fs.readFile(aciUri)
+      const raw = await vscode.workspace.fs.readFile(packageUri)
       const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
       doc.entry = entryRel.replace(/\\/g, '/').replace(/^sketch\//, '')
       const out = `${JSON.stringify(doc, null, 2)}\n`
-      await vscode.workspace.fs.writeFile(aciUri, new TextEncoder().encode(out))
+      await vscode.workspace.fs.writeFile(packageUri, new TextEncoder().encode(out))
     } catch {
-      /* 非致命：磁盘已重命名，aci 可稍后手动修复 */
+      /* 非致命：磁盘已重命名，package.json 可稍后手动修复 */
     }
   }
 
-  // User View 中的 .cpp：写入 project.aci entry。
+  // User View 中的 .cpp：写入 package.json entry。
   vscode.commands.registerCommand(COMMANDS.setAsMainEntry, async (element?: ExplorerTreeElement) => {
     const rel =
       element?.kind === 'fs' &&
@@ -1750,7 +1741,7 @@ void getApi().then((vscode) => {
     if (rel == null || rel.length === 0) {
       return
     }
-    await syncProjectAciEntry(rel)
+    await syncProjectPackageEntry(rel)
     const userViewEl = getStableBlueprintElement('user-view')
     if (userViewEl != null) {
       provider.refresh(userViewEl)
@@ -1760,7 +1751,7 @@ void getApi().then((vscode) => {
     await vscode.window.showInformationMessage(`已将编译入口设为：${rel.replace(/\\/g, '/')}`)
   })
 
-  /** 原生 Explorer 重命名完成后，同步 Aily View 蓝图节点与 project.aci */
+  /** 原生 Explorer 重命名完成后，同步 Aily View 蓝图节点与 package.json */
   vscode.workspace.onDidRenameFiles((event) => {
     for (const { oldUri, newUri } of event.files) {
       const oldRel = vscode.workspace.asRelativePath(oldUri, false).replace(/\\/g, '/')
@@ -1774,9 +1765,9 @@ void getApi().then((vscode) => {
           shouldRefreshStartHereNativeWatch(newRel)
         ) {
           void (async () => {
-            const mainEntry = await readProjectAciEntry(vscode)
+            const mainEntry = await readProjectPackageEntry(vscode)
             if (mainEntry != null && oldRel === mainEntry) {
-              await syncProjectAciEntry(newRel)
+              await syncProjectPackageEntry(newRel)
             }
           })()
           refreshUserViewGroup()
@@ -1788,9 +1779,9 @@ void getApi().then((vscode) => {
 
       if (isSrcCppEntryNodeId(nodeId)) {
         void (async () => {
-          const mainEntry = await readProjectAciEntry(vscode)
+          const mainEntry = await readProjectPackageEntry(vscode)
           if (mainEntry != null && oldRel.replace(/\\/g, '/') === mainEntry) {
-            await syncProjectAciEntry(newRel)
+            await syncProjectPackageEntry(newRel)
           }
         })()
         const userViewEl = getStableBlueprintElement('user-view')
@@ -2027,20 +2018,20 @@ void getApi().then((vscode) => {
   }
   setupEmbedSrcNativeWatcher()
 
-  let projectAciWatcher: vscode.FileSystemWatcher | undefined
-  const setupProjectAciWatcher = (): void => {
-    projectAciWatcher?.dispose()
-    projectAciWatcher = undefined
+  let projectPackageWatcher: vscode.FileSystemWatcher | undefined
+  const setupProjectPackageWatcher = (): void => {
+    projectPackageWatcher?.dispose()
+    projectPackageWatcher = undefined
     const root = vscode.workspace.workspaceFolders?.[0]
     if (root == null) {
       return
     }
-    projectAciWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(root, 'project.aci')
+    projectPackageWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, 'package.json')
     )
-    projectAciWatcher.onDidChange(() => refreshUserViewGroup())
+    projectPackageWatcher.onDidChange(() => refreshUserViewGroup())
   }
-  setupProjectAciWatcher()
+  setupProjectPackageWatcher()
 
   /** VS Code 工作区内删除文件（嵌入模式补充） */
   if (typeof vscode.workspace.onDidDeleteFiles === 'function') {
@@ -2058,7 +2049,7 @@ void getApi().then((vscode) => {
     setupSrcWatcher()
     setupBuildOutputsWatcher()
     setupEmbedSrcNativeWatcher()
-    setupProjectAciWatcher()
+    setupProjectPackageWatcher()
     provider.refresh()
   })
 

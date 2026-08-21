@@ -1,6 +1,6 @@
 # Aily Code 最终目录与生命周期设计
 
-> **当前实现覆盖（2026-08-20）**：项目根保留 `package.json` 与 `project.aci`，源码和库统一放入持久化 `sketch/` 编译工作区。`project.aci.entry: "src/main.cpp"` 对应 `sketch/src/main.cpp`，项目库位于 `sketch/libraries/`。Coder 新建使用共享 `board-*` 主板包的 `template-coder/`，不再合成独立硬件平台。下文旧目录示意仅保留为设计历史。
+> **当前实现覆盖（2026-08-21）**：项目根 `package.json` 保存全部 Coder 工程配置，源码和库统一放入持久化 `sketch/` 编译工作区。Coder 新建复制共享 `board-*` 主板包的 `template_arduino/package.json`，并将保持原始内容的源码模板 `template_arduino/project.aci` 复制为 `sketch/src/main.cpp`；项目库位于 `sketch/libraries/`，不再合成独立硬件平台。下文根 `project.aci` 等旧目录示意仅保留为设计历史。
 
 ## 1. 文档目标
 

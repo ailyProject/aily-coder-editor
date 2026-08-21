@@ -11,7 +11,6 @@ Aily View
 ├── User View
 │   └── sketch/src/**
 ├── Config
-│   ├── project.aci
 │   └── package.json
 └── Library
     └── sketch/libraries/**
@@ -20,8 +19,10 @@ Aily View
 | 顶层节点 | 节点类型 | 数据源 | 默认状态 |
 |---|---|---|---|
 | `User View` | 真实目录 | `sketch/src/` | 展开 |
-| `Config` | 配置分组 | 根 `project.aci`、根 `package.json` | 折叠 |
-| `Library` | 真实目录 | `sketch/libraries/` | 折叠 |
+| `Config` | 配置分组 | 根 `package.json` | 展开 |
+| `Library` | 真实目录 | `sketch/libraries/` | 展开 |
+
+Aily View 的三个直属节点默认展开；`User View` 与 `Library` 内更深层的真实目录仍默认折叠。
 
 `Start Here`、`Project Config`、`Board`、`Dependencies`、`Build Outputs` 和 `Generated` 不再属于当前 Aily View 顶层信息架构。主板、外部包、编译产物等信息由宿主对应功能界面负责。
 
@@ -32,14 +33,13 @@ Coder 工程的持久化目录同时是编译目录：
 ```text
 <project>/
 ├── package.json
-├── project.aci
 └── sketch/
     ├── src/
     │   └── main.cpp
     └── libraries/
 ```
 
-- `project.aci.entry` 相对 `sketch/` 存储，默认值为 `src/main.cpp`。
+- `package.json.entry` 相对 `sketch/` 存储，默认值为 `src/main.cpp`。
 - 编辑器打开和 Aily View 展示的真实文件是 `sketch/src/main.cpp`。
 - 本地库只在 `sketch/libraries/` 中编辑和保存。
 - 不创建、不投影根 `src/`、根 `components/` 或 `.temp/` 源码副本。
@@ -51,12 +51,12 @@ Coder 工程的持久化目录同时是编译目录：
 - 递归读取 `sketch/src/` 内的真实文件和目录，不限于 `.cpp`。
 - 目录排在文件之前，同类节点按名称排序；隐藏点开头条目。
 - 文件单击直接打开；目录递归展开，真实文件和子目录保留现有右键操作入口。
-- `sketch/src/` 中的 `.cpp` 文件可设为主入口，写回 `project.aci.entry` 时自动去掉 `sketch/` 前缀。
+- `sketch/src/` 中的 `.cpp` 文件可设为主入口，写回 `package.json.entry` 时自动去掉 `sketch/` 前缀。
 
 ### Config
 
-- 固定展示 `project.aci` 和 `package.json`，两者均位于工程根目录。
-- 单击节点打开真实文件；`project.aci` 保留配置相关操作入口。
+- 固定展示工程根 `package.json`。
+- 单击节点打开真实文件；Coder 类型、入口、框架、主板及依赖配置均在该文件维护。
 
 ### Library
 
@@ -74,6 +74,6 @@ Coder 工程的持久化目录同时是编译目录：
 
 1. Aily View 顶层严格只有 `User View`、`Config`、`Library`，且顺序一致。
 2. `User View` 的内容与 `sketch/src/` 磁盘结构一致。
-3. `Config` 可打开根 `project.aci` 与根 `package.json`。
+3. `Config` 可打开根 `package.json`。
 4. `Library` 的内容与 `sketch/libraries/` 磁盘结构一致。
 5. Aily View 不再显示硬件平台、Board、Dependencies 或 Build Outputs 节点。

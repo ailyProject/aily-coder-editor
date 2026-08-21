@@ -91,11 +91,11 @@ import { installHostEmbedContextListener } from './hostEmbedContext.js'
 import { setCoderUseEmbedHostNativeFsBridge } from './coderEmbedEnv.js'
 import 'vscode/localExtensionHost'
 
-/** Explorer 默认：Aily View 在上、Folders 在下（仅无本地缓存时 fallback 生效） */
+/** Explorer 默认：Aily View 在上且展开、Folders 在下且折叠（仅无本地缓存时 fallback 生效） */
 const explorerViewsStateFallback = {
   'workbench.explorer.views.state': JSON.stringify({
-    ailyView: { order: 0 },
-    'workbench.explorer.fileView': { order: 1 }
+    ailyView: { order: 0, collapsed: false },
+    'workbench.explorer.fileView': { order: 1, collapsed: true }
   }),
 } as const
 
@@ -511,8 +511,10 @@ export const constructOptions: IWorkbenchConstructionOptions = {
             groups: [{ size: 1 }, { size: 1 }]
           }
         },
-    views: [{ id: 'ailyView' }, { id: 'workbench.explorer.fileView' }],
-    force: resetLayout || useEmbedHostLocalFolder
+    // 只把 Aily View 作为首次默认打开视图；Explorer 的折叠状态由 workspace storage 管理。
+    // 若把 Explorer 放入此列表，Workbench 启动时会强制 setCollapsed(false)，覆盖用户状态。
+    views: [{ id: 'ailyView' }],
+    force: resetLayout
   },
   // welcomeBanner: {
   //   message: 'Welcome in monaco-vscode-api demo'

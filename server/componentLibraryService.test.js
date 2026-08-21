@@ -96,8 +96,10 @@ test('scans SDK libraries and installs a complete component atomically', async t
     'platform-avr-arduino',
   )
   await mkdir(platformRoot, { recursive: true })
-  await writeFile(path.join(workspaceRoot, 'project.aci'), JSON.stringify({
-    target: { platform: platformPackage },
+  await writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({
+    name: 'test-project',
+    type: 'coder',
+    platform: platformPackage,
   }))
   await writeFile(path.join(platformRoot, 'platform.json'), JSON.stringify({
     runtimeDependencies: [{
@@ -165,8 +167,10 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
 
   await mkdir(componentRoot, { recursive: true })
   await mkdir(cacheRoot, { recursive: true })
-  await writeFile(path.join(workspaceRoot, 'project.aci'), JSON.stringify({
-    target: { framework: 'arduino' },
+  await writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({
+    name: 'test-project',
+    type: 'coder',
+    framework: 'arduino',
   }))
   await writeFile(
     path.join(componentRoot, 'library.properties'),

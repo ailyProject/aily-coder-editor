@@ -12,7 +12,7 @@
 |------|------------------------|----------------------|
 | 角色 | 主产品：Blockly 可视化编程、工程管理、构建/烧录、库与板卡管理 | **子应用**：内嵌 iframe，承载「代码侧」可视化编辑 |
 | AI 工具链 | **核心所在**：对话、Agent、MCP、项目级 AI 工作流等 | **不承担**主 AI 能力；仅可选提供编辑器内行间补全等轻量体验 |
-| 用户心智 | 创作入口、设备与依赖、完整闭环 | 打开 `sketch/src/main.cpp`、`project.aci` 等文件做**直接编辑** |
+| 用户心智 | 创作入口、设备与依赖、完整闭环 | 打开 `sketch/src/main.cpp`、`package.json` 等文件做**直接编辑** |
 | 数据与状态 | 项目服务、构建路径、板卡/库 UI、全局 `appdata` | 通过 `postMessage` / `BroadcastChannel` 接收宿主上下文，读写工作区文件 |
 
 **结论：**
@@ -26,8 +26,8 @@
 ## 当前 Coder 工程契约（2026-08-20）
 
 - Blockly 与 Coder 共用宿主的 `board-*` 主板源；新建表单选择项目类型，Coder 不再单独选择硬件平台。
-- Coder 工程由所选主板包的 `template-coder/package.json` 与 `template-coder/project.aci` 创建。
-- 根 `project.aci.entry` 相对持久化 `sketch/` 工作区，默认 `src/main.cpp` 对应磁盘 `sketch/src/main.cpp`。
+- Coder 工程复制所选主板包的 `template_arduino/package.json`，工程类型、入口、框架、主板及依赖配置均保存在该根 `package.json` 中。
+- 源码模板 `template_arduino/project.aci` 保持原始内容并复制为 `sketch/src/main.cpp`；`package.json.entry` 相对持久化 `sketch/` 工作区。
 - Coder 直接编译 `sketch/`，本地库位于 `sketch/libraries/`；不再维护根 `src/`、根 `components/` 或 `.temp` 源码副本。
 - Aily View 只保留 `User View` / `Config` / `Library` 三个顶层入口，分别对应 `sketch/src/`、根配置文件、`sketch/libraries/`。
 
@@ -69,7 +69,7 @@ flowchart TB
 ## 本仓库提供什么
 
 - **内嵌代码工作台**：基于 `@codingame/monaco-vscode-*` 的暗色 IDE 风格 UI，与 Aily Blockly 视觉规范对齐。
-- **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示 `project.aci` / `package.json`，`Library` 递归展示 `sketch/libraries/`，详见 `docs/aily-code工程视图与信息架构设计.md`。
+- **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示根 `package.json`，`Library` 递归展示 `sketch/libraries/`，详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
 - **语言服务桥接**：`monacoStdioLspClient` + `server/lspWsProxy.ts`，对接 clangd 等 LSP（需配合影子工作区 / `compile_commands`）。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。
@@ -80,7 +80,7 @@ flowchart TB
 
 - Blockly 积木编辑与代码生成主流程
 - 项目级 AI 对话、Agent、工具调用编排
-- `project.aci` / 依赖解析 / xpm / 完整构建·烧录·监视器闭环（宿主调度，本子应用仅展示与编辑相关 UI）
+- `package.json` Coder 配置 / 依赖解析 / xpm / 完整构建·烧录·监视器闭环（宿主调度，本子应用仅展示与编辑相关 UI）
 - 独立的桌面安装包或脱离宿主的全功能 IDE 发行
 
 ---
