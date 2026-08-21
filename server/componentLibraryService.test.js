@@ -125,7 +125,7 @@ test('scans SDK libraries and installs a complete component atomically', async t
   assert.equal(installed.installed, true)
   assert.equal(installed.alreadyInstalled, false)
   assert.equal(
-    await readFile(path.join(workspaceRoot, 'components', 'AilyTimer', 'src', 'AilyTimer.h'), 'utf8'),
+    await readFile(path.join(workspaceRoot, 'sketch', 'libraries', 'AilyTimer', 'src', 'AilyTimer.h'), 'utf8'),
     '#pragma once\n',
   )
 
@@ -142,7 +142,7 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
 
   const workspaceRoot = path.join(tempRoot, 'project')
   const appDataPath = path.join(tempRoot, 'appdata')
-  const componentRoot = path.join(workspaceRoot, 'components', 'Servo')
+  const componentRoot = path.join(workspaceRoot, 'sketch', 'libraries', 'Servo')
   const cacheRoot = path.join(appDataPath, 'cache', 'arduino-library-manager')
   const checksum = `SHA-256:${'a'.repeat(64)}`
   const indexPayload = {

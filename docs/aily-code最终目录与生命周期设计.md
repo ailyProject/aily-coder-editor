@@ -1,5 +1,7 @@
 # Aily Code 最终目录与生命周期设计
 
+> **当前实现覆盖（2026-08-20）**：项目根保留 `package.json` 与 `project.aci`，源码和库统一放入持久化 `sketch/` 编译工作区。`project.aci.entry: "src/main.cpp"` 对应 `sketch/src/main.cpp`，项目库位于 `sketch/libraries/`。Coder 新建使用共享 `board-*` 主板包的 `template-coder/`，不再合成独立硬件平台。下文旧目录示意仅保留为设计历史。
+
 ## 1. 文档目标
 
 本文档用于沉淀 Aily Code 第一版工程模型的定稿建议，服务于以下目标：

@@ -9,11 +9,11 @@ Use the Coder-owned tools only in a `coder` development-mode session. The active
 
 ## Choose a library
 
-1. Read `project.aci`, the board/framework, existing external dependencies, and immediate directories under `components/`.
+1. Read `project.aci`, the board/framework, existing external dependencies, and immediate directories under `sketch/libraries/`.
 2. Search with `coder_arduino_library_search`. Treat its opaque `id`, advertised versions, compatibility, installed state, and managed provenance as authoritative for this source.
 3. Compare each plausible result with every required protocol, device, API, architecture, version, license, and timing constraint. A name match or successful build alone does not prove coverage.
 4. Install only one exact compatible result with `coder_arduino_library_install` and the returned `id` plus exact version.
-5. If no available result satisfies every key constraint, return to `aily-coder-project` and follow `aily-coder-local-library` to implement the missing capability under root `components/`.
+5. If no available result satisfies every key constraint, return to `aily-coder-project` and follow `aily-coder-local-library` to implement the missing capability under `sketch/libraries/`.
 
 ## Remove safely
 

@@ -204,19 +204,28 @@ function withHostBoardDescription(node: ProjectTreeNode): ProjectTreeNode {
   return { ...node, description: desc }
 }
 
-// 工程视图节点蓝图
-// 严格对照 docs/aily-code工程视图与信息架构设计.md §3.1 §4.3 §4.4 §6.1
+// 工程视图节点蓝图：只保留用户源码、工程配置与项目库三个入口。
+// User View / Library 直接映射磁盘目录；Config 收纳模板根配置文件。
 const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
-    id: 'start-here',
-    type: 'group',
-    label: 'Start Here',
-    icon: 'home',
+    id: 'user-view',
+    type: 'directory',
+    label: 'User View',
+    icon: 'files',
+    path: 'sketch/src',
     expandable: true,
     expandedByDefault: true,
+    visible: true
+  },
+  {
+    id: 'config',
+    type: 'group',
+    label: 'Config',
+    icon: 'settings-gear',
+    expandable: true,
+    expandedByDefault: false,
     visible: true,
     children: [
-      // src/*.cpp 由 getChildren('start-here') 按磁盘动态注入，见 listSrcCppRelPaths
       {
         id: 'project-entry',
         type: 'file',
@@ -226,25 +235,13 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
         expandable: false,
         expandedByDefault: false,
         visible: true
-      }
-    ]
-  },
-  {
-    id: 'project-config',
-    type: 'group',
-    label: 'Project Config',
-    icon: 'settings-gear',
-    expandable: true,
-    expandedByDefault: false,
-    visible: true,
-    children: [
-      // project.aci 仅在 Start Here > project-entry，避免与配置索引重复
+      },
       {
-        id: 'lock-json',
+        id: 'package-json',
         type: 'file',
-        label: 'aily.lock.json',
-        icon: 'lock',
-        path: 'aily.lock.json',
+        label: 'package.json',
+        icon: 'json',
+        path: 'package.json',
         expandable: false,
         expandedByDefault: false,
         visible: true
@@ -252,152 +249,25 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
     ]
   },
   {
-    id: 'board',
-    type: 'property',
-    label: 'Board',
-    icon: 'circuit-board',
-    expandable: false,
+    id: 'library',
+    type: 'directory',
+    label: 'Library',
+    icon: 'folder-library',
+    path: 'sketch/libraries',
+    expandable: true,
     expandedByDefault: false,
     visible: true
-  },
-  {
-    id: 'dependencies',
-    type: 'group',
-    label: 'Dependencies',
-    icon: 'package',
-    expandable: true,
-    expandedByDefault: false,
-    visible: true,
-    children: [
-      {
-        id: 'installed-libraries',
-        type: 'group',
-        label: 'Installed Libraries',
-        icon: 'package',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'component-libraries',
-        type: 'group',
-        label: 'Component Libraries',
-        icon: 'folder-library',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'platform-packages',
-        type: 'group',
-        label: 'Platform Packages',
-        icon: 'package',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'package-status',
-        type: 'status',
-        label: 'Package Status',
-        icon: 'pulse',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      }
-    ]
-  },
-  {
-    id: 'build-outputs',
-    type: 'group',
-    label: 'Build Outputs',
-    icon: 'tools',
-    expandable: true,
-    expandedByDefault: false,
-    visible: true,
-    children: [
-      {
-        id: 'build-debug',
-        type: 'artifact-group',
-        label: 'debug',
-        icon: 'play-circle',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'build-release',
-        type: 'artifact-group',
-        label: 'release',
-        icon: 'rocket',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'build-simulator',
-        type: 'artifact-group',
-        label: 'simulator',
-        icon: 'vm',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      }
-    ]
-  },
-  // Generated：§4.3 标记为"条件显示"，§6.3 高级模式才展开
-  // 按当前对齐选择：默认可见但折叠，便于直观呈现完整 6 组结构（不含 Project Files） // 临时注释
-  /* {
-    id: 'generated',
-    type: 'group',
-    label: 'Generated',
-    icon: 'layers',
-    expandable: true,
-    expandedByDefault: false,
-    visible: true,
-    children: [
-      {
-        id: 'generated-sources',
-        type: 'group',
-        label: 'Generated Sources',
-        icon: 'file-symlink-file',
-        path: '.aily/generated',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'bridge-files',
-        type: 'group',
-        label: 'Bridge Files',
-        icon: 'link',
-        path: '.aily/bridge',
-        expandable: true,
-        expandedByDefault: false,
-        visible: true
-      },
-      {
-        id: 'compile-commands',
-        type: 'virtual-file',
-        label: 'Compile Commands',
-        icon: 'list-tree',
-        path: '.aily/bridge/compile_commands.json',
-        expandable: false,
-        expandedByDefault: false,
-        visible: true
-      }
-    ]
-  } */
+  }
 ]
 
 /** 工程根下 node_modules 相对路径 */
 const NODE_MODULES_REL = 'node_modules'
 
 /** Coder 本地库源码根；每个直接子目录是一份库。 */
-const COMPONENTS_REL = 'components'
+const COMPONENTS_REL = 'sketch/libraries'
 
-/** Start Here 下镜像的源码目录（仅展示该目录内全部 .cpp） */
-const SRC_REL = 'src'
+/** User View 直接镜像的源码目录。 */
+const SRC_REL = 'sketch/src'
 
 /** Start Here 动态 .cpp 节点 id 前缀：`entry-src-<path-with-slashes-as-dashes>` */
 const ENTRY_SRC_NODE_PREFIX = 'entry-src-'
@@ -405,7 +275,7 @@ const ENTRY_SRC_NODE_PREFIX = 'entry-src-'
 /** Installed Libraries 无依赖时的占位节点 id（§9.4） */
 const INSTALLED_LIBRARIES_EMPTY_ID = 'installed-libraries-empty'
 
-/** Component Libraries 无本地库时的占位节点 id */
+/** Library 无本地库时的占位节点 id */
 const COMPONENT_LIBRARIES_EMPTY_ID = 'component-libraries-empty'
 
 /** Platform Packages 未解析到主板平台依赖时的占位节点 id（§9.4） */
@@ -429,11 +299,11 @@ const INSTALLED_LIBRARIES_EMPTY: ProjectTreeNode = {
   visible: true
 }
 
-/** Component Libraries 空状态文案 */
+/** Library 空状态文案 */
 const COMPONENT_LIBRARIES_EMPTY: ProjectTreeNode = {
   id: COMPONENT_LIBRARIES_EMPTY_ID,
   type: 'status',
-  label: 'No project component libraries yet.',
+  label: 'No project libraries yet.',
   icon: 'info',
   description: COMPONENTS_REL,
   expandable: false,
@@ -535,7 +405,7 @@ function isSrcCppEntryNodeId(id: string): boolean {
   return id.startsWith(ENTRY_SRC_NODE_PREFIX)
 }
 
-/** 读取 project.aci 中的默认编译入口（相对工程根） */
+/** 读取 project.aci 中的默认编译入口，并转换为相对工程根的 sketch 路径。 */
 async function readProjectAciEntry(vscodeApi: typeof vscode): Promise<string | undefined> {
   const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
   if (root == null) {
@@ -546,13 +416,15 @@ async function readProjectAciEntry(vscodeApi: typeof vscode): Promise<string | u
     const raw = await vscodeApi.workspace.fs.readFile(uri)
     const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
     const entry = doc.entry?.trim()
-    return entry != null && entry.length > 0 ? entry.replace(/\\/g, '/') : undefined
+    return entry != null && entry.length > 0
+      ? `sketch/${entry.replace(/\\/g, '/').replace(/^\/+/, '')}`
+      : undefined
   } catch {
     return undefined
   }
 }
 
-/** 递归列出 src/ 下全部 .cpp（相对工程根，如 src/main.cpp） */
+/** 递归列出 sketch/src/ 下全部 .cpp（相对工程根）。 */
 async function listSrcCppRelPaths(vscodeApi: typeof vscode): Promise<string[]> {
   const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
   if (root == null) {
@@ -750,13 +622,8 @@ function findBlueprintNodeIdByRelPath(relPath: string): string | undefined {
 
 /** 宿主上下文 / 动态子树变更时刷新的蓝图节点（勿 refresh(undefined)） */
 const DYNAMIC_REFRESH_BLUEPRINT_IDS = [
-  'start-here',
-  'board',
-  'build-outputs',
-  'build-release',
-  'platform-packages',
-  'component-libraries',
-  'installed-libraries'
+  'user-view',
+  'library'
 ] as const
 
 function refreshDynamicBlueprintSections(provider: AilyExplorerProvider): void {
@@ -808,7 +675,7 @@ function isFsDirectory(
   return fileType === dir || Number(fileType) === Number(dir)
 }
 
-/** 列出目录真实子项；node_modules 与 components 的直接子目录用库图标。 */
+/** 列出目录真实子项；node_modules 与 Library 的直接子目录用库图标。 */
 async function listFsDirectoryChildren(
   vscodeApi: typeof vscode,
   relPath: string
@@ -981,7 +848,14 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       iconForFsEntry(element.label, element.isDirectory, element.isTopLevelPackage)
     )
     const nodeType = element.isDirectory ? 'directory' : 'file'
-    item.contextValue = `aily.${nodeType}:fs-${fsContextSuffix(element.relPath)}`
+    const isSourceCpp =
+      !element.isDirectory &&
+      element.relPath.startsWith(`${SRC_REL}/`) &&
+      element.relPath.toLowerCase().endsWith('.cpp')
+    const contextId = isSourceCpp
+      ? entryNodeIdForRelPath(element.relPath)
+      : `fs-${fsContextSuffix(element.relPath)}`
+    item.contextValue = `aily.${nodeType}:${contextId}`
     item.tooltip = [element.label, element.relPath].join('\n')
 
     const root = vs.workspace.workspaceFolders?.[0]?.uri
@@ -1110,6 +984,20 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
     const node = element.node
 
+    // User View：递归镜像 sketch/src。
+    if (node.id === 'user-view') {
+      return listFsDirectoryChildren(this.#vscode, SRC_REL)
+    }
+
+    // Library：递归镜像 sketch/libraries。
+    if (node.id === 'library') {
+      const items = await listFsDirectoryChildren(this.#vscode, COMPONENTS_REL)
+      if (items.length === 0) {
+        return [wrap(COMPONENT_LIBRARIES_EMPTY)]
+      }
+      return items
+    }
+
     // Installed Libraries：直接镜像工程根 node_modules 目录（不做包名过滤）
     if (node.id === 'installed-libraries') {
       const items = await listFsDirectoryChildren(this.#vscode, NODE_MODULES_REL)
@@ -1135,12 +1023,6 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
         return [wrap(PLATFORM_PACKAGES_EMPTY)]
       }
       return packages.map((entry) => wrap(platformPackageToTreeNode(entry)))
-    }
-
-    if (node.id === 'start-here') {
-      const cppNodes = await buildStartHereCppEntryNodes(this.#vscode)
-      const staticChildren = (node.children ?? []).filter((nd) => nd.visible).map(wrap)
-      return [...cppNodes.map(wrap), ...staticChildren]
     }
 
     if (node.id === 'build-release') {
@@ -1847,7 +1729,7 @@ void getApi().then((vscode) => {
     try {
       const raw = await vscode.workspace.fs.readFile(aciUri)
       const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
-      doc.entry = entryRel.replace(/\\/g, '/')
+      doc.entry = entryRel.replace(/\\/g, '/').replace(/^sketch\//, '')
       const out = `${JSON.stringify(doc, null, 2)}\n`
       await vscode.workspace.fs.writeFile(aciUri, new TextEncoder().encode(out))
     } catch {
@@ -1855,20 +1737,23 @@ void getApi().then((vscode) => {
     }
   }
 
-  // src/*.cpp：写入 project.aci entry（§7.2）
+  // User View 中的 .cpp：写入 project.aci entry。
   vscode.commands.registerCommand(COMMANDS.setAsMainEntry, async (element?: ExplorerTreeElement) => {
-    if (element?.kind !== 'project' || !isSrcCppEntryNodeId(element.node.id)) {
-      return
-    }
-    const rel = element.node.path?.trim()
+    const rel =
+      element?.kind === 'fs' &&
+      element.relPath.startsWith(`${SRC_REL}/`) &&
+      element.relPath.toLowerCase().endsWith('.cpp')
+        ? element.relPath
+        : element?.kind === 'project' && isSrcCppEntryNodeId(element.node.id)
+          ? element.node.path?.trim()
+          : undefined
     if (rel == null || rel.length === 0) {
-      await vscode.window.showWarningMessage('无法设为入口：未找到文件路径。')
       return
     }
     await syncProjectAciEntry(rel)
-    const startHereEl = getStableBlueprintElement('start-here')
-    if (startHereEl != null) {
-      provider.refresh(startHereEl)
+    const userViewEl = getStableBlueprintElement('user-view')
+    if (userViewEl != null) {
+      provider.refresh(userViewEl)
     } else {
       provider.refresh()
     }
@@ -1888,7 +1773,13 @@ void getApi().then((vscode) => {
           shouldRefreshStartHereNativeWatch(oldRel) ||
           shouldRefreshStartHereNativeWatch(newRel)
         ) {
-          refreshStartHereGroup()
+          void (async () => {
+            const mainEntry = await readProjectAciEntry(vscode)
+            if (mainEntry != null && oldRel === mainEntry) {
+              await syncProjectAciEntry(newRel)
+            }
+          })()
+          refreshUserViewGroup()
         } else {
           provider.refresh()
         }
@@ -1902,9 +1793,9 @@ void getApi().then((vscode) => {
             await syncProjectAciEntry(newRel)
           }
         })()
-        const startHereEl = getStableBlueprintElement('start-here')
-        if (startHereEl != null) {
-          provider.refresh(startHereEl)
+        const userViewEl = getStableBlueprintElement('user-view')
+        if (userViewEl != null) {
+          provider.refresh(userViewEl)
         } else {
           provider.refresh()
         }
@@ -2015,7 +1906,7 @@ void getApi().then((vscode) => {
   }
   setupNodeModulesWatcher()
 
-  /** components/ 变更时刷新 Component Libraries 子树 */
+  /** sketch/libraries/ 变更时刷新 Library 子树 */
   let componentsWatcher: vscode.FileSystemWatcher | undefined
   const setupComponentsWatcher = (): void => {
     componentsWatcher?.dispose()
@@ -2028,8 +1919,8 @@ void getApi().then((vscode) => {
       new vscode.RelativePattern(root, `${COMPONENTS_REL}/**`)
     )
     const bump = (): void => {
-      const componentEl = getStableBlueprintElement('component-libraries')
-      provider.refresh(componentEl)
+      const libraryEl = getStableBlueprintElement('library')
+      provider.refresh(libraryEl)
     }
     componentsWatcher.onDidCreate(bump)
     componentsWatcher.onDidDelete(bump)
@@ -2037,10 +1928,10 @@ void getApi().then((vscode) => {
   }
   setupComponentsWatcher()
 
-  const refreshStartHereGroup = (): void => {
-    const startHereEl = getStableBlueprintElement('start-here')
-    if (startHereEl != null) {
-      provider.refresh(startHereEl)
+  const refreshUserViewGroup = (): void => {
+    const userViewEl = getStableBlueprintElement('user-view')
+    if (userViewEl != null) {
+      provider.refresh(userViewEl)
     } else {
       provider.refresh()
     }
@@ -2070,10 +1961,10 @@ void getApi().then((vscode) => {
     if (fsPath.length > 0 && !shouldRefreshStartHereNativeWatch(fsPath)) {
       return
     }
-    refreshStartHereGroup()
+    refreshUserViewGroup()
   }
 
-  /** src/ 下 .cpp 增删时刷新 Start Here（非嵌入模式兜底） */
+  /** sketch/src/ 变更时刷新 User View（非嵌入模式兜底） */
   let srcWatcher: vscode.FileSystemWatcher | undefined
   const setupSrcWatcher = (): void => {
     srcWatcher?.dispose()
@@ -2123,7 +2014,7 @@ void getApi().then((vscode) => {
     }
     void startWorkspaceNativeWatch(root.uri.fsPath, (ev) => {
       if (shouldRefreshStartHereNativeWatch(ev.filename)) {
-        refreshStartHereGroup()
+        refreshUserViewGroup()
       }
       if (shouldRefreshBuildOutputsNativeWatch(ev.filename)) {
         refreshReleaseBuildOutputs()
@@ -2147,7 +2038,7 @@ void getApi().then((vscode) => {
     projectAciWatcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(root, 'project.aci')
     )
-    projectAciWatcher.onDidChange(() => refreshStartHereGroup())
+    projectAciWatcher.onDidChange(() => refreshUserViewGroup())
   }
   setupProjectAciWatcher()
 

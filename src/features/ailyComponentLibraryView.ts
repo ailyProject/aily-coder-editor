@@ -72,7 +72,7 @@ type UiStrings = {
 const EN: UiStrings = {
   search: 'Search all Arduino libraries',
   refresh: 'Refresh',
-  hint: 'The complete official Arduino Library Manager index. Installs are project-local under components.',
+  hint: 'The complete official Arduino Library Manager index. Installs are project-local under sketch/libraries.',
   add: 'Install', adding: 'Installing…', installed: 'In Project',
   loading: 'Loading Arduino libraries…', empty: 'No matching Arduino libraries',
   unavailable: 'The active Coder project is not ready.', docs: 'More info',
@@ -80,13 +80,13 @@ const EN: UiStrings = {
   allTypes: 'Type: All', allTopics: 'Topic: All', loadMore: 'Load more', loadingMore: 'Loading…',
   compatible: 'Compatible', otherArchitecture: 'Other architecture',
   registrySource: 'Arduino Library Manager', resultUnit: 'libraries', endOfResults: 'All matching libraries are shown',
-  added: name => `${name} was installed under components`,
+  added: name => `${name} was installed under sketch/libraries`,
   failed: (action, detail) => `${action === 'load' ? 'Failed to load Arduino libraries' : 'Failed to install the library'}: ${detail}`
 }
 
 const ZH_CN: UiStrings = {
   search: '搜索全部 Arduino 公共库', refresh: '刷新',
-  hint: 'Arduino Library Manager 官方完整索引；安装由 Coder 写入当前工程 components。',
+  hint: 'Arduino Library Manager 官方完整索引；安装由 Coder 写入当前工程 sketch/libraries。',
   add: '安装', adding: '正在安装…', installed: '已在工程中',
   loading: '正在加载 Arduino 公共库…', empty: '没有匹配的 Arduino 公共库',
   unavailable: '当前 Coder 工程尚未就绪。', docs: '更多信息',
@@ -94,7 +94,7 @@ const ZH_CN: UiStrings = {
   allTypes: '类型：全部', allTopics: '主题：全部', loadMore: '加载更多', loadingMore: '加载中…',
   compatible: '兼容当前平台', otherArchitecture: '其他架构',
   registrySource: 'Arduino Library Manager', resultUnit: '个库', endOfResults: '已显示全部匹配库',
-  added: name => `${name} 已安装到 components`,
+  added: name => `${name} 已安装到 sketch/libraries`,
   failed: (action, detail) => `${action === 'load' ? '加载 Arduino 公共库失败' : '安装公共库失败'}：${detail}`
 }
 
@@ -168,7 +168,7 @@ function webviewHtml(webview: vscode.Webview, copy: UiStrings): string {
       const version=document.createElement('select');version.className='version-select';version.setAttribute('aria-label',(library.name||library.folderName)+' version');for(const item of library.versions.length?library.versions:[library.version||'Arduino']){const option=document.createElement('option');option.value=item;option.textContent=item;option.selected=item===library.version;version.appendChild(option)}version.disabled=library.versions.length<2;version.addEventListener('change',()=>vscode.postMessage({type:'selectVersion',libraryId:library.id,version:version.value}));titleRow.append(title,version);
       card.append(titleRow,text('div','meta',library.author||library.maintainer||library.sdkLabel),text('p','description',library.sentence||library.paragraph||library.folderName));
       const chips=document.createElement('div');chips.className='chips';if(library.source==='registry')chips.appendChild(text('span','chip '+(library.compatible?'compatible':'incompatible'),library.compatible?copy.compatible:copy.otherArchitecture));for(const value of [library.category,...library.architectures].filter(Boolean).slice(0,5))chips.appendChild(text('span','chip',value));card.appendChild(chips);
-      const footer=document.createElement('footer');footer.className='footer';footer.appendChild(text('code','source',library.folderName?'components/'+library.folderName:copy.registrySource));const actions=document.createElement('div');actions.className='actions';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));actions.appendChild(docs)}const installing=state.installing.includes(library.id),installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed,install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||installing;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install);footer.appendChild(actions);card.appendChild(footer);return card;
+      const footer=document.createElement('footer');footer.className='footer';footer.appendChild(text('code','source',library.folderName?'sketch/libraries/'+library.folderName:copy.registrySource));const actions=document.createElement('div');actions.className='actions';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));actions.appendChild(docs)}const installing=state.installing.includes(library.id),installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed,install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||installing;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install);footer.appendChild(actions);card.appendChild(footer);return card;
     }
     function render(){
       const busy=state.loadingRegistry||state.loadingMore,filtered=Boolean(search.value.trim()||type.value||category.value);refresh.disabled=busy;notice.hidden=!state.notice;notice.classList.toggle('error',state.notice?.error===true);notice.textContent=state.notice?.text||'';setOptions(type,state.types,copy.allTypes);setOptions(category,state.categories,copy.allTopics);

@@ -230,7 +230,7 @@ function mapWatchEventToFileChanges(
   let targetPath = root
   if (ev.filename) {
     const rel = normalizeFsPathSep(ev.filename)
-    // 仅当 filename 已是绝对路径时才直接使用；含 '/' 的相对路径（如 src/main.cpp）仍要拼到 watchRoot
+    // 仅当 filename 已是绝对路径时才直接使用；含 '/' 的相对路径（如 sketch/src/main.cpp）仍要拼到 watchRoot
     const isAbsolute =
       rel.startsWith('/') ||
       /^[a-zA-Z]:\//.test(rel)

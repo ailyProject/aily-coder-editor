@@ -175,7 +175,7 @@ async function restoreCoderActiveEditor(): Promise<void> {
     ? rememberedPath
       ? URI.joinPath(workspaceRoot, rememberedPath)
       : undefined
-    : URI.joinPath(workspaceRoot, 'src', 'main.cpp')
+    : URI.joinPath(workspaceRoot, 'sketch', 'src', 'main.cpp')
   if (targetUri == null || workspaceRelativeFilePath(targetUri, workspaceRoot) == null) {
     return
   }

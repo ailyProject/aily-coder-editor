@@ -12,7 +12,7 @@
 |------|------------------------|----------------------|
 | 角色 | 主产品：Blockly 可视化编程、工程管理、构建/烧录、库与板卡管理 | **子应用**：内嵌 iframe，承载「代码侧」可视化编辑 |
 | AI 工具链 | **核心所在**：对话、Agent、MCP、项目级 AI 工作流等 | **不承担**主 AI 能力；仅可选提供编辑器内行间补全等轻量体验 |
-| 用户心智 | 创作入口、设备与依赖、完整闭环 | 打开 `src/main.cpp`、`project.aci` 等文件做**直接编辑** |
+| 用户心智 | 创作入口、设备与依赖、完整闭环 | 打开 `sketch/src/main.cpp`、`project.aci` 等文件做**直接编辑** |
 | 数据与状态 | 项目服务、构建路径、板卡/库 UI、全局 `appdata` | 通过 `postMessage` / `BroadcastChannel` 接收宿主上下文，读写工作区文件 |
 
 **结论：**
@@ -22,6 +22,14 @@
 3. **本仓库的职责是：在宿主内提供 VS Code 风格的代码编辑 surface**，包括逻辑工程树（Aily View）、物理文件树、C/C++ 语言服务桥接，以及与宿主对齐的嵌入布局与原生文件系统桥接。
 
 若你需要扩展 Agent、聊天面板、MCP 或 Blockly 块级 AI，请到 **Aily Blockly** 主仓库；若仅需调整内嵌编辑体验或 Aily View 展示，则在本仓库修改。
+
+## 当前 Coder 工程契约（2026-08-20）
+
+- Blockly 与 Coder 共用宿主的 `board-*` 主板源；新建表单选择项目类型，Coder 不再单独选择硬件平台。
+- Coder 工程由所选主板包的 `template-coder/package.json` 与 `template-coder/project.aci` 创建。
+- 根 `project.aci.entry` 相对持久化 `sketch/` 工作区，默认 `src/main.cpp` 对应磁盘 `sketch/src/main.cpp`。
+- Coder 直接编译 `sketch/`，本地库位于 `sketch/libraries/`；不再维护根 `src/`、根 `components/` 或 `.temp` 源码副本。
+- Aily View 只保留 `User View` / `Config` / `Library` 三个顶层入口，分别对应 `sketch/src/`、根配置文件、`sketch/libraries/`。
 
 ---
 
@@ -61,7 +69,7 @@ flowchart TB
 ## 本仓库提供什么
 
 - **内嵌代码工作台**：基于 `@codingame/monaco-vscode-*` 的暗色 IDE 风格 UI，与 Aily Blockly 视觉规范对齐。
-- **Aily View**：按工程语义展示逻辑树（`Start Here`、`Project Files`、一级 `Board`、`Dependencies` 等），详见 `docs/aily-code工程视图与信息架构设计.md`。
+- **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示 `project.aci` / `package.json`，`Library` 递归展示 `sketch/libraries/`，详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
 - **语言服务桥接**：`monacoStdioLspClient` + `server/lspWsProxy.ts`，对接 clangd 等 LSP（需配合影子工作区 / `compile_commands`）。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。

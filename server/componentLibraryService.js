@@ -172,12 +172,13 @@ async function resolvePlatformPackageName(projectRoot) {
   }
 
   const boardPackage = String(project?.target?.boardPackage ?? '').trim()
-  if (!isSafeAilyPackageName(boardPackage, 'coder-')) {
-    throw new Error('project.aci does not declare a valid Coder platform')
+  if (!isSafeAilyPackageName(boardPackage, 'board-')
+    && !isSafeAilyPackageName(boardPackage, 'coder-')) {
+    throw new Error('project.aci does not declare a valid board package or platform')
   }
   const boardManifest = await readJson(
     path.join(packagePath(projectRoot, boardPackage), 'package.json'),
-    'Coder board package',
+    'Board package',
   )
   const framework = String(project?.target?.framework ?? '').trim()
   const boardId = String(project?.target?.board ?? '').trim()
@@ -190,7 +191,7 @@ async function resolvePlatformPackageName(projectRoot) {
   )) ?? supported[0]
   const fallback = String(selected?.platform ?? '').trim()
   if (!isSafeAilyPackageName(fallback, 'platform-')) {
-    throw new Error('Coder board package does not declare a valid platform')
+    throw new Error('Board package does not declare a valid platform')
   }
   return fallback
 }
@@ -384,7 +385,7 @@ export async function searchArduinoComponentLibraries({
 }) {
   const projectRoot = await resolveWorkspaceRoot(workspaceRoot)
   const appDataRoot = await resolveAppDataRoot(appDataPath)
-  const componentsRoot = path.join(projectRoot, 'components')
+  const componentsRoot = path.join(projectRoot, 'sketch', 'libraries')
   const [registry, installed, sdkRoots] = await Promise.all([
     loadArduinoLibraryRegistry({ cacheRoot: appDataRoot, forceRefresh }),
     listInstalledComponentLibraries(componentsRoot),
@@ -419,7 +420,7 @@ export async function scanComponentLibraries({
   const projectRoot = await resolveWorkspaceRoot(workspaceRoot)
   const appDataRoot = await resolveAppDataRoot(appDataPath)
   const sdkRoots = await resolveSdkRoots(projectRoot, appDataRoot)
-  const componentsRoot = path.join(projectRoot, 'components')
+  const componentsRoot = path.join(projectRoot, 'sketch', 'libraries')
   const found = new Map()
 
   for (const sdk of sdkRoots) {
@@ -481,7 +482,7 @@ export async function installComponentLibrary({
     throw new Error('Invalid component library directory name')
   }
 
-  const componentsRoot = path.join(projectRoot, 'components')
+  const componentsRoot = path.join(projectRoot, 'sketch', 'libraries')
   const targetPath = path.join(componentsRoot, library.folderName)
   await mkdir(componentsRoot, { recursive: true })
   if (await pathExists(targetPath)) {
@@ -555,7 +556,7 @@ export async function installArduinoComponentLibrary({
     )
   }
 
-  const componentsRoot = path.join(projectRoot, 'components')
+  const componentsRoot = path.join(projectRoot, 'sketch', 'libraries')
   await mkdir(componentsRoot, { recursive: true })
   const temporaryRoot = await mkdtemp(path.join(componentsRoot, '.aily-arduino-install-'))
   const archivePath = path.join(temporaryRoot, 'library.zip')
@@ -610,7 +611,7 @@ export async function installArduinoComponentLibrary({
       }
       throw new ComponentLibraryError(
         'COMPONENT_PATH_CONFLICT',
-        `components/${folderName} already exists; remove it before switching versions`,
+        `sketch/libraries/${folderName} already exists; remove it before switching versions`,
       )
     }
     await rename(libraryRoot, targetPath)
@@ -644,7 +645,7 @@ export async function removeArduinoComponentLibrary({
     )
   }
 
-  const componentsRoot = path.join(projectRoot, 'components')
+  const componentsRoot = path.join(projectRoot, 'sketch', 'libraries')
   const candidates = []
   for (const entry of await readdir(componentsRoot, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || !isSafeComponentLibraryDirectoryName(entry.name)) continue
@@ -689,14 +690,14 @@ export async function removeArduinoComponentLibrary({
     } catch {
       throw new ComponentLibraryError(
         'COMPONENT_PROVENANCE_CONFLICT',
-        `components/${candidate.folderName} has invalid Arduino library provenance metadata`,
+        `sketch/libraries/${candidate.folderName} has invalid Arduino library provenance metadata`,
       )
     }
   }
   if (!receipt) {
     throw new ComponentLibraryError(
       'COMPONENT_PROVENANCE_REQUIRED',
-      `components/${candidate.folderName} has no Coder Arduino installation metadata; refusing to remove a possibly local library`,
+      `sketch/libraries/${candidate.folderName} has no Coder Arduino installation metadata; refusing to remove a possibly local library`,
     )
   }
   if (
@@ -707,7 +708,7 @@ export async function removeArduinoComponentLibrary({
   ) {
     throw new ComponentLibraryError(
       'COMPONENT_PROVENANCE_CONFLICT',
-      `components/${candidate.folderName} has conflicting Arduino library provenance metadata`,
+      `sketch/libraries/${candidate.folderName} has conflicting Arduino library provenance metadata`,
     )
   }
 

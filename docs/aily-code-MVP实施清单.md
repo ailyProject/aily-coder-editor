@@ -1,5 +1,7 @@
 # Aily Code MVP 实施清单
 
+> **当前实现覆盖（2026-08-20）**：Coder 由宿主新建表单选择，和 Blockly 共用 `board-*` 主板源，并复制主板包 `template-coder/`。根 `project.aci.entry` 相对持久化 `sketch/` 工作区；默认源码为磁盘 `sketch/src/main.cpp`，本地库为 `sketch/libraries/`。下文出现的根 `src/`、根 `components/` 和手写骨架均为早期规划，不再作为当前验收口径。
+
 ## 1. 文档目标
 
 本文档把以下三份设计文档收束为一份可执行的 MVP 任务清单：
