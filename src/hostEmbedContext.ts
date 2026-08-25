@@ -62,13 +62,13 @@ export type HostEmbedContextV1 = {
   platformPackages?: readonly HostPlatformPackageV1[]
   /** 虚拟 Board 节点：Blockly 主板支持的 framework / mode 列表 */
   boardProfile?: HostBoardProfileV1
-  /** 预留：版本号、板型等 */
-  meta?: Record<string, unknown>
+  /** 宿主轻量上下文；theme 更新不应触发 Runtime 或 iframe 重启。 */
+  meta?: Record<string, unknown> & { theme?: 'dark' | 'light' }
 }
 
 export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-host-context'
 
-/** iframe → Angular：请求打开右上角库管理面板（与 Blockly 库管理 UI 同源） */
+/** iframe → Angular：请求打开右上角 npm 库管理面板（Arduino 公共库归 Coder）。 */
 export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manager'
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL 须一致 */
@@ -87,7 +87,9 @@ export const HOST_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-clipboard-write'
 export const AILY_EMBED_CLIPBOARD_WRITE_BC = 'aily-embed-clipboard-write'
 
 /** 与宿主同步库管理侧栏：`open` 为 true 展开，false 收起 */
-export function syncHostLibraryManager(open: boolean): void {
+export function syncHostLibraryManager(
+  open: boolean
+): void {
   if (typeof window === 'undefined') {
     return
   }

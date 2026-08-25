@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
-import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { attachCoderAgentRpcServer } from './server/agentRpcServer.js'
+import { handleComponentLibraryApiRequest } from './server/componentLibraryApi.js'
 
 const packageRoot = path.dirname(fileURLToPath(import.meta.url))
-const uiRoot = path.join(packageRoot, 'dist')
+const uiRoot = path.join(packageRoot, 'ui')
 const indexPath = path.join(uiRoot, 'index.html')
 
 function write(message) {
@@ -72,12 +74,26 @@ function serveFile(request, response, filePath) {
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Resource-Policy': 'cross-origin',
   }
+  response.writeHead(200, headers)
   if (request.method === 'HEAD') {
-    response.writeHead(200, headers)
     response.end()
     return
   }
-  response.writeHead(200, headers)
+  if (filePath === indexPath) {
+    const markerPath = path.join(packageRoot, '.aily-dev.json')
+    try {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+      const reloadUrl = new URL(String(marker.reloadUrl || ''))
+      if (reloadUrl.hostname === '127.0.0.1' || reloadUrl.hostname === 'localhost') {
+        const reloadScript = `<script>new EventSource(${JSON.stringify(reloadUrl.toString())}).addEventListener('reload',()=>location.reload())</script>`
+        const html = readFileSync(indexPath, 'utf8').replace(/<\/body>/i, `${reloadScript}</body>`)
+        response.end(html)
+        return
+      }
+    } catch {
+      // Production and one-shot links do not have a development marker.
+    }
+  }
   createReadStream(filePath)
     .once('error', () => {
       if (!response.headersSent) response.writeHead(500)
@@ -92,28 +108,42 @@ async function startServeMode(options) {
   }
 
   const host = typeof options.host === 'string' ? options.host : '127.0.0.1'
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+    throw new Error('Aily Coder Runtime must listen on a loopback host')
+  }
   const requestedPort = Number(options.port ?? 0)
   const port = Number.isInteger(requestedPort) && requestedPort >= 0 ? requestedPort : 0
   let shuttingDown = false
 
   const server = createServer((request, response) => {
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      response.writeHead(405, { Allow: 'GET, HEAD' })
-      response.end()
-      return
-    }
-    try {
-      serveFile(request, response, resolveUiFile(request.url))
-    } catch (error) {
-      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+    void handleComponentLibraryApiRequest(request, response).then(handled => {
+      if (handled) return
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { Allow: 'GET, HEAD' })
+        response.end()
+        return
+      }
+      try {
+        serveFile(request, response, resolveUiFile(request.url))
+      } catch (error) {
+        response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+        response.end(error instanceof Error ? error.message : String(error))
+      }
+    }).catch(error => {
+      if (!response.headersSent) {
+        response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+      }
       response.end(error instanceof Error ? error.message : String(error))
-    }
+    })
   })
+  const agentRpc = attachCoderAgentRpcServer(server)
 
   const shutdown = () => {
     if (shuttingDown) return
     shuttingDown = true
-    server.close(() => process.exit(0))
+    void agentRpc.close().finally(() => {
+      server.close(() => process.exit(0))
+    })
     setTimeout(() => process.exit(0), 2000).unref()
   }
 
@@ -129,13 +159,15 @@ async function startServeMode(options) {
   if (!address || typeof address === 'string') {
     throw new Error('Coder server did not expose a TCP address')
   }
-  const origin = `http://${host}:${address.port}`
+  const originHost = host === '::1' ? '[::1]' : host
+  const origin = `http://${originHost}:${address.port}`
   write({
     event: 'ready',
     data: {
       mode: 'serve',
       url: `${origin}/`,
       origin,
+      wsUrl: `ws://${originHost}:${address.port}${agentRpc.wsPath}`,
       port: address.port,
       pid: process.pid,
     },

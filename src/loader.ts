@@ -96,6 +96,7 @@ window._VSCODE_PRODUCT_JSON = {
     }
   }
 }
+
 ;(async () => {
   if (sandboxed) {
     window.vscodeContainer = await new Promise<HTMLElement>((resolve) => {

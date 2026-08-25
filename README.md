@@ -12,7 +12,7 @@
 |------|------------------------|----------------------|
 | 角色 | 主产品：Blockly 可视化编程、工程管理、构建/烧录、库与板卡管理 | **子应用**：内嵌 iframe，承载「代码侧」可视化编辑 |
 | AI 工具链 | **核心所在**：对话、Agent、MCP、项目级 AI 工作流等 | **不承担**主 AI 能力；仅可选提供编辑器内行间补全等轻量体验 |
-| 用户心智 | 创作入口、设备与依赖、完整闭环 | 打开 `src/main.cpp`、`project.aci` 等文件做**直接编辑** |
+| 用户心智 | 创作入口、设备与依赖、完整闭环 | 打开 `sketch/src/main.cpp`、`package.json` 等文件做**直接编辑** |
 | 数据与状态 | 项目服务、构建路径、板卡/库 UI、全局 `appdata` | 通过 `postMessage` / `BroadcastChannel` 接收宿主上下文，读写工作区文件 |
 
 **结论：**
@@ -22,6 +22,14 @@
 3. **本仓库的职责是：在宿主内提供 VS Code 风格的代码编辑 surface**，包括逻辑工程树（Aily View）、物理文件树、C/C++ 语言服务桥接，以及与宿主对齐的嵌入布局与原生文件系统桥接。
 
 若你需要扩展 Agent、聊天面板、MCP 或 Blockly 块级 AI，请到 **Aily Blockly** 主仓库；若仅需调整内嵌编辑体验或 Aily View 展示，则在本仓库修改。
+
+## 当前 Coder 工程契约（2026-08-20）
+
+- Blockly 与 Coder 共用宿主的 `board-*` 主板源；新建表单选择项目类型，Coder 不再单独选择硬件平台。
+- Coder 工程复制所选主板包的 `template_arduino/package.json`，工程类型、入口、框架、主板及依赖配置均保存在该根 `package.json` 中。
+- 源码模板 `template_arduino/project.aci` 保持原始内容并复制为 `sketch/src/main.cpp`；`package.json.entry` 相对持久化 `sketch/` 工作区。
+- Coder 直接编译 `sketch/`；本地库位于 `sketch/libraries/`，已安装的 `@aily-project/lib-*` 则保留 npm 包结构并从各包的 `src/` 直接参与编译；不再维护根 `src/`、根 `components/` 或 `.temp` 源码副本。
+- Aily View 只保留 `User View` / `Config` / `Library` 三个顶层入口，分别对应 `sketch/src/`、根配置文件、`sketch/libraries/`。
 
 ---
 
@@ -61,7 +69,7 @@ flowchart TB
 ## 本仓库提供什么
 
 - **内嵌代码工作台**：基于 `@codingame/monaco-vscode-*` 的暗色 IDE 风格 UI，与 Aily Blockly 视觉规范对齐。
-- **Aily View**：按工程语义展示逻辑树（`Start Here`、`Project Files`、`Dependencies`、`Board & Platform` 等），详见 `docs/aily-code工程视图与信息架构设计.md`。
+- **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示根 `package.json`，`Library` 递归展示 `sketch/libraries/`，详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
 - **语言服务桥接**：`monacoStdioLspClient` + `server/lspWsProxy.ts`，对接 clangd 等 LSP（需配合影子工作区 / `compile_commands`）。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。
@@ -72,7 +80,7 @@ flowchart TB
 
 - Blockly 积木编辑与代码生成主流程
 - 项目级 AI 对话、Agent、工具调用编排
-- `project.aci` / 依赖解析 / xpm / 完整构建·烧录·监视器闭环（宿主调度，本子应用仅展示与编辑相关 UI）
+- `package.json` Coder 配置 / 依赖解析 / xpm / 完整构建·烧录·监视器闭环（宿主调度，本子应用仅展示与编辑相关 UI）
 - 独立的桌面安装包或脱离宿主的全功能 IDE 发行
 
 ---
@@ -113,9 +121,10 @@ aily-coder/
 Coder 以 `@aily-project/subapp-aily-coder` 发布，不再复制到 Aily Blockly 的
 `child/aily-coder` 目录。包内包含：
 
-- `dist/`：生产 Workbench 静态资源；
+- `ui/`：符合统一子应用契约的生产 Workbench 静态资源；
 - `index.js`：与其它 Aily 子应用一致的 `serve --host --port` 入口；
-- `aily.uiIndex` / `ailySubapp.runtime`：供宿主发现 UI 和启动超时配置。
+- `i18n/`：供本地开发目录和远端子应用目录使用的标题、描述；
+- `aily.uiIndex` / `ailySubapp`：供宿主发现 UI、extension 属性和启动超时配置。
 
 Aily Blockly 在用户首次选择 Coder 模式时，将包安装到用户级
 `npm-global/app/node_modules`，然后通过标准子应用会话启动。Blockly 模式不依赖
@@ -149,12 +158,18 @@ npm start
 | 命令 | 说明 |
 |------|------|
 | `npm start` | 开发服务器 |
+| `npm run dev` | 构建并链接到宿主正式安装目录，监听改动并自动刷新 iframe |
 | `npm run build` | 类型检查 + 生产构建 |
 | `npm run build:subapp` | 构建可发布的 Coder 子应用包 |
-| `npm run dev:link` | 链接到 Aily Blockly 用户级子应用安装目录 |
-| `npm run dev:unlink` | 移除开发链接并恢复原安装包 |
+| `npm run dev:link` | 一次性构建并链接到 Aily Blockly 用户级子应用安装目录 |
+| `npm run dev:unlink` | 移除开发链接并恢复原安装包、依赖声明和目录索引 |
 | `npm run lint` | ESLint |
 | `npm run lsp-proxy` | 启动 LSP WebSocket 代理（配合 clangd） |
+
+`dev` / `dev:link` 与其它 Aily 子应用使用同一条用户级 npm 发现链路：源码包
+链接到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`，本地目录合入
+`subapp-index.json` 并设置 `dev: true`。不再依赖主软件扫描源码目录或 Coder
+专用 Vite 启动入口。结束联调后执行 `npm run dev:unlink`。
 
 ### 可选：行间 AI 补全
 

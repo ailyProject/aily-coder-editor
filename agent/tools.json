@@ -1,0 +1,160 @@
+{
+  "protocolVersion": 1,
+  "transport": "aily-child-rpc",
+  "tools": [
+    {
+      "name": "coder_library_search",
+      "description": "Search libraries for the active Aily Coder project through one unified entry. By default it searches the shared Blockly @aily-project/lib-* catalog, which is always preferred. Only when those results are unsuitable, call the same tool again with candidates=true to search the official Arduino catalog for fallback candidates. Copy libraryRef and version exactly from a result.",
+      "rpc": {
+        "method": "coder.library.search"
+      },
+      "permission": "read",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 120000,
+      "maxTimeoutMs": 200000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 65536,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-read",
+        "filesystem": "read",
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Prefer an exact library name when known. Additional functionality keywords are ranking hints; verify actual capabilities from result metadata and the installed API."
+          },
+          "candidates": {
+            "type": "boolean",
+            "default": false,
+            "description": "False searches preferred shared Blockly libraries; true searches official Arduino fallback candidates."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 25
+          },
+          "forceRefresh": {
+            "type": "boolean",
+            "default": false,
+            "description": "Refresh the official Arduino candidate index when candidates=true."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "coder_library_install",
+      "description": "Install one exact result from coder_library_search and wait until it is ready on disk. Preferred shared results keep the @aily-project/lib-* package intact under node_modules and safely expand src.7z in place as that package's src/... tree; the result returns packageDirectory, sourceDirectory, and exact libraryRoots that already exist. Official Arduino candidates are supported only as the fallback tier. Copy libraryRef and version exactly; do not guess paths or either value.",
+      "rpc": {
+        "method": "coder.library.install"
+      },
+      "permission": "change",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 180000,
+      "maxTimeoutMs": 320000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 49152,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-external-mutation",
+        "filesystem": "write",
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "libraryRef"
+        ],
+        "properties": {
+          "libraryRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "description": "Exact opaque libraryRef returned by coder_library_search."
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Exact returned version. Required for official Arduino candidates and used when present for preferred Blockly packages."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "coder_library_remove",
+      "description": "Remove one exact result previously installed through coder_library_install. Preferred shared results are unlinked from root package.json and removed as one intact node_modules/@aily-project/lib-* package, including its generated src tree; verified legacy sketch/libraries projections are cleaned during migration. Official Arduino candidates retain their existing managed-provenance protection.",
+      "rpc": {
+        "method": "coder.library.remove"
+      },
+      "permission": "change",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 120000,
+      "maxTimeoutMs": 180000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 49152,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-external-mutation",
+        "filesystem": "write",
+        "destructive": true,
+        "idempotent": true,
+        "openWorld": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "libraryRef"
+        ],
+        "properties": {
+          "libraryRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "description": "Exact opaque libraryRef originally returned by coder_library_search."
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Exact installed version. Required for official Arduino candidates."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

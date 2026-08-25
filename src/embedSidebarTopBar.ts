@@ -22,7 +22,7 @@ const SIDEBAR_NAV_ITEMS = [
     id: 'scm',
     command: 'workbench.view.scm',
     icon: 'codicon-source-control',
-    title: '源代码管理'
+    title: 'Git'
   }
 ] as const
 
@@ -101,7 +101,7 @@ function setActiveNavButton(nav: HTMLElement, activeId: SidebarNavId): void {
 }
 
 /**
- * 构建并插入 Cursor 式横向顶栏（文件 / 搜索 / 分支）。
+ * 构建并插入 Cursor 式横向顶栏（文件 / 搜索 / Git）。
  */
 function mountSidebarNav(sidebar: HTMLElement): void {
   if (sidebar.querySelector(`[${SIDEBAR_NAV_ATTR}]`)) {

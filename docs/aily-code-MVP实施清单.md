@@ -1,5 +1,7 @@
 # Aily Code MVP 实施清单
 
+> **当前实现覆盖（2026-08-21）**：Coder 由宿主新建表单选择，和 Blockly 共用 `board-*` 主板源；创建时复制主板包 `template_arduino/package.json`，Coder 配置均保存在该文件，并将保持原始内容的源码模板 `template_arduino/project.aci` 复制为 `sketch/src/main.cpp`。本地库为 `sketch/libraries/`。下文出现的根 `project.aci`、根 `src/`、根 `components/` 和手写骨架均为早期规划，不再作为当前验收口径。
+
 ## 1. 文档目标
 
 本文档把以下三份设计文档收束为一份可执行的 MVP 任务清单：
@@ -101,7 +103,7 @@ MVP 暂不要求：
 | FE-04 | 实现 `Aily View` 树渲染 | 左侧导航组件 | FE-01 | 顶层顺序与规格一致 |
 | FE-05 | 实现 `Files View` 切换 | 视图切换器 | FE-04 | 默认打开 `Aily View`，支持切到真实文件树 |
 | FE-06 | 实现首次打开默认展开规则 | 树状态管理 | FE-04 | 首次打开自动聚焦 `src/main.cpp` |
-| FE-07 | 实现 `Project Files` 与 `Dependencies` 分层 | 节点分组逻辑 | FE-04 | `components/` 不出现在依赖区 |
+| FE-07 | 实现 `Project Files` 与 `Dependencies` 分层 | 节点分组逻辑 | FE-04 | `components/` 源码归属项目文件；依赖区仅显示 `Component Libraries` 快捷投影与安装入口 |
 
 ### 5.3 M2
 

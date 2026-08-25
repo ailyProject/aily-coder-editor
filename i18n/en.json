@@ -1,6 +1,6 @@
 {
   "AILY_CODER": {
     "TITLE": "Aily Coder",
-    "DESCRIPTION": "VS Code-style embedded editor for browsing and editing Aily Code projects in Aily Blockly"
+    "DESCRIPTION": "VS Code-style embedded editor required by Coder mode for browsing and editing Aily Code projects"
   }
 }

@@ -1,12 +1,21 @@
 {
   "name": "@aily-project/subapp-aily-coder",
-  "version": "0.1.1",
-  "hide": true,
+  "version": "0.1.2",
   "type": "module",
   "main": "index.js",
+  "hide": true,
   "files": [
-    "dist",
-    "!dist/**/*.map",
+    "ui",
+    "!ui/**/*.map",
+    "i18n",
+    "agent",
+    "skill/aily-coder-library",
+    "server/componentLibraryApi.d.ts",
+    "server/componentLibraryApi.js",
+    "server/componentLibraryService.js",
+    "server/arduinoLibraryRegistry.js",
+    "server/agentRpcRouter.js",
+    "server/agentRpcServer.js",
     "index.js",
     "LICENSE",
     "README.md"
@@ -15,10 +24,13 @@
     "node": ">=20"
   },
   "aily": {
-    "uiIndex": "dist/index.html"
+    "uiIndex": "ui/index.html"
   },
   "ailySubapp": {
     "id": "aily-coder",
+    "package": "@aily-project/subapp-aily-coder",
+    "namespace": "AILY_CODER",
+    "titleKey": "AILY_CODER.TITLE",
     "app": {
       "icon": "fa-light fa-code",
       "enabled": true,
@@ -26,6 +38,21 @@
     },
     "runtime": {
       "startupTimeoutMs": 30000
+    },
+    "agent": {
+      "protocolVersion": 1,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "skills": [
+        "skill/aily-coder-library/SKILL.md"
+      ],
+      "tools": {
+        "transport": "aily-child-rpc",
+        "manifest": "agent/tools.json"
+      }
     }
   },
   "scripts": {
@@ -33,14 +60,18 @@
     "clean": "tsc -b -c",
     "start": "vite --config vite.config.ts",
     "start:debug": "vite --config vite.config.ts --debug --force",
+    "dev": "node scripts/link-dev.mjs --watch",
     "lint": "eslint src server vite.config.ts vite.netlify.config.ts update-local-dependencies.ts",
     "typecheck": "tsc --noEmit",
     "check-build": "npm run lint && npm run typecheck",
     "build": "npm run check-build && vite --config vite.config.ts build",
+    "build:watch": "vite --config vite.config.ts build --watch",
     "build:subapp": "npm run build",
     "build:netlify": "npm run check-build && vite --config vite.netlify.config.ts build",
     "dev:link": "node scripts/link-dev.mjs",
     "dev:unlink": "node scripts/link-dev.mjs --unlink",
+    "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
+    "test:component-libraries": "node --test server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts"
@@ -79,6 +110,10 @@
       "@codingame/monaco-vscode-workbench-service-override": "^31.0.1",
       "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1"
     }
+  },
+  "dependencies": {
+    "ws": "^8.20.0",
+    "yauzl": "^3.3.0"
   },
   "devDependencies": {
     "@codingame/esbuild-import-meta-url-plugin": "^1.0.3",
@@ -281,7 +316,6 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.24.1",
     "vite": "~8.0.3",
-    "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1",
-    "ws": "^8.20.0"
+    "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1"
   }
 }

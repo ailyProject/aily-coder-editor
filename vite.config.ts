@@ -3,6 +3,7 @@ import importMetaUrlPlugin from '@codingame/esbuild-import-meta-url-plugin'
 import * as fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'node:url'
+import { handleComponentLibraryApiRequest } from './server/componentLibraryApi.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(
@@ -26,12 +27,27 @@ const serveRoots = Array.from(
 
 export default defineConfig({
   build: {
+    outDir: 'ui',
+    emptyOutDir: true,
     target: 'esnext'
   },
   worker: {
     format: 'es'
   },
   plugins: [
+    {
+      name: 'component-library-api',
+      apply: 'serve',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          void handleComponentLibraryApiRequest(req, res)
+            .then(handled => {
+              if (!handled) next()
+            })
+            .catch(next)
+        })
+      }
+    },
     {
       name: 'load-vscode-css-as-string',
       enforce: 'pre',

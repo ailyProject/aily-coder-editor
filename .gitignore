@@ -2,6 +2,7 @@
 
 # Compiled output
 /dist
+/ui
 /tmp
 /out-tsc
 /bazel-out
@@ -40,3 +41,4 @@ temp
 # Env（密钥勿提交；可复制 .env.example 为 .env）
 .env
 .env.local
+.aily-dev.json
