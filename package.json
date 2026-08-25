@@ -10,12 +10,8 @@
     "i18n",
     "agent",
     "skill/aily-coder-library",
+    "runtime",
     "server/componentLibraryApi.d.ts",
-    "server/componentLibraryApi.js",
-    "server/componentLibraryService.js",
-    "server/arduinoLibraryRegistry.js",
-    "server/agentRpcRouter.js",
-    "server/agentRpcServer.js",
     "index.js",
     "LICENSE",
     "README.md"
@@ -64,13 +60,15 @@
     "lint": "eslint src server vite.config.ts vite.netlify.config.ts update-local-dependencies.ts",
     "typecheck": "tsc --noEmit",
     "check-build": "npm run lint && npm run typecheck",
-    "build": "npm run check-build && vite --config vite.config.ts build",
+    "build": "npm run check-build && npm run build:runtime && vite --config vite.config.ts build",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "build:watch": "vite --config vite.config.ts build --watch",
     "build:subapp": "npm run build",
     "build:netlify": "npm run check-build && vite --config vite.netlify.config.ts build",
     "dev:link": "node scripts/link-dev.mjs",
     "dev:unlink": "node scripts/link-dev.mjs --unlink",
     "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
+    "test:package-runtime": "npm run build:runtime && node --test scripts/package-runtime.test.mjs",
     "test:component-libraries": "node --test server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
@@ -110,10 +108,6 @@
       "@codingame/monaco-vscode-workbench-service-override": "^31.0.1",
       "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1"
     }
-  },
-  "dependencies": {
-    "ws": "^8.20.0",
-    "yauzl": "^3.3.0"
   },
   "devDependencies": {
     "@codingame/esbuild-import-meta-url-plugin": "^1.0.3",
@@ -302,6 +296,7 @@
     "@eslint/js": "^9.20.0",
     "ansi-colors": "^4.1.3",
     "dockerode": "^4.0.10",
+    "esbuild": "^0.28.0",
     "express": "^5.2.1",
     "@types/dockerode": "^4.0.1",
     "@types/express": "^5.0.6",
@@ -316,6 +311,8 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.24.1",
     "vite": "~8.0.3",
-    "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1"
+    "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1",
+    "ws": "^8.20.0",
+    "yauzl": "^3.3.0"
   }
 }

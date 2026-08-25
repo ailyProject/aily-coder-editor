@@ -286,7 +286,12 @@ async function removeDevelopmentIndexEntry(installRoot) {
 }
 
 function assertRunnablePackage() {
-  for (const file of ['index.js', path.join('ui', 'index.html'), path.join('i18n', 'en.json')]) {
+  for (const file of [
+    'index.js',
+    path.join('runtime', 'index.js'),
+    path.join('ui', 'index.html'),
+    path.join('i18n', 'en.json'),
+  ]) {
     if (!existsSync(path.join(packageRoot, file))) {
       throw new Error(`Coder development package is missing ${file}`)
     }

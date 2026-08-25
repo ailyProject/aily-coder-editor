@@ -123,6 +123,7 @@ Coder 以 `@aily-project/subapp-aily-coder` 发布，不再复制到 Aily Blockl
 
 - `ui/`：符合统一子应用契约的生产 Workbench 静态资源；
 - `index.js`：与其它 Aily 子应用一致的 `serve --host --port` 入口；
+- `runtime/index.js`：已内联 Node 服务端依赖的自包含生产 bundle，发布包不含 `node_modules`；
 - `i18n/`：供本地开发目录和远端子应用目录使用的标题、描述；
 - `aily.uiIndex` / `ailySubapp`：供宿主发现 UI、extension 属性和启动超时配置。
 
@@ -134,8 +135,24 @@ Aily Blockly 在用户首次选择 Coder 模式时，将包安装到用户级
 
 ```bash
 npm run build:subapp
-npm pack --dry-run
+npm run test:package-runtime
+npm pack
 ```
+
+本地模拟生产安装时，请让 npm 安装生成的 tgz，不要把源码目录或开发态
+`node_modules` 复制进子应用目录：
+
+```bash
+AILY_SUBAPP_ROOT="/Users/downey/Library/aily-project/npm-global/app"
+npm install --prefix "$AILY_SUBAPP_ROOT" \
+  ./aily-project-subapp-aily-coder-0.1.2.tgz \
+  --omit=dev --save-exact --no-audit --no-fund
+```
+
+安装后包本身位于宿主统一的 `npm-global/app/node_modules/@aily-project/` 下，
+这是宿主的 npm 发现目录；但 Coder 包内部不会再包含一层 `node_modules`，运行时
+依赖已经构建进 `runtime/index.js`。正式发布时同样由宿主从 npm registry 安装，
+无需生产机器额外安装 Coder 的运行时依赖。
 
 ## 本地开发
 
