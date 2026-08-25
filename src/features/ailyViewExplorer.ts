@@ -32,6 +32,10 @@ import {
   startWorkspaceNativeWatch,
   statAbsolutePathViaHost
 } from '../parentBackedNativeFs.js'
+import {
+  listAilyLibraryProjections,
+  type ProjectDirectoryEntry
+} from './ailyLibraryProjection.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -206,7 +210,7 @@ function withHostBoardDescription(node: ProjectTreeNode): ProjectTreeNode {
 
 // 工程视图节点蓝图：只保留用户源码、工程配置与项目库三个入口。
 // Aily View 的直属节点默认展开；更深层的真实目录仍由用户按需展开。
-// User View / Library 直接映射磁盘目录；Config 收纳根 package.json 工程配置。
+// User View 直接映射磁盘目录；Library 合并本地库与已安装 Aily 库的虚拟映射；Config 收纳根 package.json 工程配置。
 const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
     id: 'user-view',
@@ -266,7 +270,7 @@ const ENTRY_SRC_NODE_PREFIX = 'entry-src-'
 /** Installed Libraries 无依赖时的占位节点 id（§9.4） */
 const INSTALLED_LIBRARIES_EMPTY_ID = 'installed-libraries-empty'
 
-/** Library 无本地库时的占位节点 id */
+/** Library 无本地库或可映射 Aily 库时的占位节点 id */
 const COMPONENT_LIBRARIES_EMPTY_ID = 'component-libraries-empty'
 
 /** Platform Packages 未解析到主板平台依赖时的占位节点 id（§9.4） */
@@ -666,6 +670,29 @@ function isFsDirectory(
   return fileType === dir || Number(fileType) === Number(dir)
 }
 
+/** 读取工作区目录，转为 Aily 库映射扫描所需的中性结构。 */
+async function readProjectDirectoryEntries(
+  vscodeApi: typeof vscode,
+  relPath: string
+): Promise<ProjectDirectoryEntry[]> {
+  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
+  if (root == null) {
+    return []
+  }
+  const segments = relPath.split('/').filter((segment) => segment.length > 0)
+  try {
+    const entries = await vscodeApi.workspace.fs.readDirectory(
+      vscodeApi.Uri.joinPath(root, ...segments)
+    )
+    return entries.map(([name, fileType]) => ({
+      name,
+      isDirectory: isFsDirectory(vscodeApi, fileType)
+    }))
+  } catch {
+    return []
+  }
+}
+
 /** 列出目录真实子项；node_modules 与 Library 的直接子目录用库图标。 */
 async function listFsDirectoryChildren(
   vscodeApi: typeof vscode,
@@ -714,6 +741,33 @@ async function listFsDirectoryChildren(
   })
 
   return out
+}
+
+/** 列出已安装 Aily 库最深连续 src 下的直属库，作为 Library 的虚拟直属子节点。 */
+async function listInstalledAilyLibraryChildren(
+  vscodeApi: typeof vscode
+): Promise<FsTreeElement[]> {
+  const projections = await listAilyLibraryProjections(
+    async (relPath) => readProjectDirectoryEntries(vscodeApi, relPath)
+  )
+  return projections.map((projection) => ({
+    kind: 'fs',
+    relPath: projection.relPath,
+    label: projection.label,
+    isDirectory: true,
+    isTopLevelPackage: true
+  }))
+}
+
+function sortFsTreeElements(items: FsTreeElement[]): FsTreeElement[] {
+  items.sort((left, right) => {
+    if (left.isDirectory !== right.isDirectory) {
+      return left.isDirectory ? -1 : 1
+    }
+    const labelOrder = left.label.localeCompare(right.label)
+    return labelOrder === 0 ? left.relPath.localeCompare(right.relPath) : labelOrder
+  })
+  return items
 }
 
 class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElement> {
@@ -980,9 +1034,13 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       return listFsDirectoryChildren(this.#vscode, SRC_REL)
     }
 
-    // Library：递归镜像 sketch/libraries。
+    // Library：合并 sketch/libraries 与已安装 Aily 库最深连续 src 下的直属库。
     if (node.id === 'library') {
-      const items = await listFsDirectoryChildren(this.#vscode, COMPONENTS_REL)
+      const [localItems, installedAilyItems] = await Promise.all([
+        listFsDirectoryChildren(this.#vscode, COMPONENTS_REL),
+        listInstalledAilyLibraryChildren(this.#vscode)
+      ])
+      const items = sortFsTreeElements([...localItems, ...installedAilyItems])
       if (items.length === 0) {
         return [wrap(COMPONENT_LIBRARIES_EMPTY)]
       }
@@ -1876,7 +1934,7 @@ void getApi().then((vscode) => {
     }
   })
 
-  /** node_modules 变更时刷新 Installed Libraries 子树 */
+  /** node_modules 变更时刷新已安装包与 Library 中的 Aily 库映射。 */
   let nodeModulesWatcher: vscode.FileSystemWatcher | undefined
   const setupNodeModulesWatcher = (): void => {
     nodeModulesWatcher?.dispose()
