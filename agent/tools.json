@@ -3,10 +3,10 @@
   "transport": "aily-child-rpc",
   "tools": [
     {
-      "name": "coder_arduino_library_search",
-      "description": "Search the official Arduino Library Manager catalog for an Aily Coder project. Returns opaque library IDs, exact versions, architecture compatibility, installed state, and Coder-managed provenance. This does not search Blockly libraries or Aily Coder external packages.",
+      "name": "coder_library_search",
+      "description": "Search libraries for the active Aily Coder project through one unified entry. By default it searches the shared Blockly @aily-project/lib-* catalog, which is always preferred. Only when those results are unsuitable, call the same tool again with candidates=true to search the official Arduino catalog for fallback candidates. Copy libraryRef and version exactly from a result.",
       "rpc": {
-        "method": "coder.library.arduino.search"
+        "method": "coder.library.search"
       },
       "permission": "read",
       "requiresSession": false,
@@ -29,21 +29,20 @@
       },
       "inputSchema": {
         "type": "object",
+        "required": [
+          "query"
+        ],
         "properties": {
           "query": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 256,
-            "description": "Arduino library name or functionality keywords."
+            "description": "Prefer an exact library name when known. Additional functionality keywords are ranking hints; verify actual capabilities from result metadata and the installed API."
           },
-          "category": {
-            "type": "string",
-            "maxLength": 128,
-            "description": "Exact Arduino Library Manager category filter."
-          },
-          "type": {
-            "type": "string",
-            "maxLength": 128,
-            "description": "Exact Arduino Library Manager type filter."
+          "candidates": {
+            "type": "boolean",
+            "default": false,
+            "description": "False searches preferred shared Blockly libraries; true searches official Arduino fallback candidates."
           },
           "offset": {
             "type": "integer",
@@ -58,17 +57,18 @@
           },
           "forceRefresh": {
             "type": "boolean",
-            "default": false
+            "default": false,
+            "description": "Refresh the official Arduino candidate index when candidates=true."
           }
         },
         "additionalProperties": false
       }
     },
     {
-      "name": "coder_arduino_library_install",
-      "description": "Install one exact result from coder_arduino_library_search into the active Aily Coder project's components directory. Requires an opaque official Arduino registry ID and an advertised exact version; it never installs Blockly libraries or guessed packages.",
+      "name": "coder_library_install",
+      "description": "Install one exact result from coder_library_search and wait until it is ready on disk. Preferred shared results keep the @aily-project/lib-* package intact under node_modules and safely expand src.7z in place as that package's src/... tree; the result returns packageDirectory, sourceDirectory, and exact libraryRoots that already exist. Official Arduino candidates are supported only as the fallback tier. Copy libraryRef and version exactly; do not guess paths or either value.",
       "rpc": {
-        "method": "coder.library.arduino.install"
+        "method": "coder.library.install"
       },
       "permission": "change",
       "requiresSession": false,
@@ -83,7 +83,7 @@
         ]
       },
       "effects": {
-        "executionDomain": "workspace-mutation",
+        "executionDomain": "workspace-external-mutation",
         "filesystem": "write",
         "destructive": false,
         "idempotent": true,
@@ -92,31 +92,29 @@
       "inputSchema": {
         "type": "object",
         "required": [
-          "libraryId",
-          "version"
+          "libraryRef"
         ],
         "properties": {
-          "libraryId": {
+          "libraryRef": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
-            "description": "Exact opaque ID returned by coder_arduino_library_search."
+            "maxLength": 160,
+            "description": "Exact opaque libraryRef returned by coder_library_search."
           },
           "version": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 64,
-            "description": "Exact advertised version returned by coder_arduino_library_search."
+            "description": "Exact returned version. Required for official Arduino candidates and used when present for preferred Blockly packages."
           }
         },
         "additionalProperties": false
       }
     },
     {
-      "name": "coder_arduino_library_remove",
-      "description": "Remove one exact Coder-managed official Arduino library from the active Aily Coder project. The Runtime refuses missing or conflicting installation provenance, ambiguous directories, symlinks, and version mismatches so intentional local components are preserved.",
+      "name": "coder_library_remove",
+      "description": "Remove one exact result previously installed through coder_library_install. Preferred shared results are unlinked from root package.json and removed as one intact node_modules/@aily-project/lib-* package, including its generated src tree; verified legacy sketch/libraries projections are cleaned during migration. Official Arduino candidates retain their existing managed-provenance protection.",
       "rpc": {
-        "method": "coder.library.arduino.remove"
+        "method": "coder.library.remove"
       },
       "permission": "change",
       "requiresSession": false,
@@ -131,7 +129,7 @@
         ]
       },
       "effects": {
-        "executionDomain": "workspace-mutation",
+        "executionDomain": "workspace-external-mutation",
         "filesystem": "write",
         "destructive": true,
         "idempotent": true,
@@ -140,21 +138,19 @@
       "inputSchema": {
         "type": "object",
         "required": [
-          "libraryId",
-          "version"
+          "libraryRef"
         ],
         "properties": {
-          "libraryId": {
+          "libraryRef": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
-            "description": "Exact opaque ID returned by coder_arduino_library_search."
+            "maxLength": 160,
+            "description": "Exact opaque libraryRef originally returned by coder_library_search."
           },
           "version": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 64,
-            "description": "Exact installedVersion confirmed by coder_arduino_library_search."
+            "description": "Exact installed version. Required for official Arduino candidates."
           }
         },
         "additionalProperties": false

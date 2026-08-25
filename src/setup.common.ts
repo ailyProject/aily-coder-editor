@@ -473,7 +473,8 @@ export const constructOptions: IWorkbenchConstructionOptions = {
   configurationDefaults: {
     // 'window.title': '${separator}${dirty}${activeEditorShort}'
     "window.menuBarVisibility": "compact",
-    "workbench.editor.editorActionsLocation": "hidden",
+    // Keep contextual editor actions available, including Markdown's split preview button.
+    "workbench.editor.editorActionsLocation": "default",
     "window.commandCenter": false,
     "workbench.layoutControl.enabled": false,
     "workbench.activityBar.location": "hidden",

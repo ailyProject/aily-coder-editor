@@ -244,6 +244,18 @@ export function searchArduinoLibraryRegistry(registry, {
     if (normalizedType && !library.versions.some(item => item.types.includes(normalizedType))) return false
     return true
   })
+  if (normalizedQuery) {
+    matched.sort((left, right) => {
+      const rank = library => {
+        const name = String(library.name ?? '').toLocaleLowerCase('en')
+        if (name === normalizedQuery) return 3
+        if (name.startsWith(normalizedQuery)) return 2
+        if (name.includes(normalizedQuery)) return 1
+        return 0
+      }
+      return rank(right) - rank(left) || left.name.localeCompare(right.name)
+    })
+  }
   return {
     libraries: matched.slice(safeOffset, safeOffset + safeLimit),
     total: matched.length,

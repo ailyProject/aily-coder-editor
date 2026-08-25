@@ -1,14 +1,14 @@
 import path from 'node:path'
 import {
-  installArduinoComponentLibrary,
-  removeArduinoComponentLibrary,
-  searchArduinoComponentLibraries,
+  installCoderLibrary,
+  removeCoderLibrary,
+  searchCoderLibraries,
 } from './componentLibraryService.js'
 
 const METHODS = new Set([
-  'coder.library.arduino.search',
-  'coder.library.arduino.install',
-  'coder.library.arduino.remove',
+  'coder.library.search',
+  'coder.library.install',
+  'coder.library.remove',
 ])
 
 export class CoderAgentRpcError extends Error {
@@ -26,12 +26,6 @@ function record(value) {
 
 function nonEmptyText(value) {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function boundedInteger(value, fallback, minimum, maximum) {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed)) return fallback
-  return Math.min(maximum, Math.max(minimum, parsed))
 }
 
 function requireWorkspaceContext(context) {
@@ -69,22 +63,27 @@ function requiredText(params, key, maximum) {
   return value
 }
 
+function mutationParams(params) {
+  return {
+    libraryRef: requiredText(params, 'libraryRef', 160),
+    version: nonEmptyText(params.version).slice(0, 64),
+  }
+}
+
 function searchParams(params) {
   return {
-    query: nonEmptyText(params.query).slice(0, 256),
-    category: nonEmptyText(params.category).slice(0, 128),
-    type: nonEmptyText(params.type).slice(0, 128),
+    query: requiredText(params, 'query', 256),
+    candidates: params.candidates === true,
     offset: boundedInteger(params.offset, 0, 0, Number.MAX_SAFE_INTEGER),
     limit: boundedInteger(params.limit, 25, 1, 50),
     forceRefresh: params.forceRefresh === true,
   }
 }
 
-function mutationParams(params) {
-  return {
-    libraryId: requiredText(params, 'libraryId', 128),
-    version: requiredText(params, 'version', 64),
-  }
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed)) return fallback
+  return Math.min(maximum, Math.max(minimum, parsed))
 }
 
 function classifyError(error) {
@@ -95,14 +94,17 @@ function classifyError(error) {
 
   const rules = [
     [/Workspace root .*does not exist|not an Aily Coder project/iu, 'CODER_PROJECT_REQUIRED'],
-    [/version was not found/iu, 'ARDUINO_LIBRARY_NOT_FOUND'],
-    [/not compatible with the active Coder architecture/iu, 'ARDUINO_LIBRARY_INCOMPATIBLE'],
-    [/already exists/iu, 'COMPONENT_PATH_CONFLICT'],
-    [/no Coder Arduino installation metadata/iu, 'COMPONENT_PROVENANCE_REQUIRED'],
-    [/invalid Arduino library provenance metadata|conflicting Arduino library provenance metadata/iu, 'COMPONENT_PROVENANCE_CONFLICT'],
+    [/must be copied exactly from coder_library_search/iu, 'CODER_LIBRARY_REF_INVALID'],
+    [/Official Arduino candidates require an exact version/iu, 'CODER_LIBRARY_VERSION_REQUIRED'],
+    [/must be an exact @aily-project\/lib-/iu, 'BLOCKLY_LIBRARY_PACKAGE_INVALID'],
+    [/does not contain src\.7z/iu, 'BLOCKLY_LIBRARY_ARCHIVE_MISSING'],
+    [/src\.7z/iu, 'BLOCKLY_LIBRARY_ARCHIVE_INVALID'],
+    [/no Blockly package provenance/iu, 'BLOCKLY_LIBRARY_PROVENANCE_REQUIRED'],
+    [/provenance metadata|belongs to another library package/iu, 'BLOCKLY_LIBRARY_PROVENANCE_CONFLICT'],
+    [/not a replaceable directory/iu, 'BLOCKLY_LIBRARY_PATH_CONFLICT'],
   ]
   const matched = rules.find(([pattern]) => pattern.test(message))
-  return new CoderAgentRpcError(matched?.[1] ?? 'CODER_COMPONENT_LIBRARY_FAILED', message)
+  return new CoderAgentRpcError(matched?.[1] ?? 'CODER_LIBRARY_FAILED', message)
 }
 
 export function serializeCoderAgentRpcError(error) {
@@ -115,9 +117,9 @@ export function serializeCoderAgentRpcError(error) {
 }
 
 export function createCoderAgentRpcRouter(operations = {}) {
-  const search = operations.search ?? searchArduinoComponentLibraries
-  const install = operations.install ?? installArduinoComponentLibrary
-  const remove = operations.remove ?? removeArduinoComponentLibrary
+  const search = operations.search ?? searchCoderLibraries
+  const install = operations.install ?? installCoderLibrary
+  const remove = operations.remove ?? removeCoderLibrary
 
   return {
     async execute(message, { signal } = {}) {
@@ -141,7 +143,7 @@ export function createCoderAgentRpcRouter(operations = {}) {
       signal?.throwIfAborted()
 
       try {
-        if (method === 'coder.library.arduino.search') {
+        if (method === 'coder.library.search') {
           const result = await search({ workspaceRoot, ...searchParams(params), signal })
           signal?.throwIfAborted()
           return {
@@ -150,7 +152,7 @@ export function createCoderAgentRpcRouter(operations = {}) {
             libraries: Array.isArray(result?.libraries) ? result.libraries.map(publicLibrary) : [],
           }
         }
-        if (method === 'coder.library.arduino.install') {
+        if (method === 'coder.library.install') {
           const library = await install({ workspaceRoot, ...mutationParams(params), signal })
           signal?.throwIfAborted()
           return { ok: true, library: publicLibrary(library) }

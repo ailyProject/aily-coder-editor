@@ -28,7 +28,7 @@
 - Blockly 与 Coder 共用宿主的 `board-*` 主板源；新建表单选择项目类型，Coder 不再单独选择硬件平台。
 - Coder 工程复制所选主板包的 `template_arduino/package.json`，工程类型、入口、框架、主板及依赖配置均保存在该根 `package.json` 中。
 - 源码模板 `template_arduino/project.aci` 保持原始内容并复制为 `sketch/src/main.cpp`；`package.json.entry` 相对持久化 `sketch/` 工作区。
-- Coder 直接编译 `sketch/`，本地库位于 `sketch/libraries/`；不再维护根 `src/`、根 `components/` 或 `.temp` 源码副本。
+- Coder 直接编译 `sketch/`；本地库位于 `sketch/libraries/`，已安装的 `@aily-project/lib-*` 则保留 npm 包结构并从各包的 `src/` 直接参与编译；不再维护根 `src/`、根 `components/` 或 `.temp` 源码副本。
 - Aily View 只保留 `User View` / `Config` / `Library` 三个顶层入口，分别对应 `sketch/src/`、根配置文件、`sketch/libraries/`。
 
 ---
