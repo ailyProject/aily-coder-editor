@@ -1,4 +1,11 @@
-const SYSTEM_DIRECTORIES = new Set(['.aily', '.log', '.workspace-history'])
+/** Coder 生成或依赖目录：不进入默认搜索、SCM 状态和提交。 */
+const SYSTEM_DIRECTORIES = new Set([
+  '.aily',
+  '.build',
+  '.log',
+  '.workspace-history',
+  'node_modules'
+])
 
 export type GitStatusEntry = {
   path: string
@@ -11,7 +18,7 @@ function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\//, '')
 }
 
-function isSystemDirectoryPath(value: string): boolean {
+function isExcludedDirectoryPath(value: string): boolean {
   return normalizeRelativePath(value)
     .split('/')
     .some((segment) => SYSTEM_DIRECTORIES.has(segment.toLowerCase()))
@@ -36,7 +43,7 @@ export function parseGitPorcelainZ(raw: string): GitStatusEntry[] {
       ? normalizeRelativePath(tokens[++index] ?? '')
       : undefined
 
-    if (!path || isSystemDirectoryPath(path)) {
+    if (!path || isExcludedDirectoryPath(path)) {
       continue
     }
 

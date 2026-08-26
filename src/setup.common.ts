@@ -482,13 +482,17 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     "workbench.secondarySideBar.defaultVisibility": "hidden",
     "files.exclude": {
       "**/.aily": true,
+      "**/.build": true,
       "**/.log": true,
-      "**/.workspace-history": true
+      "**/.workspace-history": true,
+      "**/node_modules": true
     },
     "search.exclude": {
       "**/.aily": true,
+      "**/.build": true,
       "**/.log": true,
-      "**/.workspace-history": true
+      "**/.workspace-history": true,
+      "**/node_modules": true
     }
   },
   defaultLayout: {

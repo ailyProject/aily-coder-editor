@@ -107,13 +107,94 @@ function rpc<T>(op: string, payload: Record<string, unknown>, timeoutMs = 120000
 }
 
 export type NativeGitStatusResult = {
+  /** Older hosts omit this field for initialized repositories. */
+  initialized?: boolean
   repositoryRoot: string
   status: string
+}
+
+export type NativeGitHistoryRef = {
+  id: string
+  name: string
+  revision: string
+  category: 'head' | 'local' | 'remote' | 'tag'
+}
+
+export type NativeGitHistoryRefsResult = {
+  current?: NativeGitHistoryRef
+  remote?: NativeGitHistoryRef
+  refs: NativeGitHistoryRef[]
+}
+
+export type NativeGitHistoryItemsOptions = {
+  revisions?: string[]
+  skip?: number
+  limit?: number
+  filterText?: string
 }
 
 /** 读取当前工作区 Git 状态；宿主只执行固定的只读 Git 参数。 */
 export function readNativeGitStatus(workspaceRoot: string): Promise<NativeGitStatusResult> {
   return rpc<NativeGitStatusResult>('nativeGitStatus', { workspaceRoot })
+}
+
+/** 在当前 Coder 工程根初始化 Git 仓库。仅由用户点击 SCM 初始化入口触发。 */
+export function initializeNativeGitRepository(
+  workspaceRoot: string
+): Promise<{ summary: string }> {
+  return rpc<{ summary: string }>('nativeGitInit', { workspaceRoot })
+}
+
+/** 读取 HEAD、分支、远端分支和标签，供原生 SCM Graph 使用。 */
+export function readNativeGitHistoryRefs(
+  workspaceRoot: string
+): Promise<NativeGitHistoryRefsResult> {
+  return rpc<NativeGitHistoryRefsResult>('nativeGitHistoryRefs', { workspaceRoot })
+}
+
+/** 分页读取提交拓扑；返回 NUL 分隔记录，避免提交消息中的换行破坏解析。 */
+export function readNativeGitHistoryItems(
+  workspaceRoot: string,
+  options: NativeGitHistoryItemsOptions
+): Promise<{ history: string }> {
+  return rpc<{ history: string }>('nativeGitHistoryItems', { workspaceRoot, ...options })
+}
+
+/** 读取两个提交之间的文件状态，返回 `git --name-status -z` 原文。 */
+export function readNativeGitHistoryItemChanges(
+  workspaceRoot: string,
+  historyItemId: string,
+  historyItemParentId?: string
+): Promise<{ changes: string }> {
+  return rpc<{ changes: string }>('nativeGitHistoryItemChanges', {
+    workspaceRoot,
+    historyItemId,
+    historyItemParentId
+  })
+}
+
+/** 解析多个历史引用的共同祖先。 */
+export function resolveNativeGitHistoryCommonAncestor(
+  workspaceRoot: string,
+  revisions: string[]
+): Promise<{ revision?: string }> {
+  return rpc<{ revision?: string }>('nativeGitHistoryMergeBase', {
+    workspaceRoot,
+    revisions
+  })
+}
+
+/** 延迟读取指定提交中的文本内容，供 Graph 展开后的历史 diff 使用。 */
+export function readNativeGitRevisionFile(
+  workspaceRoot: string,
+  revision: string,
+  relativePath: string
+): Promise<{ content: string }> {
+  return rpc<{ content: string }>('nativeGitShowRevisionFile', {
+    workspaceRoot,
+    revision,
+    relativePath
+  })
 }
 
 /** 从 HEAD 读取工作区相对路径的基线文本，供 SCM diff 使用。 */
@@ -124,7 +205,7 @@ export function readNativeGitHeadFile(
   return rpc<{ content: string }>('nativeGitShowHead', { workspaceRoot, relativePath })
 }
 
-/** 保存并提交当前工作区变更；宿主会默认排除 Coder 系统目录。 */
+/** 保存并提交当前工作区变更；未初始化时宿主会先建仓，并排除生成与依赖目录。 */
 export function commitNativeGitChanges(
   workspaceRoot: string,
   message: string

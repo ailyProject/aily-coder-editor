@@ -21,13 +21,17 @@
     "files.autoSave": "off",
     "files.exclude": {
         "**/.aily": true,
+        "**/.build": true,
         "**/.log": true,
-        "**/.workspace-history": true
+        "**/.workspace-history": true,
+        "**/node_modules": true
     },
     "search.exclude": {
         "**/.aily": true,
+        "**/.build": true,
         "**/.log": true,
-        "**/.workspace-history": true
+        "**/.workspace-history": true,
+        "**/node_modules": true
     },
     "debug.toolBarLocation": "docked",
     "editor.experimental.asyncTokenization": true,

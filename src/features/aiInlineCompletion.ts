@@ -4,42 +4,33 @@ import {
   registerExtension,
   type IExtensionManifest
 } from '@codingame/monaco-vscode-api/extensions'
+import {
+  DEEPSEEK_FIM_BEGIN,
+  DEEPSEEK_FIM_END,
+  DEEPSEEK_FIM_HOLE,
+  fetchLmStudioFimInlineCompletion,
+  fetchZhipuChatInlineCompletion,
+  normalizeLmStudioFimBaseUrl,
+  resolveInlineCompletionProvider,
+  sanitizeInlineCompletionOutput,
+  type InlineCompletionProvider,
+  type InlineCompletionProviderSetting,
+  type InlineCompletionRequestPolicy
+} from './aiInlineCompletionTransport'
+
+export { DEEPSEEK_FIM_BEGIN, DEEPSEEK_FIM_END, DEEPSEEK_FIM_HOLE }
+export { sanitizeInlineCompletionOutput }
+export { normalizeLmStudioFimBaseUrl as normalizeOpenAiCompatBaseUrl }
 
 /** 不限定语言：所有已注册的文本模型均可获得行间补全 */
 const inlineCompletionDocumentSelector: vscode.DocumentSelector = '*'
 
-/** DeepSeek Coder base 模型原生 FIM 特殊 token（勿改为普通 ASCII 占位符） */
-export const DEEPSEEK_FIM_BEGIN = '<｜fim▁begin｜>'
-export const DEEPSEEK_FIM_HOLE = '<｜fim▁hole｜>'
-export const DEEPSEEK_FIM_END = '<｜fim▁end｜>'
-
 const DEFAULT_STOP_SEQUENCES = ['\n\n', '```']
 
-/** LM Studio `/api/v1` 等原生 URL 归一化为 OpenAI 兼容 `/v1`（FIM 必须走 `/completions`） */
-export function normalizeOpenAiCompatBaseUrl(apiBaseUrl: string): string {
-  const trimmed = apiBaseUrl.replace(/\/$/, '')
-  if (/^https?:\/\/[^/]+$/i.test(trimmed)) {
-    return `${trimmed}/v1`
-  }
-  if (/\/api\/v\d+$/i.test(trimmed)) {
-    return trimmed.replace(/\/api\/v\d+$/i, '/v1')
-  }
-  if (/\/api\/v\d+\//i.test(trimmed)) {
-    return trimmed.replace(/\/api\/v\d+/i, '/v1')
-  }
-  return trimmed.replace(/\/(completions|chat\/completions|chat)$/, '')
-}
+/** @deprecated 请使用 `InlineCompletionProvider`。 */
+export type InlineCompletionMode = 'fim' | 'chat'
 
-/** OpenAI 兼容：`POST {apiBaseUrl}/chat/completions`（legacy chat 模式） */
-export interface ModelInlineCompletionRequest {
-  prompt: string
-  apiBaseUrl: string
-  apiKey?: string
-  model?: string
-  signal?: AbortSignal
-}
-
-/** FIM：`POST {apiBaseUrl}/completions` */
+/** 兼容旧的直接 FIM 调用入口。 */
 export interface FimInlineCompletionRequest {
   prompt: string
   apiBaseUrl: string
@@ -52,34 +43,36 @@ export interface FimInlineCompletionRequest {
   stop?: string[]
 }
 
-export type InlineCompletionMode = 'fim' | 'chat'
-
-/** LM Studio 原生 `/api/v1/chat` | OpenAI 兼容 `/v1/completions` */
-export type InlineCompletionApiKind = 'lmstudio-v1' | 'openai-compat'
+/** 兼容旧的 Chat 调用入口，现由智谱 Chat 适配器实现。 */
+export interface ModelInlineCompletionRequest {
+  prompt: string
+  apiBaseUrl: string
+  apiKey?: string
+  model?: string
+  signal?: AbortSignal
+}
 
 function readViteEnv(key: string): string | undefined {
   return (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[key]
 }
 
-function parseInlineMode(): InlineCompletionMode {
-  const raw = readViteEnv('VITE_AI_INLINE_MODE')?.trim().toLowerCase()
-  return raw === 'chat' ? 'chat' : 'fim'
+function parseProviderSetting(raw: string | null | undefined): InlineCompletionProviderSetting | undefined {
+  const normalized = raw?.trim().toLowerCase()
+  if (normalized === 'auto' || normalized === 'lmstudio-fim' || normalized === 'zhipu-chat') {
+    return normalized
+  }
+  return undefined
 }
 
-/** 根据 URL 或 `VITE_AI_INLINE_API` 选择 LM Studio v1 或 OpenAI 兼容端点 */
-export function resolveInlineCompletionApiKind(apiBaseUrl: string): InlineCompletionApiKind {
-  const raw = readViteEnv('VITE_AI_INLINE_API')?.trim().toLowerCase()
-  if (raw === 'lmstudio-v1' || raw === 'v1' || raw === 'native') {
-    return 'lmstudio-v1'
+function parseLegacyModeProvider(raw: string | null | undefined): InlineCompletionProvider | undefined {
+  const normalized = raw?.trim().toLowerCase()
+  if (normalized === 'fim') {
+    return 'lmstudio-fim'
   }
-  if (raw === 'openai-compat' || raw === 'openai') {
-    return 'openai-compat'
+  if (normalized === 'chat') {
+    return 'zhipu-chat'
   }
-  const normalized = apiBaseUrl.replace(/\/$/, '').toLowerCase()
-  if (normalized.endsWith('/api/v1') || normalized.includes('/api/v1/')) {
-    return 'lmstudio-v1'
-  }
-  return 'openai-compat'
+  return undefined
 }
 
 function parseInferenceParams(): {
@@ -111,10 +104,15 @@ function resolveInlineCompletionConfig(): {
   apiBaseUrl: string | undefined
   apiKey: string | undefined
   model: string | undefined
-  mode: InlineCompletionMode
+  providerSetting: InlineCompletionProviderSetting
 } {
   const params = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null
-  const modeParam = params?.get('aiInlineMode')?.trim().toLowerCase()
+  const providerSetting =
+    parseProviderSetting(params?.get('aiInlineProvider')) ??
+    parseProviderSetting(readViteEnv('VITE_AI_INLINE_PROVIDER')) ??
+    parseLegacyModeProvider(params?.get('aiInlineMode')) ??
+    parseLegacyModeProvider(readViteEnv('VITE_AI_INLINE_MODE')) ??
+    'auto'
   return {
     apiBaseUrl:
       params?.get('aiInlineUrl') ??
@@ -122,8 +120,66 @@ function resolveInlineCompletionConfig(): {
       readViteEnv('VITE_OPENAI_BASE_URL'),
     apiKey: readViteEnv('VITE_AI_INLINE_COMPLETION_KEY') ?? readViteEnv('VITE_OPENAI_API_KEY'),
     model: readViteEnv('VITE_AI_INLINE_COMPLETION_MODEL') ?? undefined,
-    mode: modeParam === 'chat' ? 'chat' : modeParam === 'fim' ? 'fim' : parseInlineMode()
+    providerSetting
   }
+}
+
+function parseBoundedInteger(
+  key: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const parsed = Number.parseInt(readViteEnv(key) ?? '', 10)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.min(maximum, Math.max(minimum, parsed))
+}
+
+function resolveRequestPolicy(provider: InlineCompletionProvider): InlineCompletionRequestPolicy {
+  const isRemote = provider === 'zhipu-chat'
+  return {
+    timeoutMs: parseBoundedInteger('VITE_AI_INLINE_TIMEOUT_MS', isRemote ? 12_000 : 8_000, 1_000, 60_000),
+    minRequestIntervalMs: parseBoundedInteger(
+      'VITE_AI_INLINE_MIN_REQUEST_INTERVAL_MS',
+      isRemote ? 1_500 : 250,
+      0,
+      10_000
+    ),
+    rateLimitCooldownMs: parseBoundedInteger(
+      'VITE_AI_INLINE_RATE_LIMIT_COOLDOWN_MS',
+      30_000,
+      1_000,
+      300_000
+    )
+  }
+}
+
+/** @deprecated provider 注册流程已直接调用 `fetchLmStudioFimInlineCompletion`。 */
+export async function fetchFimInlineCompletion(request: FimInlineCompletionRequest): Promise<string> {
+  const inference = parseInferenceParams()
+  return fetchLmStudioFimInlineCompletion({
+    ...request,
+    maxTokens: request.maxTokens ?? inference.maxTokens,
+    temperature: request.temperature ?? inference.temperature,
+    topP: request.topP ?? inference.topP,
+    stop: request.stop ?? inference.stop,
+    ...resolveRequestPolicy('lmstudio-fim'),
+    fimMarkers: resolveFimMarkers()
+  })
+}
+
+/** @deprecated provider 注册流程已直接调用 `fetchZhipuChatInlineCompletion`。 */
+export async function fetchModelInlineCompletion(
+  request: ModelInlineCompletionRequest
+): Promise<string> {
+  const inference = parseInferenceParams()
+  return fetchZhipuChatInlineCompletion({
+    ...request,
+    ...inference,
+    ...resolveRequestPolicy('zhipu-chat')
+  })
 }
 
 /** 每次 `provideInlineCompletionItems` 调用自增，用于防抖结束后丢弃过期调用 */
@@ -174,63 +230,6 @@ function sleepDebounceMs(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
-}
-
-function parseChatCompletionContent(json: unknown): string {
-  if (typeof json !== 'object' || json === null) {
-    return ''
-  }
-  const o = json as {
-    choices?: Array<{ message?: { content?: unknown } }>
-  }
-  const raw = o.choices?.[0]?.message?.content
-  return typeof raw === 'string' ? raw.trimEnd() : ''
-}
-
-function parseCompletionText(json: unknown): string {
-  if (typeof json !== 'object' || json === null) {
-    return ''
-  }
-  const o = json as { choices?: Array<{ text?: unknown }> }
-  const raw = o.choices?.[0]?.text
-  return typeof raw === 'string' ? raw : ''
-}
-
-/** LM Studio 原生 v1：`POST /api/v1/chat` → `output[].content` */
-function parseLmStudioV1ChatOutput(json: unknown): string {
-  if (typeof json !== 'object' || json === null) {
-    return ''
-  }
-  const output = (json as { output?: Array<{ type?: unknown; content?: unknown }> }).output
-  if (!Array.isArray(output)) {
-    return ''
-  }
-  const parts: string[] = []
-  for (const item of output) {
-    if (item?.type === 'message' && typeof item.content === 'string') {
-      parts.push(item.content)
-    }
-  }
-  return parts.join('')
-}
-
-/** 去掉模型偶发的 markdown / 多余空行，与 stop 序列形成双保险 */
-export function sanitizeInlineCompletionOutput(raw: string): string {
-  let t = raw.trimStart()
-  if (t.startsWith('```')) {
-    t = t.replace(/^```[\w-]*\n?/, '')
-    const fenceEnd = t.indexOf('\n```')
-    if (fenceEnd !== -1) {
-      t = t.slice(0, fenceEnd)
-    } else {
-      t = t.replace(/```[\s\S]*$/, '')
-    }
-  }
-  const doubleNl = t.indexOf('\n\n')
-  if (doubleNl !== -1) {
-    t = t.slice(0, doubleNl)
-  }
-  return t.trimEnd()
 }
 
 export function buildFimPrompt(params: {
@@ -301,148 +300,12 @@ async function collectVisibleSymbols(
   }
 }
 
-/**
- * LM Studio 原生 REST API v1：`POST /api/v1/chat`。
- * FIM / chat 均将完整 prompt 放入 `input`（v1 无独立 /completions）。
- */
-async function fetchLmStudioV1InlineCompletion(req: FimInlineCompletionRequest): Promise<string> {
-  const base = req.apiBaseUrl.replace(/\/$/, '')
-  const url = `${base}/chat`
-  const model = req.model ?? 'deepseek-coder-1.3b-base'
-  const defaults = parseInferenceParams()
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(req.apiKey != null && req.apiKey.length > 0
-        ? { Authorization: `Bearer ${req.apiKey}` }
-        : {})
-    },
-    body: JSON.stringify({
-      model,
-      input: req.prompt,
-      max_output_tokens: req.maxTokens ?? defaults.maxTokens,
-      temperature: req.temperature ?? defaults.temperature,
-      top_p: req.topP ?? defaults.topP,
-      stream: false,
-      store: false
-    }),
-    signal: req.signal
-  })
-
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(`inline completion (lmstudio-v1): HTTP ${res.status} ${t.slice(0, 400)}`)
-  }
-
-  const json: unknown = await res.json()
-  return sanitizeInlineCompletionOutput(parseLmStudioV1ChatOutput(json))
-}
-
-/**
- * OpenAI 兼容 FIM：`POST /v1/completions`（LM Studio 旧端点）。
- */
-async function fetchOpenAiCompatFimInlineCompletion(req: FimInlineCompletionRequest): Promise<string> {
-  const base = req.apiBaseUrl.replace(/\/$/, '')
-  const url = `${base}/completions`
-  const model = req.model ?? 'deepseek-coder-1.3b-base'
-  const defaults = parseInferenceParams()
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(req.apiKey != null && req.apiKey.length > 0
-        ? { Authorization: `Bearer ${req.apiKey}` }
-        : {})
-    },
-    body: JSON.stringify({
-      model,
-      prompt: req.prompt,
-      max_tokens: req.maxTokens ?? defaults.maxTokens,
-      temperature: req.temperature ?? defaults.temperature,
-      top_p: req.topP ?? defaults.topP,
-      stop: req.stop ?? defaults.stop,
-      stream: false
-    }),
-    signal: req.signal
-  })
-
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(`inline completion (fim): HTTP ${res.status} ${t.slice(0, 400)}`)
-  }
-
-  const json: unknown = await res.json()
-  return sanitizeInlineCompletionOutput(parseCompletionText(json))
-}
-
-/**
- * FIM 模式：始终走 OpenAI 兼容 `POST /v1/completions`。
- * LM Studio `/api/v1/chat` 会把 FIM prompt 当对话输入，base 模型会输出 markdown / 无关片段。
- */
-export async function fetchFimInlineCompletion(req: FimInlineCompletionRequest): Promise<string> {
-  const fimMarkers = resolveFimMarkers()
-  const compatBase = normalizeOpenAiCompatBaseUrl(req.apiBaseUrl)
-  const defaults = parseInferenceParams()
-  const stop = [
-    ...new Set([
-      ...(req.stop ?? defaults.stop),
-      fimMarkers.begin,
-      fimMarkers.hole,
-      fimMarkers.end
-    ])
-  ]
-  return fetchOpenAiCompatFimInlineCompletion({
-    ...req,
-    apiBaseUrl: compatBase,
-    stop
-  })
-}
-
-/**
- * Chat 模式（legacy）：LM Studio v1 走 `/api/v1/chat`，否则 OpenAI `/v1/chat/completions`。
- */
-export async function fetchModelInlineCompletion(req: ModelInlineCompletionRequest): Promise<string> {
-  if (resolveInlineCompletionApiKind(req.apiBaseUrl) === 'lmstudio-v1') {
-    return fetchLmStudioV1InlineCompletion(req)
-  }
-
-  const base = req.apiBaseUrl.replace(/\/$/, '')
-  const url = `${base}/chat/completions`
-  const model = req.model ?? 'gpt-4o-mini'
-  const defaults = parseInferenceParams()
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(req.apiKey != null && req.apiKey.length > 0
-        ? { Authorization: `Bearer ${req.apiKey}` }
-        : {})
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: req.prompt }],
-      temperature: defaults.temperature,
-      max_tokens: defaults.maxTokens,
-      stop: defaults.stop
-    }),
-    signal: req.signal
-  })
-
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(`inline completion (chat): HTTP ${res.status} ${t.slice(0, 400)}`)
-  }
-
-  const json: unknown = await res.json()
-  return sanitizeInlineCompletionOutput(parseChatCompletionContent(json))
-}
-
-/** legacy chat prompt（`VITE_AI_INLINE_MODE=chat`） */
-function buildChatPrompt(document: vscode.TextDocument, position: vscode.Position): string {
+/** 智谱 Chat Completions prompt（`zhipu-chat`） */
+function buildChatPrompt(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  visibleSymbols: string
+): string {
   const { prefix, suffix } = splitPrefixSuffix(document, position)
   const langHint =
     document.languageId && document.languageId.length > 0
@@ -451,6 +314,7 @@ function buildChatPrompt(document: vscode.TextDocument, position: vscode.Positio
   return [
     langHint +
       'Output ONLY the raw code to insert at the cursor — no markdown fences, no explanation.',
+    `Visible symbols in this file: ${visibleSymbols}`,
     '',
     '--- text before cursor ---',
     prefix,
@@ -535,12 +399,16 @@ void getApi().then((api) => {
         }
 
         try {
-          const { apiBaseUrl, apiKey, model, mode } = resolveInlineCompletionConfig()
+          const { apiBaseUrl, apiKey, model, providerSetting } = resolveInlineCompletionConfig()
+          const useApi = apiBaseUrl != null && apiBaseUrl.length > 0
+          const provider = useApi
+            ? resolveInlineCompletionProvider(apiBaseUrl, providerSetting)
+            : 'lmstudio-fim'
           const { prefix, suffix } = splitPrefixSuffix(document, position)
           const visibleSymbols = await collectVisibleSymbols(api.commands, document)
 
           let prompt: string
-          if (mode === 'fim') {
+          if (provider === 'lmstudio-fim') {
             prompt = buildFimPrompt({
               prefix,
               suffix,
@@ -550,10 +418,10 @@ void getApi().then((api) => {
               ...fimMarkers
             })
           } else {
-            prompt = buildChatPrompt(document, position)
+            prompt = buildChatPrompt(document, position, visibleSymbols)
           }
 
-          if (selected != null) {
+          if (selected != null && provider === 'zhipu-chat') {
             prompt = augmentPromptWhenSuggestSelected(prompt, selected)
           }
 
@@ -563,24 +431,28 @@ void getApi().then((api) => {
           const fetchSignal = myFetchAbort.signal
 
           let insertText: string
-          const useApi = apiBaseUrl != null && apiBaseUrl.length > 0
           if (useApi) {
-            if (mode === 'fim') {
-              insertText = await fetchFimInlineCompletion({
+            const requestPolicy = resolveRequestPolicy(provider)
+            if (provider === 'lmstudio-fim') {
+              insertText = await fetchLmStudioFimInlineCompletion({
                 prompt,
                 apiBaseUrl,
                 apiKey,
                 model,
                 signal: fetchSignal,
-                ...inference
+                ...inference,
+                ...requestPolicy,
+                fimMarkers
               })
             } else {
-              insertText = await fetchModelInlineCompletion({
+              insertText = await fetchZhipuChatInlineCompletion({
                 prompt,
                 apiBaseUrl,
                 apiKey,
                 model,
-                signal: fetchSignal
+                signal: fetchSignal,
+                ...inference,
+                ...requestPolicy
               })
             }
           } else {

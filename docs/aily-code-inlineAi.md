@@ -6,8 +6,8 @@
 
 | 组件 | 选型 | 职责 |
 |------|------|------|
-| 推理运行时 | **LM Studio** | 本机 OpenAI 兼容 API 服务 |
-| 补全模型 | **DeepSeek Coder 1.3B** | 轻量代码续写 |
+| 推理运行时 | **LM Studio / 智谱 API** | 本机 FIM 或远程 Chat 补全 |
+| 补全模型 | **DeepSeek Coder 1.3B / GLM-4.7-Flash** | 轻量 FIM 或远程代码生成 |
 | 语言服务 | **clangd**（LSP） | C/C++ 语义补全、诊断、跳转 |
 
 目标不是替代 Aily Blockly 主应用的 Agent / 对话 AI，而是在 **Monaco VS Code Workbench 编辑 surface** 上提供 Copilot 风格的灰字续写，并与 clangd 传统补全协同。
@@ -15,6 +15,7 @@
 **关联实现：**
 
 - 行内 AI：`src/features/aiInlineCompletion.ts`
+- AI 请求适配：`src/features/aiInlineCompletionTransport.ts`
 - LSP 客户端：`src/features/monacoStdioLspClient.ts`
 - LSP 代理：`server/lspWsProxy.ts`
 - 默认编辑器配置：`src/user/configuration.json`
@@ -31,7 +32,7 @@
 ### 2.1 本方案提供
 
 1. 用户停输入后，在光标处显示 **灰字 ghost text**，Tab 接受。
-2. 基于当前文件光标前后文本的 **本地模型续写**（DeepSeek Coder 1.3B）。
+2. 基于当前文件光标前后文本的 **LM Studio FIM 或智谱 Chat 续写**。
 3. 与 **clangd** 并存：LSP 负责符号补全、诊断、定义跳转；AI 负责多 token 行内续写。
 4. 当 IntelliSense 列表已选中条目时，AI 输出须 **以所选前缀开头**（与 VS Code InlineCompletion 契约一致）。
 
@@ -76,7 +77,7 @@ flowchart LR
 | 层 | 组件 | 协议 | 输出 |
 |----|------|------|------|
 | 表现层 | Monaco + `@codingame/monaco-vscode-api` | VS Code Extension Host API | ghost text、Suggest Widget |
-| AI 补全层 | `aiInlineCompletion.ts` | OpenAI `/completions` + FIM | 插入文本片段 |
+| AI 补全层 | `aiInlineCompletion.ts` + `aiInlineCompletionTransport.ts` | LM Studio FIM / 智谱 Chat | 插入文本片段 |
 | 语义层 | clangd + `lspWsProxy.ts` | LSP over WebSocket ⇄ stdio | 补全项、诊断、语义高亮 |
 
 **原则：LSP 管「对不对」，AI 管「写下去」。**  
@@ -92,7 +93,8 @@ clangd 保证符号、类型、头文件路径正确；DeepSeek Coder 1.3B 在�
 │  └──────┬───────┘    └──────────────┬──────────────────┘  │
 │         │                           │ fetch POST           │
 │         │                           ▼                      │
-│         │              http://127.0.0.1:1234/v1/completions
+│         │              ├─ LM Studio /v1/completions
+│         │              └─ 智谱 /chat/completions
 │         │                           │                      │
 │         ▼                           ▼                      │
 │  ┌──────────────┐            ┌──────────────┐              │
@@ -111,7 +113,7 @@ sequenceDiagram
   participant E as Monaco Editor
   participant P as aiInlineCompletion
   participant L as clangd (LSP)
-  participant M as LM Studio
+  participant M as LM Studio / 智谱
 
   U->>E: 键入 / 移动光标
   E->>L: textDocument/didChange
@@ -121,9 +123,13 @@ sequenceDiagram
   Note over P: 防抖 450ms（可配）
   Note over P: 文档 version 未变才继续
 
-  alt 已配置 VITE_AI_INLINE_COMPLETION_URL
-    P->>M: POST /completions（FIM prompt）
+  alt LM Studio FIM
+    P->>M: POST /v1/completions（FIM prompt）
     M-->>P: choices[0].text
+    P-->>E: InlineCompletionItem（ghost text）
+  else 智谱 Chat
+    P->>M: POST /chat/completions（thinking disabled）
+    M-->>P: choices[0].message.content
     P-->>E: InlineCompletionItem（ghost text）
   else 未配置 URL
     P-->>E: mock placeholder
@@ -192,7 +198,7 @@ sequenceDiagram
 VITE_AI_INLINE_COMPLETION_URL=http://127.0.0.1:1234/v1
 VITE_AI_INLINE_COMPLETION_KEY=
 VITE_AI_INLINE_COMPLETION_MODEL=deepseek-coder-1.3b-base
-VITE_AI_INLINE_MODE=fim
+VITE_AI_INLINE_PROVIDER=lmstudio-fim
 
 # 可选：与 LM Studio 请求参数对齐
 VITE_AI_INLINE_TEMPERATURE=0.15
@@ -203,9 +209,9 @@ VITE_AI_INLINE_MAX_BEFORE_CHARS=3500
 VITE_AI_INLINE_MAX_AFTER_CHARS=1500
 ```
 
-Legacy Chat 模式：`VITE_AI_INLINE_MODE=chat`（仅调试对比用）。
+`VITE_AI_INLINE_PROVIDER=auto` 可按 URL 自动选择；旧的 `VITE_AI_INLINE_MODE=fim` 仍等价于 `lmstudio-fim`。
 
-**URL 参数：** `?aiInlineUrl=...&aiInlineMode=fim`
+**URL 参数：** `?aiInlineUrl=...&aiInlineProvider=lmstudio-fim`
 
 ### 4.5 Prompt 模板（FIM 定稿）
 
@@ -277,9 +283,18 @@ Language: cpp
 
 ---
 
-## 4A. Chat 模式（Legacy，不推荐）
+## 4A. 智谱 Chat 适配
 
-旧方案走 `POST /v1/chat/completions` + before/after 自然语言 prompt。保留为 `VITE_AI_INLINE_MODE=chat`，仅用于 A/B 对比。嵌入式 C++/DeepSeek Coder 场景请默认 **FIM**。
+智谱适配走 `POST /chat/completions` + before/after 自然语言 prompt，请求会固定传入 `thinking.type=disabled`、`do_sample=false`和 `stream=false`，避免行内补全被思考 token 和随机采样拖慢。
+
+```bash
+VITE_AI_INLINE_PROVIDER=zhipu-chat
+VITE_AI_INLINE_COMPLETION_URL=https://open.bigmodel.cn/api/paas/v4
+VITE_AI_INLINE_COMPLETION_MODEL=glm-4.7-flash
+VITE_AI_INLINE_COMPLETION_KEY=仅供前端联调的密钥
+```
+
+生产版不应将密钥放在 `VITE_` 变量中，后续应将相同 Chat 协议迁到独立服务器。两个 provider 都使用可中止超时、按 origin 的最小请求间隔，遇到 429 时优先遵循 `Retry-After`，否则进入默认 30s 冷却。
 
 ---
 
@@ -368,11 +383,13 @@ clangd 索引质量直接决定 LSP 补全与诊断是否可用。按 [aily-code
 | 项 | 状态 | 说明 |
 |----|------|------|
 | InlineCompletion Provider 注册 | ✅ 已实现 | `registerInlineCompletionItemProvider('*')` |
-| FIM `/completions` 客户端 | ✅ 已实现 | `fetchFimInlineCompletion` + DeepSeek FIM token |
+| LM Studio FIM 适配 | ✅ 已实现 | `fetchLmStudioFimInlineCompletion` + DeepSeek FIM token |
+| 智谱 Chat 适配 | ✅ 已实现 | `fetchZhipuChatInlineCompletion` + 禁用 Thinking |
 | FIM Prompt + Visible symbols | ✅ 已实现 | `buildFimPrompt` + `documentSymbolProvider` |
 | 推理参数（temp/top_p/max_tokens/stop） | ✅ 已实现 | 请求体 + `.env` 可配 |
 | 输出 sanitize | ✅ 已实现 | 去 markdown / 双换行截断 |
-| Chat legacy 模式 | ✅ 保留 | `VITE_AI_INLINE_MODE=chat` |
+| provider 自动识别 | ✅ 已实现 | `auto` / `lmstudio-fim` / `zhipu-chat` |
+| 超时与 429 冷却 | ✅ 已实现 | AbortController + origin 级限流 |
 | 双防抖（扩展内 + 宿主） | ✅ 已实现 | 450ms / 900ms 可配 |
 | 文档 version 防 stale | ✅ 已实现 | 请求前后校验 |
 | In-flight 请求 abort | ✅ 已实现 | 新请求前 abort 上一轮 |
@@ -523,8 +540,9 @@ npm start   # 或 Electron 开发命令
 | 用途 | 键 / 参数 | 示例 |
 |------|-----------|------|
 | LM Studio API | `VITE_AI_INLINE_COMPLETION_URL` | `http://127.0.0.1:1234/v1` |
+| 智谱 API | `VITE_AI_INLINE_COMPLETION_URL` | `https://open.bigmodel.cn/api/paas/v4` |
 | 模型（base） | `VITE_AI_INLINE_COMPLETION_MODEL` | `deepseek-coder-1.3b-base` |
-| 模式 | `VITE_AI_INLINE_MODE` | `fim` |
+| provider | `VITE_AI_INLINE_PROVIDER` | `auto` |
 | temperature | `VITE_AI_INLINE_TEMPERATURE` | `0.15` |
 | top_p | `VITE_AI_INLINE_TOP_P` | `0.9` |
 | max_tokens | `VITE_AI_INLINE_MAX_TOKENS` | `64` |
@@ -532,9 +550,12 @@ npm start   # 或 Electron 开发命令
 | LM Studio UI | top_k / repeat_penalty / gpu_offload | `32` / `1.05` / `max` |
 | API Key | `VITE_AI_INLINE_COMPLETION_KEY` | 留空 |
 | 停输入防抖 | `VITE_AI_INLINE_DEBOUNCE_MS` | `450` |
+| 请求超时 | `VITE_AI_INLINE_TIMEOUT_MS` | `12000` |
+| 最小请求间隔 | `VITE_AI_INLINE_MIN_REQUEST_INTERVAL_MS` | `1500` |
+| 429 默认冷却 | `VITE_AI_INLINE_RATE_LIMIT_COOLDOWN_MS` | `30000` |
 | FIM prefix 上限 | `VITE_AI_INLINE_MAX_BEFORE_CHARS` | `3500` |
 | FIM suffix 上限 | `VITE_AI_INLINE_MAX_AFTER_CHARS` | `1500` |
-| 调试 URL | `?aiInlineUrl=` / `?aiInlineMode=` | `fim` |
+| 调试 URL | `?aiInlineUrl=` / `?aiInlineProvider=` | `zhipu-chat` |
 | LSP WebSocket | `?lspWsPort=` | `3030` |
 | clangd 索引 | `npm run lsp-proxy -- --compile-commands-dir=` | `.aily/bridge` |
 

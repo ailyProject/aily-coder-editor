@@ -190,7 +190,7 @@ npm start
 
 ### 可选：行间 AI 补全
 
-复制 `.env.example` 为 `.env`，配置 `VITE_AI_INLINE_*`。默认 **FIM 模式**（LM Studio 0.4+ 走 `POST /api/v1/chat`；旧 OpenAI 兼容为 `/v1/completions`）；此为**编辑器内辅助能力**，与 Aily Blockly 主 AI 工具链无关；未配置 URL 时使用本地 mock。
+复制 `.env.example` 为 `.env`，配置 `VITE_AI_INLINE_*`。默认使用 `auto` provider：LM Studio/OpenAI 兼容服务走 DeepSeek FIM `POST /v1/completions`，`open.bigmodel.cn` 走智谱 `POST /chat/completions`。两条请求链都有超时、最小请求间隔和 429 冷却；此为**编辑器内辅助能力**，与 Aily Blockly 主 AI 工具链无关；未配置 URL 时使用本地 mock。智谱密钥当前仅用于前端联调，生产版需迁移到独立服务器。
 
 ---
 
