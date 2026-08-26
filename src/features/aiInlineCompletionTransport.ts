@@ -2,9 +2,6 @@ export const DEEPSEEK_FIM_BEGIN = '<｜fim▁begin｜>'
 export const DEEPSEEK_FIM_HOLE = '<｜fim▁hole｜>'
 export const DEEPSEEK_FIM_END = '<｜fim▁end｜>'
 
-export type InlineCompletionProvider = 'lmstudio-fim' | 'zhipu-chat'
-export type InlineCompletionProviderSetting = 'auto' | InlineCompletionProvider
-
 export interface InlineCompletionRequestPolicy {
   timeoutMs: number
   minRequestIntervalMs: number
@@ -31,8 +28,6 @@ export interface FimInlineCompletionRequest extends InlineCompletionRequestBase 
   }
 }
 
-export type ZhipuChatInlineCompletionRequest = InlineCompletionRequestBase
-
 interface RateLimitState {
   nextRequestAt: number
   blockedUntil: number
@@ -44,8 +39,8 @@ export class InlineCompletionHttpError extends Error {
   readonly status: number
   readonly retryAfterMs?: number
 
-  constructor(provider: InlineCompletionProvider, status: number, body: string, retryAfterMs?: number) {
-    super(`inline completion (${provider}): HTTP ${status} ${body.slice(0, 400)}`)
+  constructor(status: number, retryAfterMs?: number) {
+    super(`local inline completion: HTTP ${status}`)
     this.name = 'InlineCompletionHttpError'
     this.status = status
     this.retryAfterMs = retryAfterMs
@@ -82,26 +77,6 @@ export function normalizeLmStudioFimBaseUrl(apiBaseUrl: string): string {
     return trimmed.replace(/\/api\/v\d+/i, '/v1')
   }
   return trimmed
-}
-
-export function resolveInlineCompletionProvider(
-  apiBaseUrl: string,
-  setting: InlineCompletionProviderSetting = 'auto'
-): InlineCompletionProvider {
-  if (setting !== 'auto') {
-    return setting
-  }
-
-  try {
-    const url = new URL(apiBaseUrl)
-    if (url.hostname === 'open.bigmodel.cn' || url.hostname.endsWith('.bigmodel.cn')) {
-      return 'zhipu-chat'
-    }
-  } catch {
-    // 保持旧行为：非标准 URL 仍按本地/OpenAI 兼容 FIM 处理。
-  }
-
-  return 'lmstudio-fim'
 }
 
 export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
@@ -212,7 +187,6 @@ async function runWithTimeout<T>(
 }
 
 async function postJson(
-  provider: InlineCompletionProvider,
   apiBaseUrl: string,
   url: string,
   apiKey: string | undefined,
@@ -234,12 +208,11 @@ async function postJson(
       })
 
       if (!response.ok) {
-        const responseBody = await response.text()
         const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'))
         if (response.status === 429) {
           blockRateLimitedOrigin(apiBaseUrl, retryAfterMs ?? policy.rateLimitCooldownMs)
         }
-        throw new InlineCompletionHttpError(provider, response.status, responseBody, retryAfterMs)
+        throw new InlineCompletionHttpError(response.status, retryAfterMs)
       }
 
       return response.json() as Promise<unknown>
@@ -257,32 +230,18 @@ function parseCompletionText(json: unknown): string {
   return typeof raw === 'string' ? raw : ''
 }
 
-function parseChatCompletionContent(json: unknown): string {
-  if (typeof json !== 'object' || json === null) {
-    return ''
-  }
-  const raw = (json as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message
-    ?.content
-  return typeof raw === 'string' ? raw.trimEnd() : ''
-}
-
-/** 去掉模型偶发的 markdown / 多余空行，与 stop 序列形成双保险。 */
+/** 仅剥离模型偶发的 markdown fence；代码缩进、换行和尾随空白均属于补全内容。 */
 export function sanitizeInlineCompletionOutput(raw: string): string {
-  let text = raw.trimStart()
-  if (text.startsWith('```')) {
-    text = text.replace(/^```[\w-]*\n?/, '')
-    const fenceEnd = text.indexOf('\n```')
-    if (fenceEnd !== -1) {
-      text = text.slice(0, fenceEnd)
-    } else {
-      text = text.replace(/```[\s\S]*$/, '')
-    }
+  const openingFence = /^[ \t]*```[\w-]*\r?\n/.exec(raw)
+  if (openingFence == null) {
+    return raw
   }
-  const doubleNewline = text.indexOf('\n\n')
-  if (doubleNewline !== -1) {
-    text = text.slice(0, doubleNewline)
+  const text = raw.slice(openingFence[0].length)
+  const closingFence = /\r?\n```[ \t]*(?:\r?\n)?$/.exec(text)
+  if (closingFence?.index != null) {
+    return text.slice(0, closingFence.index)
   }
-  return text.trimEnd()
+  return text
 }
 
 export async function fetchLmStudioFimInlineCompletion(
@@ -296,7 +255,6 @@ export async function fetchLmStudioFimInlineCompletion(
   }
   const stop = [...new Set([...request.stop, markers.begin, markers.hole, markers.end])]
   const json = await postJson(
-    'lmstudio-fim',
     request.apiBaseUrl,
     `${base}/completions`,
     request.apiKey,
@@ -313,30 +271,6 @@ export async function fetchLmStudioFimInlineCompletion(
     request.signal
   )
   return sanitizeInlineCompletionOutput(parseCompletionText(json))
-}
-
-export async function fetchZhipuChatInlineCompletion(
-  request: ZhipuChatInlineCompletionRequest
-): Promise<string> {
-  const base = stripEndpointSuffix(request.apiBaseUrl)
-  const json = await postJson(
-    'zhipu-chat',
-    request.apiBaseUrl,
-    `${base}/chat/completions`,
-    request.apiKey,
-    {
-      model: request.model ?? 'glm-4.7-flash',
-      messages: [{ role: 'user', content: request.prompt }],
-      thinking: { type: 'disabled' },
-      do_sample: false,
-      max_tokens: request.maxTokens,
-      stop: request.stop,
-      stream: false
-    },
-    request,
-    request.signal
-  )
-  return sanitizeInlineCompletionOutput(parseChatCompletionContent(json))
 }
 
 /** 仅用于单元测试，避免前一用例的 origin 冷却污染后续用例。 */
