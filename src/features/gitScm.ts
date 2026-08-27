@@ -18,6 +18,7 @@ import {
 } from '../parentBackedNativeFs.js'
 import {
   parseGitPorcelainZ,
+  shouldRefreshGitScmForPath,
   type GitStatusEntry
 } from './gitScmStatus.js'
 import {
@@ -445,10 +446,22 @@ void getApi().then((api) => {
   })
 
   const watcher = api.workspace.createFileSystemWatcher('**/*')
-  watcher.onDidCreate(() => scheduleRefresh())
-  watcher.onDidChange(() => scheduleRefresh())
-  watcher.onDidDelete(() => scheduleRefresh())
-  api.workspace.onDidSaveTextDocument(() => scheduleRefresh())
+  const scheduleRefreshForUri = (uri: vscode.Uri) => {
+    if (
+      uri.scheme !== 'file' ||
+      api.workspace.getWorkspaceFolder(uri)?.uri.toString() !== workspaceFolder.uri.toString()
+    ) {
+      return
+    }
+    const relativePath = api.workspace.asRelativePath(uri, false)
+    if (shouldRefreshGitScmForPath(relativePath, repositoryInitialized)) {
+      scheduleRefresh()
+    }
+  }
+  watcher.onDidCreate(scheduleRefreshForUri)
+  watcher.onDidChange(scheduleRefreshForUri)
+  watcher.onDidDelete(scheduleRefreshForUri)
+  api.workspace.onDidSaveTextDocument((document) => scheduleRefreshForUri(document.uri))
 
   void refresh()
   void refreshHistoryRefs(false)

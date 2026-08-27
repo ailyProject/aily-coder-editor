@@ -153,6 +153,26 @@ function abortError(signal?: AbortSignal): unknown {
   return signal?.reason ?? new DOMException('Aborted', 'AbortError')
 }
 
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(abortError(signal))
+  }
+  if (ms <= 0) {
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeout)
+      reject(abortError(signal))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function parseRetryAfterMs(value: string | undefined, now = Date.now()): number | undefined {
   if (value == null || value.trim() === '') {
     return undefined
@@ -473,6 +493,7 @@ type InFlightCompletion = {
   suffix: string
   partialText?: string
   activeConsumers: number
+  started: boolean
   controller: AbortController
   promise: Promise<CloudCompletionResult>
 }
@@ -519,16 +540,47 @@ function completionCandidate(
 export class CloudInlineCompletionClient {
   private readonly cache = new CopilotStyleCompletionCache(100)
   private readonly inFlight = new Map<string, InFlightCompletion>()
+  private readonly now: () => number
+  private readonly minRequestIntervalMs: number
+  private readonly rateLimitCooldownMs: number
+  private requestTail: Promise<void> = Promise.resolve()
+  private nextRequestAt = 0
   private blockedUntil = 0
 
   constructor(
     private readonly transport: CloudCompletionTransport,
     private readonly clientVersion: string,
     private readonly sessionId: string,
-    private readonly now: () => number = Date.now
-  ) {}
+    options: {
+      now?: () => number
+      minRequestIntervalMs?: number
+      rateLimitCooldownMs?: number
+    } = {}
+  ) {
+    this.now = options.now ?? Date.now
+    this.minRequestIntervalMs = Math.max(0, options.minRequestIntervalMs ?? 500)
+    this.rateLimitCooldownMs = Math.max(1_000, options.rateLimitCooldownMs ?? 30_000)
+  }
 
   async complete(input: CloudCompletionInput, signal?: AbortSignal): Promise<CloudCompletionResult> {
+    const cached = this.cache.find(input.prefix, input.suffix)
+    if (cached != null) {
+      return cached
+    }
+
+    const candidate = [...this.inFlight.values()].find(
+      request =>
+        !request.controller.signal.aborted &&
+        completionCandidate(input.prefix, input.suffix, request)
+    )
+    if (candidate != null) {
+      const result = await this.consume(candidate, signal)
+      const remainingPrefix = input.prefix.slice(candidate.prefix.length)
+      if (result.text.startsWith(remainingPrefix) && result.text.length > remainingPrefix.length) {
+        return { ...result, text: result.text.slice(remainingPrefix.length) }
+      }
+    }
+
     if (this.now() < this.blockedUntil) {
       throw new CloudCompletionError(
         429,
@@ -539,24 +591,8 @@ export class CloudInlineCompletionClient {
       )
     }
 
-    const cached = this.cache.find(input.prefix, input.suffix)
-    if (cached != null) {
-      return cached
-    }
-
-    const candidate = [...this.inFlight.values()].find(request =>
-      completionCandidate(input.prefix, input.suffix, request)
-    )
-    if (candidate != null) {
-      const result = await this.consume(candidate, signal)
-      const remainingPrefix = input.prefix.slice(candidate.prefix.length)
-      if (result.text.startsWith(remainingPrefix) && result.text.length > remainingPrefix.length) {
-        return { ...result, text: result.text.slice(remainingPrefix.length) }
-      }
-    }
-
     for (const request of this.inFlight.values()) {
-      if (!completionCandidate(input.prefix, input.suffix, request)) {
+      if (!request.started && !completionCandidate(input.prefix, input.suffix, request)) {
         request.controller.abort()
       }
     }
@@ -585,32 +621,14 @@ export class CloudInlineCompletionClient {
       prefix: input.prefix,
       suffix: input.suffix,
       activeConsumers: 0,
+      started: false,
       controller,
       promise: Promise.resolve({ text: '', completionId: '', opportunityId })
     }
-    const promise = this.transport
-      .complete(request, {
-        signal: controller.signal,
-        onDelta: text => {
-          inFlight.partialText = text
-        }
-      })
+    const promise = this.scheduleRequest(request, inFlight)
       .then(result => {
         this.cache.append(input.prefix, input.suffix, result)
         return result
-      })
-      .catch(error => {
-        if (error instanceof CloudCompletionError) {
-          if (error.status === 402 && error.quotaResetAt != null) {
-            this.blockedUntil = Math.max(this.blockedUntil, error.quotaResetAt)
-          } else if (error.status === 429) {
-            this.blockedUntil = Math.max(
-              this.blockedUntil,
-              this.now() + (error.retryAfterMs ?? 30_000)
-            )
-          }
-        }
-        throw error
       })
       .finally(() => {
         this.inFlight.delete(opportunityId)
@@ -647,6 +665,66 @@ export class CloudInlineCompletionClient {
     }
   }
 
+  private scheduleRequest(
+    request: CloudCompletionRequest,
+    inFlight: InFlightCompletion
+  ): Promise<CloudCompletionResult> {
+    const scheduled = this.requestTail.then(async () => {
+      await sleepWithAbort(Math.max(0, this.nextRequestAt - this.now()), inFlight.controller.signal)
+      if (inFlight.controller.signal.aborted) {
+        throw abortError(inFlight.controller.signal)
+      }
+      if (this.now() < this.blockedUntil) {
+        throw new CloudCompletionError(
+          429,
+          'CODE_COMPLETION_COOLDOWN',
+          '代码补全暂时处于冷却状态。',
+          this.blockedUntil - this.now(),
+          this.blockedUntil
+        )
+      }
+
+      inFlight.started = true
+      this.nextRequestAt = this.now() + this.minRequestIntervalMs
+      try {
+        return await this.transport.complete(request, {
+          signal: inFlight.controller.signal,
+          onDelta: text => {
+            inFlight.partialText = text
+          }
+        })
+      } finally {
+        this.nextRequestAt = Math.max(
+          this.nextRequestAt,
+          this.now() + this.minRequestIntervalMs
+        )
+      }
+    })
+    const tracked = scheduled.catch(error => {
+      this.applyBlockedUntil(error)
+      throw error
+    })
+    this.requestTail = tracked.then(
+      () => undefined,
+      () => undefined
+    )
+    return tracked
+  }
+
+  private applyBlockedUntil(error: unknown): void {
+    if (!(error instanceof CloudCompletionError)) {
+      return
+    }
+    if (error.status === 402 && error.quotaResetAt != null) {
+      this.blockedUntil = Math.max(this.blockedUntil, error.quotaResetAt)
+    } else if (error.status === 429) {
+      this.blockedUntil = Math.max(
+        this.blockedUntil,
+        this.now() + (error.retryAfterMs ?? this.rateLimitCooldownMs)
+      )
+    }
+  }
+
   private async consume(
     request: InFlightCompletion,
     signal?: AbortSignal
@@ -656,9 +734,13 @@ export class CloudInlineCompletionClient {
       return await raceWithAbort(request.promise, signal)
     } finally {
       request.activeConsumers -= 1
-      if (signal?.aborted) {
+      if (signal?.aborted && !request.started) {
         setTimeout(() => {
-          if (request.activeConsumers === 0 && !request.controller.signal.aborted) {
+          if (
+            !request.started &&
+            request.activeConsumers === 0 &&
+            !request.controller.signal.aborted
+          ) {
             request.controller.abort()
           }
         }, 0)

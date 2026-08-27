@@ -20,8 +20,9 @@ import {
   sanitizeInlineCompletionOutput,
   type InlineCompletionRequestPolicy
 } from './aiInlineCompletionTransport'
+import { isFileInlineCompletionDocument } from './aiInlineCompletionScope'
 
-const inlineCompletionDocumentSelector: vscode.DocumentSelector = '*'
+const inlineCompletionDocumentSelector: vscode.DocumentSelector = [{ scheme: 'file' }]
 const DEFAULT_STOP_SEQUENCES = ['\n\n', '```']
 
 type InlineCompletionProvider = 'cloud' | 'lmstudio-fim' | 'off'
@@ -66,7 +67,31 @@ function parseBoundedInteger(
 }
 
 function parseHostDebounceDelayMs(): number {
-  return parseBoundedInteger('VITE_AI_INLINE_HOST_DEBOUNCE_MS', 250, 0, 10_000)
+  return parseBoundedInteger('VITE_AI_INLINE_HOST_DEBOUNCE_MS', 0, 0, 10_000)
+}
+
+function parseProviderDebounceDelayMs(): number {
+  return parseBoundedInteger('VITE_AI_INLINE_DEBOUNCE_MS', 300, 0, 10_000)
+}
+
+function parseCloudRequestPolicy(): {
+  minRequestIntervalMs: number
+  rateLimitCooldownMs: number
+} {
+  return {
+    minRequestIntervalMs: parseBoundedInteger(
+      'VITE_AI_INLINE_MIN_REQUEST_INTERVAL_MS',
+      500,
+      0,
+      10_000
+    ),
+    rateLimitCooldownMs: parseBoundedInteger(
+      'VITE_AI_INLINE_RATE_LIMIT_COOLDOWN_MS',
+      30_000,
+      1_000,
+      300_000
+    )
+  }
 }
 
 function parsePromptCharCaps(): { beforeMax: number; afterMax: number } {
@@ -163,6 +188,26 @@ function cancellationSignal(token: vscode.CancellationToken): {
   return { signal: controller.signal, dispose: () => subscription.dispose() }
 }
 
+function waitForDebounce(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+  }
+  if (ms <= 0) {
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeout)
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 type CompletionMetadata = CloudCompletionResult & {
   insertTextLength: number
 }
@@ -190,7 +235,8 @@ void getApi().then(api => {
       ? new CloudInlineCompletionClient(
           new ParentCodeCompletionTransport(),
           packageMetadata.version,
-          createInlineCompletionSessionId()
+          createInlineCompletionSessionId(),
+          parseCloudRequestPolicy()
         )
       : undefined
   const metadata = new WeakMap<vscode.InlineCompletionItem, CompletionMetadata>()
@@ -201,16 +247,25 @@ void getApi().then(api => {
 
   const completionProvider: vscode.InlineCompletionItemProvider = {
     async provideInlineCompletionItems(document, position, context, token) {
-      if (token.isCancellationRequested) {
+      if (token.isCancellationRequested || !isFileInlineCompletionDocument(document)) {
         return []
       }
       const epoch = ++latestEpoch
       const version = document.version
-      const { prefix, suffix } = splitPrefixSuffix(document, position)
       const selected = context.selectedCompletionInfo
+      const completionTriggerKind = triggerKind(api, context)
       const cancellation = cancellationSignal(token)
 
       try {
+        await waitForDebounce(
+          completionTriggerKind === 'invoke' ? 0 : parseProviderDebounceDelayMs(),
+          cancellation.signal
+        )
+        if (token.isCancellationRequested || epoch !== latestEpoch || document.version !== version) {
+          return []
+        }
+
+        const { prefix, suffix } = splitPrefixSuffix(document, position)
         let result: CloudCompletionResult | undefined
         let insertText: string
         if (cloudClient != null) {
@@ -218,7 +273,7 @@ void getApi().then(api => {
           result = await cloudClient.complete(
             {
               opportunityId: validOpportunityId(context.requestUuid),
-              triggerKind: triggerKind(api, context),
+              triggerKind: completionTriggerKind,
               document: {
                 languageId: document.languageId || 'plaintext',
                 ...(relativePath != null ? { relativePath } : {}),
@@ -290,7 +345,9 @@ void getApi().then(api => {
           return []
         }
         if (error instanceof CloudCompletionError) {
-          console.debug('[ai-inline-completion]', error.code, error.status)
+          if (error.code !== 'CODE_COMPLETION_COOLDOWN') {
+            console.debug('[ai-inline-completion]', error.code, error.status)
+          }
         } else {
           console.warn('[ai-inline-completion]', error)
         }

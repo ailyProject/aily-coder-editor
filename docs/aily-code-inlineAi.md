@@ -1,5 +1,9 @@
 # Aily Code 内嵌编辑器 · 行内 AI 补全计划
 
+> **当前实现（2026-08-27）：** Electron iframe 默认通过宿主认证桥接云端补全，入口为
+> `aiInlineCompletionCloudTransport.ts`；LM Studio FIM 仅用于独立页面本地联调。本文较早的
+> 智谱直连章节属于历史方案，不能作为当前嵌入模式的凭证或请求链说明。
+
 ## 1. 文档目标
 
 本文档定义 **aily-coder 内嵌代码编辑器** 的行内补全（Inline Completion / Ghost Text）方案，技术栈固定为：
@@ -15,6 +19,7 @@
 **关联实现：**
 
 - 行内 AI：`src/features/aiInlineCompletion.ts`
+- 云端宿主桥接：`src/features/aiInlineCompletionCloudTransport.ts`
 - AI 请求适配：`src/features/aiInlineCompletionTransport.ts`
 - LSP 客户端：`src/features/monacoStdioLspClient.ts`
 - LSP 代理：`server/lspWsProxy.ts`
@@ -120,7 +125,7 @@ sequenceDiagram
   L-->>E: publishDiagnostics / completion（可选）
 
   E->>P: provideInlineCompletionItems
-  Note over P: 防抖 450ms（可配）
+  Note over P: 自动触发尾随防抖 300ms（手动触发为 0）
   Note over P: 文档 version 未变才继续
 
   alt LM Studio FIM
@@ -204,14 +209,15 @@ VITE_AI_INLINE_PROVIDER=lmstudio-fim
 VITE_AI_INLINE_TEMPERATURE=0.15
 VITE_AI_INLINE_TOP_P=0.9
 VITE_AI_INLINE_MAX_TOKENS=64
-VITE_AI_INLINE_DEBOUNCE_MS=450
+VITE_AI_INLINE_DEBOUNCE_MS=300
 VITE_AI_INLINE_MAX_BEFORE_CHARS=3500
 VITE_AI_INLINE_MAX_AFTER_CHARS=1500
 ```
 
-`VITE_AI_INLINE_PROVIDER=auto` 可按 URL 自动选择；旧的 `VITE_AI_INLINE_MODE=fim` 仍等价于 `lmstudio-fim`。
+Electron iframe 默认使用 `VITE_AI_INLINE_PROVIDER=cloud`；独立页面配置本地 URL 时可显式设为
+`lmstudio-fim`，需要关闭时使用 `off`。
 
-**URL 参数：** `?aiInlineUrl=...&aiInlineProvider=lmstudio-fim`
+**URL 参数：** `?aiInlineProvider=lmstudio-fim`
 
 ### 4.5 Prompt 模板（FIM 定稿）
 
@@ -382,17 +388,18 @@ clangd 索引质量直接决定 LSP 补全与诊断是否可用。按 [aily-code
 
 | 项 | 状态 | 说明 |
 |----|------|------|
-| InlineCompletion Provider 注册 | ✅ 已实现 | `registerInlineCompletionItemProvider('*')` |
+| InlineCompletion Provider 注册 | ✅ 已实现 | selector 仅匹配 `file`；排除 `scminput` 与虚拟文档 |
 | LM Studio FIM 适配 | ✅ 已实现 | `fetchLmStudioFimInlineCompletion` + DeepSeek FIM token |
-| 智谱 Chat 适配 | ✅ 已实现 | `fetchZhipuChatInlineCompletion` + 禁用 Thinking |
+| 云端宿主桥接 | ✅ 已实现 | token-free iframe 消息 + 宿主认证 SSE 请求 |
+| 智谱前端直连 | ⛔ 已移除 | 云端密钥不得进入 iframe / Vite 环境 |
 | FIM Prompt + Visible symbols | ✅ 已实现 | `buildFimPrompt` + `documentSymbolProvider` |
 | 推理参数（temp/top_p/max_tokens/stop） | ✅ 已实现 | 请求体 + `.env` 可配 |
 | 输出 sanitize | ✅ 已实现 | 去 markdown / 双换行截断 |
-| provider 自动识别 | ✅ 已实现 | `auto` / `lmstudio-fim` / `zhipu-chat` |
+| provider 选择 | ✅ 已实现 | `cloud` / `lmstudio-fim` / `off` |
 | 超时与 429 冷却 | ✅ 已实现 | AbortController + origin 级限流 |
-| 双防抖（扩展内 + 宿主） | ✅ 已实现 | 450ms / 900ms 可配 |
+| 单层尾随防抖 | ✅ 已实现 | 自动触发 300ms；手动触发 0ms；宿主额外延迟默认关闭 |
 | 文档 version 防 stale | ✅ 已实现 | 请求前后校验 |
-| In-flight 请求 abort | ✅ 已实现 | 新请求前 abort 上一轮 |
+| In-flight 生命周期 | ✅ 已实现 | 已发送请求正常结束并缓存；只淘汰尚未发送的过期排队请求 |
 | LSP Suggest 前缀合并 | ✅ 已实现 | `selectedCompletionInfo` |
 | 未配置 API 时 mock | ✅ 已实现 | `[AI inline placeholder]` |
 | clangd WebSocket 代理 | ✅ 已实现 | `server/lspWsProxy.ts` |
@@ -540,22 +547,22 @@ npm start   # 或 Electron 开发命令
 | 用途 | 键 / 参数 | 示例 |
 |------|-----------|------|
 | LM Studio API | `VITE_AI_INLINE_COMPLETION_URL` | `http://127.0.0.1:1234/v1` |
-| 智谱 API | `VITE_AI_INLINE_COMPLETION_URL` | `https://open.bigmodel.cn/api/paas/v4` |
 | 模型（base） | `VITE_AI_INLINE_COMPLETION_MODEL` | `deepseek-coder-1.3b-base` |
-| provider | `VITE_AI_INLINE_PROVIDER` | `auto` |
+| provider | `VITE_AI_INLINE_PROVIDER` | `cloud` / `lmstudio-fim` / `off` |
 | temperature | `VITE_AI_INLINE_TEMPERATURE` | `0.15` |
 | top_p | `VITE_AI_INLINE_TOP_P` | `0.9` |
 | max_tokens | `VITE_AI_INLINE_MAX_TOKENS` | `64` |
 | stop（代码内定） | — | `\n\n`, ` ``` ` |
 | LM Studio UI | top_k / repeat_penalty / gpu_offload | `32` / `1.05` / `max` |
 | API Key | `VITE_AI_INLINE_COMPLETION_KEY` | 留空 |
-| 停输入防抖 | `VITE_AI_INLINE_DEBOUNCE_MS` | `450` |
-| 请求超时 | `VITE_AI_INLINE_TIMEOUT_MS` | `12000` |
-| 最小请求间隔 | `VITE_AI_INLINE_MIN_REQUEST_INTERVAL_MS` | `1500` |
+| 自动触发停输入防抖 | `VITE_AI_INLINE_DEBOUNCE_MS` | `300` |
+| 宿主额外防抖 | `VITE_AI_INLINE_HOST_DEBOUNCE_MS` | `0` |
+| 本地请求超时 | `VITE_AI_INLINE_TIMEOUT_MS` | `8000` |
+| 云端请求完成后安全间隔 | `VITE_AI_INLINE_MIN_REQUEST_INTERVAL_MS` | `500` |
 | 429 默认冷却 | `VITE_AI_INLINE_RATE_LIMIT_COOLDOWN_MS` | `30000` |
 | FIM prefix 上限 | `VITE_AI_INLINE_MAX_BEFORE_CHARS` | `3500` |
 | FIM suffix 上限 | `VITE_AI_INLINE_MAX_AFTER_CHARS` | `1500` |
-| 调试 URL | `?aiInlineUrl=` / `?aiInlineProvider=` | `zhipu-chat` |
+| 调试 URL | `?aiInlineProvider=` | `lmstudio-fim` / `off` |
 | LSP WebSocket | `?lspWsPort=` | `3030` |
 | clangd 索引 | `npm run lsp-proxy -- --compile-commands-dir=` | `.aily/bridge` |
 
@@ -565,5 +572,6 @@ npm start   # 或 Electron 开发命令
 
 | 日期 | 版本 | 说明 |
 |------|------|------|
+| 2026-08-27 | 0.3 | 云端补全改为单层 300ms 防抖、手动即时触发、请求串行且不取消已发送请求 |
 | 2026-05-29 | 0.1 | 初稿：LM Studio + DeepSeek Coder 1.3B + clangd 行内补全计划 |
 | 2026-05-29 | 0.2 | 定稿 FIM 流程：LM Studio 参数、Prompt 模板、实现切换 `/completions` |
