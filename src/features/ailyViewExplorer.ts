@@ -5,7 +5,6 @@ import {
   getHostEmbedContext,
   mergeBoardProfileIntoSnapshot,
   onHostEmbedContextChanged,
-  requestHostCloseLibraryManager,
   requestHostClipboardWriteText,
   requestHostOpenLibraryManager,
   type HostBoardProfileV1,
@@ -20,8 +19,10 @@ import {
   AILY_COMPONENT_LIBRARY_CONTAINER_ID,
   AILY_COMPONENT_LIBRARY_VIEW_ID,
   openAilyComponentLibraryPanel,
-  registerAilyComponentLibraryView
+  registerAilyComponentLibraryView,
+  toggleAilyComponentLibraryPanel
 } from './ailyComponentLibraryView.js'
+import { libraryStrings } from './ailyComponentLibraryI18n.js'
 import {
   startVirtualTreeInlineRename,
   validateRenameEntryName
@@ -171,6 +172,7 @@ const COMMANDS = {
   addDependency: 'ailyView.addDependency',
   refreshPackages: 'ailyView.refreshPackages',
   openDependencyPanel: 'ailyView.openDependencyPanel',
+  toggleLibraryPanel: 'ailyView.toggleLibraryPanel',
   // §7.2 Package Status
   retryResolve: 'ailyView.retryResolve',
   showResolutionLog: 'ailyView.showResolutionLog',
@@ -379,6 +381,8 @@ type FsTreeElement = {
   readonly isDirectory: boolean
   /** 是否为 Installed Libraries 下的顶层包（用于 package 图标） */
   readonly isTopLevelPackage: boolean
+  /** Library 下一级库的来源；仅用于区分库图标。 */
+  readonly librarySource?: 'aily' | 'arduino'
 }
 
 // 提供给 TreeDataProvider：蓝图静态节点 + node_modules 动态节点
@@ -543,18 +547,11 @@ function getStableBlueprintElement(nodeId: string): ExplorerTreeElement | undefi
   return el
 }
 
-/** Installed Libraries 顶层分组节点（展开/折叠时同步宿主库管理侧栏） */
-function isInstalledLibrariesGroup(
+/** Aily View 的 Library 顶层节点。 */
+function isLibraryGroup(
   element: ExplorerTreeElement | undefined
 ): boolean {
-  return element?.kind === 'project' && element.node.id === 'installed-libraries'
-}
-
-/** Component Libraries 顶层分组节点（工程 components/ 镜像 + 宿主公共库列表） */
-function isComponentLibrariesGroup(
-  element: ExplorerTreeElement | undefined
-): boolean {
-  return element?.kind === 'project' && element.node.id === 'component-libraries'
+  return element?.kind === 'project' && element.node.id === 'library'
 }
 
 /** 在蓝图树中按 id 查找节点（用于定向 refresh，避免全树 refresh 与自定义编辑器打开竞态） */
@@ -641,7 +638,18 @@ function fsContextSuffix(relPath: string): string {
 }
 
 /** 按扩展名选择文件 codicon */
-function iconForFsEntry(name: string, isDirectory: boolean, isTopLevelPackage: boolean): string {
+function iconForFsEntry(
+  name: string,
+  isDirectory: boolean,
+  isTopLevelPackage: boolean,
+  librarySource?: FsTreeElement['librarySource']
+): string {
+  if (librarySource === 'aily') {
+    return 'sparkle'
+  }
+  if (librarySource === 'arduino') {
+    return 'circuit-board'
+  }
   if (isDirectory) {
     return isTopLevelPackage ? 'package' : 'folder'
   }
@@ -729,7 +737,9 @@ async function listFsDirectoryChildren(
       label: name,
       isDirectory,
       isTopLevelPackage:
-        (relPath === NODE_MODULES_REL || relPath === COMPONENTS_REL) && isDirectory
+        (relPath === NODE_MODULES_REL || relPath === COMPONENTS_REL) && isDirectory,
+      librarySource:
+        relPath === COMPONENTS_REL && isDirectory ? 'arduino' : undefined
     })
   }
 
@@ -755,7 +765,8 @@ async function listInstalledAilyLibraryChildren(
     relPath: projection.relPath,
     label: projection.label,
     isDirectory: true,
-    isTopLevelPackage: true
+    isTopLevelPackage: true,
+    librarySource: 'aily'
   }))
 }
 
@@ -890,7 +901,12 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     const item = new vs.TreeItem(element.label, collapsibleState)
     item.id = `ailyView:fs:${element.relPath}`
     item.iconPath = new vs.ThemeIcon(
-      iconForFsEntry(element.label, element.isDirectory, element.isTopLevelPackage)
+      iconForFsEntry(
+        element.label,
+        element.isDirectory,
+        element.isTopLevelPackage,
+        element.librarySource
+      )
     )
     const nodeType = element.isDirectory ? 'directory' : 'file'
     const isSourceCpp =
@@ -1096,13 +1112,25 @@ const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platfo
 const WHEN_SRC_CPP_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-/`
 const WHEN_PROJECT_CONFIG = `${WHEN_VIEW} && viewItem == aily.file:package-json`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
+const WHEN_LIBRARY = `${WHEN_VIEW} && viewItem == aily.directory:library`
 const WHEN_DEPS_GROUP =
-  `${WHEN_VIEW} && (viewItem == aily.group:installed-libraries || viewItem == aily.group:component-libraries || viewItem == aily.group:platform-packages)`
+  `${WHEN_VIEW} && (viewItem == aily.directory:library || viewItem == aily.group:installed-libraries || viewItem == aily.group:component-libraries || viewItem == aily.group:platform-packages)`
 const WHEN_PACKAGE_STATUS = `${WHEN_VIEW} && viewItem == aily.status:package-status`
 // §7.2 Build Outputs 的四个动作仅挂在 Build Outputs 顶层；子节点 debug/release/simulator 不再重复
 const WHEN_BUILD = `${WHEN_VIEW} && viewItem == aily.group:build-outputs`
 // §7.2 Generated 三个动作仅挂在 Generated 顶层；compile-commands 节点自身依靠通用 Open 即可
 const WHEN_GENERATED_GROUP = `${WHEN_VIEW} && viewItem == aily.group:generated`
+
+function initialLibraryLanguage(): string {
+  const hostLanguage = getHostEmbedContext()?.meta?.lang
+  if (typeof hostLanguage === 'string' && hostLanguage.trim()) return hostLanguage
+  if (typeof window !== 'undefined') {
+    return new URLSearchParams(window.location.search).get('lang') || navigator.language || 'en'
+  }
+  return 'en'
+}
+
+const initialLibraryCopy = libraryStrings(initialLibraryLanguage())
 
 const { getApi } = registerExtension(
   {
@@ -1117,7 +1145,7 @@ const { getApi } = registerExtension(
         secondarySidebar: [
           {
             id: AILY_COMPONENT_LIBRARY_CONTAINER_ID,
-            title: 'Component Libraries',
+            title: initialLibraryCopy.panelTitle,
             icon: '$(library)'
           }
         ]
@@ -1134,7 +1162,7 @@ const { getApi } = registerExtension(
         [AILY_COMPONENT_LIBRARY_CONTAINER_ID]: [
           {
             id: AILY_COMPONENT_LIBRARY_VIEW_ID,
-            name: 'Component Libraries',
+            name: initialLibraryCopy.panelTitle,
             icon: '$(library)',
             type: 'webview',
             visibility: 'visible'
@@ -1160,6 +1188,11 @@ const { getApi } = registerExtension(
         { command: COMMANDS.addDependency, title: 'Add Dependency' },
         { command: COMMANDS.refreshPackages, title: 'Refresh Packages' },
         { command: COMMANDS.openDependencyPanel, title: 'Open Dependency Panel' },
+        {
+          command: COMMANDS.toggleLibraryPanel,
+          title: initialLibraryCopy.toggle,
+          icon: '$(layout-sidebar-right)'
+        },
         { command: COMMANDS.retryResolve, title: 'Retry Resolve' },
         { command: COMMANDS.showResolutionLog, title: 'Show Resolution Log' },
         { command: COMMANDS.openLockFile, title: 'Open Lock File' },
@@ -1175,6 +1208,8 @@ const { getApi } = registerExtension(
       ],
       menus: {
         'view/item/context': [
+          // Library 行右侧单一入口：展开/收起右侧库列表。
+          { command: COMMANDS.toggleLibraryPanel, when: WHEN_LIBRARY, group: 'inline@10' },
           // 通用 - file / virtual-file → Open
           { command: COMMANDS.open, when: WHEN_FILE_LIKE, group: 'navigation@10' },
           // Platform Packages：仅右键 Open Folder，走 Electron 打开 appdata 真实目录
@@ -1684,7 +1719,7 @@ void getApi().then((vscode) => {
 
   // Dependencies 分组（§7.2）
   const openDependencyManager = (element?: ExplorerTreeElement): void => {
-    if (isComponentLibrariesGroup(element)) {
+    if (isLibraryGroup(element)) {
       void openAilyComponentLibraryPanel()
       return
     }
@@ -1695,6 +1730,9 @@ void getApi().then((vscode) => {
   })
   vscode.commands.registerCommand(COMMANDS.openDependencyPanel, (element?: ExplorerTreeElement) => {
     openDependencyManager(element)
+  })
+  vscode.commands.registerCommand(COMMANDS.toggleLibraryPanel, () => {
+    void toggleAilyComponentLibraryPanel()
   })
 
   // Package Status（§7.2）
@@ -1917,20 +1955,6 @@ void getApi().then((vscode) => {
       await vscode.window.showWarningMessage(
         `无法在 Aily View 中开启内联重命名：${label}。请确认节点已选中后重试。`
       )
-    }
-  })
-
-  /** npm 库仍使用宿主通用面板；Arduino 公共库页面与安装完全由 Coder 提供。 */
-  treeView.onDidExpandElement((ev) => {
-    if (isInstalledLibrariesGroup(ev.element)) {
-      requestHostOpenLibraryManager()
-    } else if (isComponentLibrariesGroup(ev.element)) {
-      void openAilyComponentLibraryPanel()
-    }
-  })
-  treeView.onDidCollapseElement((ev) => {
-    if (isInstalledLibrariesGroup(ev.element)) {
-      requestHostCloseLibraryManager()
     }
   })
 

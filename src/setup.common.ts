@@ -493,7 +493,10 @@ export const constructOptions: IWorkbenchConstructionOptions = {
       "**/.log": true,
       "**/.workspace-history": true,
       "**/node_modules": true
-    }
+    },
+    "search.maxResults": 500,
+    "search.searchOnType": true,
+    "search.searchOnTypeDebouncePeriod": 500
   },
   defaultLayout: {
     editors: skipCoderDemoWorkbenchEditors

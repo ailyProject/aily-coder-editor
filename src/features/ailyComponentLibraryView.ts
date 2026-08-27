@@ -1,4 +1,4 @@
-/** Coder-owned Arduino library browser shown in the right secondary side bar. */
+/** Coder-owned Aily/Arduino library browser shown in the right secondary side bar. */
 import type * as vscode from 'vscode'
 import { IWorkbenchLayoutService, StandaloneServices } from '@codingame/monaco-vscode-api'
 import { Codicon } from '@codingame/monaco-vscode-api/vscode/vs/base/common/codicons'
@@ -6,15 +6,30 @@ import { MenuId, MenuRegistry } from '@codingame/monaco-vscode-api/vscode/vs/pla
 import { ContextKeyExpr } from '@codingame/monaco-vscode-api/vscode/vs/platform/contextkey/common/contextkey'
 import { Parts } from '@codingame/monaco-vscode-workbench-service-override'
 import { IViewsService } from '@codingame/monaco-vscode-api/vscode/vs/workbench/services/views/common/viewsService.service'
+import {
+  getHostEmbedContext,
+  onHostEmbedContextChanged,
+  requestHostEmbedContext
+} from '../hostEmbedContext.js'
+import {
+  createHostAilyLibraryPage,
+  normalizeLibraryLanguage,
+  type AilyLibraryEntry
+} from './ailyComponentLibraryModel.js'
+import {
+  libraryStrings,
+  type LibrarySource,
+  type UiStrings
+} from './ailyComponentLibraryI18n.js'
 
 export const AILY_COMPONENT_LIBRARY_CONTAINER_ID = 'ailyComponentLibraries'
 export const AILY_COMPONENT_LIBRARY_VIEW_ID = 'aily.componentLibraries'
 const AILY_COMPONENT_LIBRARY_PANE_COMPOSITE_ID = `workbench.view.extension.${AILY_COMPONENT_LIBRARY_CONTAINER_ID}`
 
-type LibrarySource = 'registry'
 type LibraryEntry = {
   readonly id: string
   readonly source: LibrarySource
+  readonly packageName?: string
   readonly folderName: string
   readonly sdkLabel: string
   readonly name: string
@@ -37,69 +52,10 @@ type ApiResponse = {
   readonly ok?: boolean
   readonly error?: string
   readonly libraries?: readonly LibraryEntry[]
-  readonly library?: LibraryEntry
+  readonly library?: Partial<LibraryEntry>
   readonly total?: number
   readonly categories?: readonly string[]
   readonly types?: readonly string[]
-}
-
-type UiStrings = {
-  readonly search: string
-  readonly refresh: string
-  readonly hint: string
-  readonly add: string
-  readonly adding: string
-  readonly installed: string
-  readonly loading: string
-  readonly empty: string
-  readonly unavailable: string
-  readonly docs: string
-  readonly registrySection: string
-  readonly close: string
-  readonly allTypes: string
-  readonly allTopics: string
-  readonly loadMore: string
-  readonly loadingMore: string
-  readonly compatible: string
-  readonly otherArchitecture: string
-  readonly registrySource: string
-  readonly resultUnit: string
-  readonly endOfResults: string
-  added(name: string): string
-  failed(action: 'load' | 'install', detail: string): string
-}
-
-const EN: UiStrings = {
-  search: 'Search all Arduino libraries',
-  refresh: 'Refresh',
-  hint: 'The complete official Arduino Library Manager index. Installs are project-local under sketch/libraries.',
-  add: 'Install', adding: 'Installing…', installed: 'In Project',
-  loading: 'Loading Arduino libraries…', empty: 'No matching Arduino libraries',
-  unavailable: 'The active Coder project is not ready.', docs: 'More info',
-  registrySection: 'Arduino Library Manager', close: 'Close library manager',
-  allTypes: 'Type: All', allTopics: 'Topic: All', loadMore: 'Load more', loadingMore: 'Loading…',
-  compatible: 'Compatible', otherArchitecture: 'Other architecture',
-  registrySource: 'Arduino Library Manager', resultUnit: 'libraries', endOfResults: 'All matching libraries are shown',
-  added: name => `${name} was installed under sketch/libraries`,
-  failed: (action, detail) => `${action === 'load' ? 'Failed to load Arduino libraries' : 'Failed to install the library'}: ${detail}`
-}
-
-const ZH_CN: UiStrings = {
-  search: '搜索全部 Arduino 公共库', refresh: '刷新',
-  hint: 'Arduino Library Manager 官方完整索引；安装由 Coder 写入当前工程 sketch/libraries。',
-  add: '安装', adding: '正在安装…', installed: '已在工程中',
-  loading: '正在加载 Arduino 公共库…', empty: '没有匹配的 Arduino 公共库',
-  unavailable: '当前 Coder 工程尚未就绪。', docs: '更多信息',
-  registrySection: 'Arduino Library Manager', close: '关闭公共库面板',
-  allTypes: '类型：全部', allTopics: '主题：全部', loadMore: '加载更多', loadingMore: '加载中…',
-  compatible: '兼容当前平台', otherArchitecture: '其他架构',
-  registrySource: 'Arduino Library Manager', resultUnit: '个库', endOfResults: '已显示全部匹配库',
-  added: name => `${name} 已安装到 sketch/libraries`,
-  failed: (action, detail) => `${action === 'load' ? '加载 Arduino 公共库失败' : '安装公共库失败'}：${detail}`
-}
-
-function strings(language: string): UiStrings {
-  return language.toLowerCase().startsWith('zh') ? ZH_CN : EN
 }
 
 async function callApi(
@@ -114,6 +70,25 @@ async function callApi(
     throw new Error(payload.error?.trim() || `${action} failed`)
   }
   return payload
+}
+
+async function readProjectDependencies(
+  vscodeApi: typeof vscode,
+  root: string
+): Promise<Record<string, unknown>> {
+  try {
+    const content = await vscodeApi.workspace.fs.readFile(
+      vscodeApi.Uri.joinPath(vscodeApi.Uri.file(root), 'package.json')
+    )
+    const project = JSON.parse(new TextDecoder().decode(content)) as {
+      dependencies?: Record<string, unknown>
+    }
+    return project.dependencies != null && typeof project.dependencies === 'object'
+      ? project.dependencies
+      : {}
+  } catch {
+    return {}
+  }
 }
 
 function workspaceRoot(vscodeApi: typeof vscode): string | undefined {
@@ -132,60 +107,70 @@ function nonce(): string {
     .map(value => alphabet[value % alphabet.length]).join('')
 }
 
-function webviewHtml(webview: vscode.Webview, copy: UiStrings): string {
+function webviewHtml(webview: vscode.Webview, copy: UiStrings, language: string): string {
   const scriptNonce = nonce()
   const serializedCopy = JSON.stringify(copy).replace(/</gu, '\\u003c')
+  const normalizedLanguage = normalizeLibraryLanguage(language)
+  const direction = normalizedLanguage === 'ar' ? 'rtl' : 'ltr'
   return `<!doctype html>
-<html lang="en"><head>
+<html lang="${normalizedLanguage.replace('_', '-')}" dir="${direction}"><head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${scriptNonce}';">
   <style>
-    *{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;color:var(--vscode-foreground);background:var(--vscode-sideBar-background);font:13px/1.45 var(--vscode-font-family)}
-    .toolbar{position:sticky;z-index:3;top:0;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:10px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background,#1f1f1f)}
-    .filters{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:6px} input,select{min-width:0;height:28px;padding:3px 7px;border:1px solid var(--vscode-input-border,transparent);outline:none;color:var(--vscode-input-foreground);background:var(--vscode-input-background);font:inherit} input:focus,select:focus{border-color:var(--vscode-focusBorder)}
-    button{min-height:28px;padding:3px 9px;border:1px solid var(--vscode-button-border,transparent);border-radius:2px;color:var(--vscode-button-foreground);background:var(--vscode-button-background);font:inherit;cursor:pointer} button:hover:not(:disabled){background:var(--vscode-button-hoverBackground)} button:disabled{cursor:default;opacity:.62} button.secondary{color:var(--vscode-button-secondaryForeground);background:var(--vscode-button-secondaryBackground)}
-    .hint,.notice{margin:0;padding:8px 10px;border-bottom:1px solid var(--vscode-panel-border);color:var(--vscode-descriptionForeground);font-size:11px}.notice{color:var(--vscode-notificationsInfoIcon-foreground)}.notice.error{color:var(--vscode-errorForeground)}
-    .section-title{position:sticky;z-index:2;top:85px;display:flex;justify-content:space-between;gap:8px;padding:7px 10px;border-block:1px solid var(--vscode-panel-border);box-shadow:0 2px 5px rgba(0,0,0,.24);color:var(--vscode-sideBarSectionHeader-foreground,var(--vscode-foreground));background:var(--vscode-sideBar-background,#1f1f1f);font-size:11px;font-weight:600;text-transform:uppercase;isolation:isolate}
-    .list{display:grid;gap:8px;padding:8px 10px 12px}.card{min-width:0;padding:10px;border:1px solid var(--vscode-panel-border);border-radius:4px;background:var(--vscode-editorWidget-background,var(--vscode-editor-background))}.card.installed{border-color:var(--vscode-testing-iconPassed)}
-    .title-row,.footer{display:flex;align-items:center;justify-content:space-between;gap:7px}.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.version-select{width:auto;min-width:70px;max-width:104px;height:24px;padding:1px 22px 1px 6px;border-color:var(--vscode-dropdown-border,var(--vscode-input-border));color:var(--vscode-dropdown-foreground,var(--vscode-input-foreground));background:var(--vscode-dropdown-background,var(--vscode-input-background));font-size:11px;cursor:pointer}.version-select:disabled{cursor:default;opacity:.72}.meta,.source{color:var(--vscode-descriptionForeground);font-size:11px}.description{display:-webkit-box;overflow:hidden;margin:7px 0;-webkit-box-orient:vertical;-webkit-line-clamp:3;font-size:12px}
+    *{box-sizing:border-box}[hidden]{display:none!important}body{--panel-gutter:0px;margin:0;color:var(--vscode-foreground);background:var(--vscode-sideBar-background);font:13px/1.45 var(--vscode-font-family)}
+    .source-tabs{position:sticky;z-index:4;top:0;display:grid;grid-template-columns:1fr 1fr;padding:6px 0 0;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background,#1f1f1f)}.source-tab{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;padding:7px var(--panel-gutter) 8px;border:0;border-radius:0;color:var(--vscode-descriptionForeground);background:transparent;font-weight:600;white-space:nowrap}.source-tab:hover{color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}.source-tab[aria-selected="true"]{color:var(--vscode-foreground)}.source-tab[aria-selected="true"]::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;content:'';background:var(--vscode-focusBorder)}.tab-icon{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.35}.tab-icon.aily{fill:currentColor;stroke:none}
+    .toolbar{position:sticky;z-index:3;top:35px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:8px var(--panel-gutter);border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background,#1f1f1f)}
+    .filters{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:6px}input,select{min-width:0;height:28px;padding:3px 7px;border:1px solid var(--vscode-input-border,transparent);outline:none;color:var(--vscode-input-foreground);background:var(--vscode-input-background);font:inherit}input:focus,select:focus{border-color:var(--vscode-focusBorder)}
+    button{min-height:28px;padding:3px 9px;border:1px solid var(--vscode-button-border,transparent);border-radius:2px;color:var(--vscode-button-foreground);background:var(--vscode-button-background);font:inherit;cursor:pointer}button:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}button:disabled{cursor:default;opacity:.62}button.secondary{color:var(--vscode-button-secondaryForeground);background:var(--vscode-button-secondaryBackground)}
+    .notice{margin:0;padding:8px var(--panel-gutter);border-bottom:1px solid var(--vscode-panel-border);color:var(--vscode-notificationsInfoIcon-foreground);font-size:11px}.notice.error{color:var(--vscode-errorForeground)}
+    .section-title{display:flex;justify-content:space-between;gap:8px;padding:7px var(--panel-gutter);border-bottom:1px solid var(--vscode-panel-border);color:var(--vscode-sideBarSectionHeader-foreground,var(--vscode-foreground));background:var(--vscode-sideBar-background,#1f1f1f);font-size:11px;font-weight:600;text-transform:uppercase}
+    .list{display:grid;gap:8px;padding:8px var(--panel-gutter) 12px}.card{min-width:0;padding:10px;border:1px solid var(--vscode-panel-border);border-radius:4px;background:var(--vscode-editorWidget-background,var(--vscode-editor-background))}.card.installed{border-color:var(--vscode-testing-iconPassed)}
+    .title-row,.footer{display:flex;align-items:center;gap:7px}.title-row{justify-content:space-between}.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.version-select{width:auto;min-width:70px;max-width:104px;height:24px;padding:1px 22px 1px 6px;border-color:var(--vscode-dropdown-border,var(--vscode-input-border));color:var(--vscode-dropdown-foreground,var(--vscode-input-foreground));background:var(--vscode-dropdown-background,var(--vscode-input-background));font-size:11px;cursor:pointer}.version-select:disabled{cursor:default;opacity:.72}.meta{color:var(--vscode-descriptionForeground);font-size:11px}.description{display:-webkit-box;overflow:hidden;margin:7px 0;-webkit-box-orient:vertical;-webkit-line-clamp:3;font-size:12px}
     .chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}.chip{padding:1px 5px;border-radius:999px;color:var(--vscode-badge-foreground);background:var(--vscode-badge-background);font-size:10px}.chip.compatible{color:var(--vscode-testing-iconPassed);background:color-mix(in srgb,var(--vscode-testing-iconPassed) 14%,transparent)}.chip.incompatible{color:var(--vscode-descriptionForeground);background:transparent;border:1px solid var(--vscode-panel-border)}
-    .footer{padding-top:8px;border-top:1px solid var(--vscode-panel-border)}.source{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.actions{display:flex;flex:none;align-items:center;gap:4px}a{padding:4px;color:var(--vscode-textLink-foreground);cursor:pointer}.empty{padding:38px 12px;color:var(--vscode-descriptionForeground);text-align:center}.more{display:block;margin:0 auto 12px}.paging-status{display:flex;align-items:center;gap:8px;margin:0 10px 12px;color:var(--vscode-descriptionForeground);font-size:11px;text-align:center}.paging-status::before,.paging-status::after{height:1px;content:'';background:var(--vscode-panel-border);flex:1}
+    .footer{justify-content:space-between;padding-top:8px;border-top:1px solid var(--vscode-panel-border)}.actions{display:flex;flex:none;align-items:center;gap:4px;margin-inline-start:auto}a{padding:4px;color:var(--vscode-textLink-foreground);cursor:pointer}.empty{padding:38px 12px;color:var(--vscode-descriptionForeground);text-align:center}.more{display:block;margin:0 auto 12px}.paging-status{display:flex;align-items:center;gap:8px;margin:0 var(--panel-gutter) 12px;color:var(--vscode-descriptionForeground);font-size:11px;text-align:center}.paging-status::before,.paging-status::after{height:1px;content:'';background:var(--vscode-panel-border);flex:1}
   </style>
 </head><body>
-  <header class="toolbar"><input id="search" type="search"><button id="refresh" class="secondary" type="button"></button><div class="filters"><select id="type"></select><select id="category"></select></div></header>
-  <p id="hint" class="hint"></p><p id="notice" class="notice" hidden></p>
-  <section><div class="section-title"><span id="registry-title"></span><span id="registry-count"></span></div><div id="registry-list" class="list"></div><button id="more" class="secondary more" type="button" hidden></button><div id="paging-status" class="paging-status" hidden></div></section>
+  <nav class="source-tabs">
+    <button id="aily-tab" class="source-tab" type="button"><svg class="tab-icon aily" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.25 9.45 5.55 13.75 7 9.45 8.45 8 12.75 6.55 8.45 2.25 7l4.3-1.45L8 1.25Z"/><path d="m12.25 11 .55 1.7 1.7.55-1.7.55-.55 1.7-.55-1.7-1.7-.55 1.7-.55.55-1.7Z"/></svg><span id="aily-tab-label"></span></button>
+    <button id="arduino-tab" class="source-tab" type="button"><svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="2"/><path d="M4.25 8h3.5m-1.75-1.75v3.5M9.5 6.75h2.25m-2.25 2.5h2.25"/></svg><span id="arduino-tab-label"></span></button>
+  </nav>
+  <header class="toolbar"><input id="search" type="search"><button id="refresh" class="secondary" type="button"></button><div id="filters" class="filters"><select id="type"></select><select id="category"></select></div></header>
+  <p id="notice" class="notice" hidden></p>
+  <section><div class="section-title"><span id="section-title"></span><span id="library-count"></span></div><div id="library-list" class="list"></div><button id="more" class="secondary more" type="button" hidden></button><div id="paging-status" class="paging-status" hidden></div></section>
   <script nonce="${scriptNonce}">
     const vscode=acquireVsCodeApi(),copy=${serializedCopy};
-    const search=document.getElementById('search'),refresh=document.getElementById('refresh'),type=document.getElementById('type'),category=document.getElementById('category'),notice=document.getElementById('notice'),registryList=document.getElementById('registry-list'),registryCount=document.getElementById('registry-count'),more=document.getElementById('more'),pagingStatus=document.getElementById('paging-status');
-    let state={registryLibraries:[],total:0,categories:[],types:[],loadingRegistry:true,loadingMore:false,hasMore:false,installing:[],notice:null},searchTimer;
-    search.placeholder=copy.search;refresh.textContent=copy.refresh;document.getElementById('hint').textContent=copy.hint;document.getElementById('registry-title').textContent=copy.registrySection;more.textContent=copy.loadMore;pagingStatus.textContent=copy.endOfResults;
+    const sourceTabs=document.querySelector('.source-tabs'),ailyTab=document.getElementById('aily-tab'),arduinoTab=document.getElementById('arduino-tab'),ailyTabLabel=document.getElementById('aily-tab-label'),arduinoTabLabel=document.getElementById('arduino-tab-label'),search=document.getElementById('search'),refresh=document.getElementById('refresh'),filters=document.getElementById('filters'),type=document.getElementById('type'),category=document.getElementById('category'),notice=document.getElementById('notice'),sectionTitle=document.getElementById('section-title'),libraryList=document.getElementById('library-list'),libraryCount=document.getElementById('library-count'),more=document.getElementById('more'),pagingStatus=document.getElementById('paging-status');
+    let state={activeSource:'aily',query:'',libraries:[],total:0,categories:[],types:[],loading:true,loadingMore:false,hasMore:false,installing:[],notice:null},searchTimer;
+    sourceTabs.setAttribute('aria-label',copy.sourceTabsLabel);ailyTabLabel.textContent=copy.ailyTab;arduinoTabLabel.textContent=copy.arduinoTab;refresh.textContent=copy.refresh;more.textContent=copy.loadMore;pagingStatus.textContent=copy.endOfResults;
     const text=(tag,className,value)=>{const element=document.createElement(tag);element.className=className;element.textContent=value;return element};
     function setOptions(select,values,allLabel){const selected=select.value;select.replaceChildren();const all=document.createElement('option');all.value='';all.textContent=allLabel;select.appendChild(all);for(const value of values){const option=document.createElement('option');option.value=value;option.textContent=value;select.appendChild(option)}select.value=values.includes(selected)?selected:''}
     function card(library){
       const card=document.createElement('article');card.className='card'+(library.installed?' installed':'');
       const titleRow=document.createElement('div');titleRow.className='title-row';const title=text('div','title',library.name||library.folderName);title.title=library.name||library.folderName;
-      const version=document.createElement('select');version.className='version-select';version.setAttribute('aria-label',(library.name||library.folderName)+' version');for(const item of library.versions.length?library.versions:[library.version||'Arduino']){const option=document.createElement('option');option.value=item;option.textContent=item;option.selected=item===library.version;version.appendChild(option)}version.disabled=library.versions.length<2;version.addEventListener('change',()=>vscode.postMessage({type:'selectVersion',libraryId:library.id,version:version.value}));titleRow.append(title,version);
-      card.append(titleRow,text('div','meta',library.author||library.maintainer||library.sdkLabel),text('p','description',library.sentence||library.paragraph||library.folderName));
-      const chips=document.createElement('div');chips.className='chips';if(library.source==='registry')chips.appendChild(text('span','chip '+(library.compatible?'compatible':'incompatible'),library.compatible?copy.compatible:copy.otherArchitecture));for(const value of [library.category,...library.architectures].filter(Boolean).slice(0,5))chips.appendChild(text('span','chip',value));card.appendChild(chips);
-      const footer=document.createElement('footer');footer.className='footer';footer.appendChild(text('code','source',library.folderName?'sketch/libraries/'+library.folderName:copy.registrySource));const actions=document.createElement('div');actions.className='actions';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));actions.appendChild(docs)}const installing=state.installing.includes(library.id),installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed,install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||installing;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install);footer.appendChild(actions);card.appendChild(footer);return card;
+      const versions=library.versions?.length?library.versions:[library.version||(library.source==='aily'?'latest':'Arduino')],version=document.createElement('select');version.className='version-select';version.setAttribute('aria-label',(library.name||library.folderName)+' '+copy.versionLabel);for(const item of versions){const option=document.createElement('option');option.value=item;option.textContent=item;option.selected=item===library.version;version.appendChild(option)}version.disabled=versions.length<2;version.addEventListener('change',()=>vscode.postMessage({type:'selectVersion',libraryId:library.id,version:version.value}));titleRow.append(title,version);
+      card.appendChild(titleRow);const metadata=library.author||library.maintainer;if(metadata)card.appendChild(text('div','meta',metadata));card.appendChild(text('p','description',library.sentence||library.paragraph||library.packageName||library.folderName));
+      const chips=document.createElement('div');chips.className='chips';if(library.source!=='aily')chips.appendChild(text('span','chip '+(library.compatible?'compatible':'incompatible'),library.compatible?copy.compatible:copy.otherArchitecture));for(const value of [library.category,...(library.architectures||[])].filter(Boolean).slice(0,5))chips.appendChild(text('span','chip',value));if(chips.childElementCount>0)card.appendChild(chips);
+      const footer=document.createElement('footer');footer.className='footer';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));footer.appendChild(docs)}const actions=document.createElement('div');actions.className='actions';const installing=state.installing.includes(library.id),installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed,install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||installing;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install);footer.appendChild(actions);card.appendChild(footer);return card;
     }
     function render(){
-      const busy=state.loadingRegistry||state.loadingMore,filtered=Boolean(search.value.trim()||type.value||category.value);refresh.disabled=busy;notice.hidden=!state.notice;notice.classList.toggle('error',state.notice?.error===true);notice.textContent=state.notice?.text||'';setOptions(type,state.types,copy.allTypes);setOptions(category,state.categories,copy.allTopics);
-      registryCount.textContent=state.registryLibraries.length+' / '+state.total+' '+copy.resultUnit;registryList.replaceChildren();if(state.loadingRegistry&&state.registryLibraries.length===0)registryList.appendChild(text('div','empty',copy.loading));else if(state.registryLibraries.length===0)registryList.appendChild(text('div','empty',copy.empty));else for(const library of state.registryLibraries)registryList.appendChild(card(library));more.hidden=!state.hasMore&&!state.loadingMore;more.disabled=busy;more.textContent=state.loadingMore?copy.loadingMore:copy.loadMore;pagingStatus.hidden=busy||!filtered||state.registryLibraries.length===0||state.hasMore;
+      const isAily=state.activeSource==='aily',busy=state.loading||state.loadingMore;ailyTab.setAttribute('aria-selected',String(isAily));arduinoTab.setAttribute('aria-selected',String(!isAily));search.placeholder=isAily?copy.searchAily:copy.searchArduino;if(document.activeElement!==search)search.value=state.query||'';filters.hidden=isAily;sectionTitle.textContent=isAily?copy.ailySection:copy.arduinoSection;refresh.disabled=busy;notice.hidden=!state.notice;notice.classList.toggle('error',state.notice?.error===true);notice.textContent=state.notice?.text||'';setOptions(type,state.types,copy.allTypes);setOptions(category,state.categories,copy.allTopics);
+      libraryCount.textContent=state.libraries.length+' / '+state.total+' '+copy.resultUnit;libraryList.replaceChildren();if(state.loading&&state.libraries.length===0)libraryList.appendChild(text('div','empty',isAily?copy.loadingAily:copy.loadingArduino));else if(state.libraries.length===0)libraryList.appendChild(text('div','empty',isAily?copy.emptyAily:copy.emptyArduino));else for(const library of state.libraries)libraryList.appendChild(card(library));more.hidden=!state.hasMore&&!state.loadingMore;more.disabled=busy;more.textContent=state.loadingMore?copy.loadingMore:copy.loadMore;pagingStatus.hidden=busy||state.libraries.length===0||state.hasMore;
     }
     function requestSearch(){more.hidden=true;pagingStatus.hidden=true;clearTimeout(searchTimer);searchTimer=setTimeout(()=>vscode.postMessage({type:'search',query:search.value,category:category.value,libraryType:type.value}),250)}
-    search.addEventListener('input',requestSearch);type.addEventListener('change',requestSearch);category.addEventListener('change',requestSearch);refresh.addEventListener('click',()=>vscode.postMessage({type:'refresh'}));more.addEventListener('click',()=>vscode.postMessage({type:'loadMore'}));window.addEventListener('message',event=>{if(event.data?.type==='state'){state=event.data.state;render()}});render();vscode.postMessage({type:'ready'});
+    function selectSource(source){if(source===state.activeSource)return;clearTimeout(searchTimer);type.value='';category.value='';vscode.postMessage({type:'selectSource',source,query:search.value})}
+    ailyTab.addEventListener('click',()=>selectSource('aily'));arduinoTab.addEventListener('click',()=>selectSource('registry'));search.addEventListener('input',requestSearch);type.addEventListener('change',requestSearch);category.addEventListener('change',requestSearch);refresh.addEventListener('click',()=>vscode.postMessage({type:'refresh'}));more.addEventListener('click',()=>vscode.postMessage({type:'loadMore'}));window.addEventListener('message',event=>{if(event.data?.type==='state'){state=event.data.state;render()}});render();vscode.postMessage({type:'ready'});
   </script>
 </body></html>`
 }
 
 type ViewState = {
-  readonly registryLibraries: readonly LibraryEntry[]
+  readonly activeSource: LibrarySource
+  readonly query: string
+  readonly libraries: readonly LibraryEntry[]
   readonly total: number
   readonly categories: readonly string[]
   readonly types: readonly string[]
-  readonly loadingRegistry: boolean
+  readonly loading: boolean
   readonly loadingMore: boolean
   readonly hasMore: boolean
   readonly installing: readonly string[]
@@ -194,6 +179,7 @@ type ViewState = {
 
 type WebviewMessage =
   | { readonly type: 'ready' | 'refresh' | 'loadMore' }
+  | { readonly type: 'selectSource'; readonly source?: LibrarySource; readonly query?: string }
   | { readonly type: 'search'; readonly query?: string; readonly category?: string; readonly libraryType?: string }
   | { readonly type: 'selectVersion'; readonly libraryId?: string; readonly version?: string }
   | { readonly type: 'install'; readonly libraryId?: string; readonly source?: LibrarySource; readonly version?: string }
@@ -201,11 +187,12 @@ type WebviewMessage =
 
 class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
   #view?: vscode.WebviewView
-  #registryLibraries: readonly LibraryEntry[] = []
+  #activeSource: LibrarySource = 'aily'
+  #libraries: readonly LibraryEntry[] = []
   #total = 0
   #categories: readonly string[] = []
   #types: readonly string[] = []
-  #loadingRegistry = false
+  #loading = false
   #loadingMore = false
   #hasMore = false
   #installing = new Set<string>()
@@ -214,23 +201,66 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
   #category = ''
   #libraryType = ''
   #searchGeneration = 0
+  #language: string
+  readonly #hostContextUnsubscribe: () => void
 
-  constructor(private readonly vscodeApi: typeof vscode) {}
+  constructor(private readonly vscodeApi: typeof vscode) {
+    this.#language = this.#currentLanguage()
+    this.#hostContextUnsubscribe = onHostEmbedContextChanged(() => {
+      const nextLanguage = this.#currentLanguage()
+      const languageChanged = nextLanguage !== this.#language
+      this.#language = nextLanguage
+      if (languageChanged && this.#view != null) {
+        this.#renderWebviewHtml()
+        return
+      }
+      if (this.#activeSource === 'aily') {
+        void this.#searchLibraries(true)
+      }
+    })
+  }
+
+  #currentLanguage(): string {
+    const hostLanguage = getHostEmbedContext()?.meta?.lang
+    return typeof hostLanguage === 'string' && hostLanguage.trim()
+      ? hostLanguage
+      : this.vscodeApi.env.language
+  }
+
+  #copy(): UiStrings {
+    return libraryStrings(this.#currentLanguage())
+  }
+
+  #renderWebviewHtml(): void {
+    if (this.#view == null) return
+    this.#view.webview.html = webviewHtml(this.#view.webview, this.#copy(), this.#language)
+  }
+
+  dispose(): void {
+    this.#hostContextUnsubscribe()
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.#view = view
     view.webview.options = { enableScripts: true }
-    view.webview.html = webviewHtml(view.webview, strings(this.vscodeApi.env.language))
+    this.#renderWebviewHtml()
     view.webview.onDidReceiveMessage((message: WebviewMessage) => {
       if (message.type === 'ready' || message.type === 'refresh') void this.refresh(message.type === 'refresh')
-      else if (message.type === 'search') {
+      else if (message.type === 'selectSource' && (message.source === 'aily' || message.source === 'registry')) {
+        this.#activeSource = message.source
         this.#query = message.query?.trim() ?? ''
-        this.#category = message.category?.trim() ?? ''
-        this.#libraryType = message.libraryType?.trim() ?? ''
-        void this.#searchRegistry(true)
-      } else if (message.type === 'loadMore') void this.#searchRegistry(false)
+        this.#category = ''
+        this.#libraryType = ''
+        this.#notice = null
+        void this.#searchLibraries(true)
+      } else if (message.type === 'search') {
+        this.#query = message.query?.trim() ?? ''
+        this.#category = this.#activeSource === 'registry' ? message.category?.trim() ?? '' : ''
+        this.#libraryType = this.#activeSource === 'registry' ? message.libraryType?.trim() ?? '' : ''
+        void this.#searchLibraries(true)
+      } else if (message.type === 'loadMore') void this.#searchLibraries(false)
       else if (message.type === 'selectVersion' && message.libraryId && message.version) {
-        this.#registryLibraries = this.#registryLibraries.map(item => item.id === message.libraryId && item.versions.includes(message.version!) ? { ...item, version: message.version! } : item)
+        this.#libraries = this.#libraries.map(item => item.id === message.libraryId && item.versions.includes(message.version!) ? { ...item, version: message.version! } : item)
       } else if (message.type === 'install' && message.libraryId && message.source && message.version) void this.#install(message.libraryId, message.source, message.version)
       else if (message.type === 'openUrl' && /^https?:\/\//iu.test(message.url ?? '')) void this.vscodeApi.env.openExternal(this.vscodeApi.Uri.parse(message.url!))
     })
@@ -238,66 +268,142 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
 
   #sendState(): void {
     void this.#view?.webview.postMessage({ type: 'state', state: {
-      registryLibraries: this.#registryLibraries,
-      total: this.#total, categories: this.#categories, types: this.#types,
-      loadingRegistry: this.#loadingRegistry,
-      loadingMore: this.#loadingMore, hasMore: this.#hasMore,
-      installing: [...this.#installing], notice: this.#notice
+      activeSource: this.#activeSource,
+      query: this.#query,
+      libraries: this.#libraries,
+      total: this.#total,
+      categories: this.#categories,
+      types: this.#types,
+      loading: this.#loading,
+      loadingMore: this.#loadingMore,
+      hasMore: this.#hasMore,
+      installing: [...this.#installing],
+      notice: this.#notice
     } satisfies ViewState })
   }
 
   async refresh(forceRefresh = false): Promise<void> {
     const root = workspaceRoot(this.vscodeApi)
     if (!root) {
-      this.#registryLibraries = []
-      this.#notice = { text: strings(this.vscodeApi.env.language).unavailable, error: true }
-      this.#sendState(); return
+      this.#libraries = []
+      this.#notice = { text: this.#copy().unavailable, error: true }
+      this.#sendState()
+      return
     }
-    this.#notice = null; this.#sendState()
-    await this.#searchRegistry(true, forceRefresh)
+    this.#notice = null
+    this.#sendState()
+    await this.#searchLibraries(true, forceRefresh)
   }
 
-  async #searchRegistry(reset: boolean, forceRefresh = false): Promise<void> {
+  async #searchLibraries(reset: boolean, forceRefresh = false): Promise<void> {
     const root = workspaceRoot(this.vscodeApi)
     if (!root || (this.#loadingMore && !reset)) return
     const generation = ++this.#searchGeneration
-    const offset = reset ? 0 : this.#registryLibraries.length
-    this.#loadingRegistry = reset
+    const source = this.#activeSource
+    const offset = reset ? 0 : this.#libraries.length
+    this.#loading = reset
     this.#loadingMore = !reset
-    if (reset) { this.#registryLibraries = []; this.#hasMore = false }
+    if (reset) {
+      this.#libraries = []
+      this.#total = 0
+      this.#hasMore = false
+      if (source === 'aily') {
+        this.#categories = []
+        this.#types = []
+      }
+    }
+    this.#notice = null
     this.#sendState()
     try {
-      const response = await callApi('search', { workspaceRoot: root, query: this.#query, category: this.#category, type: this.#libraryType, offset, limit: 50, forceRefresh })
-      if (generation !== this.#searchGeneration) return
+      let response: ApiResponse
+      if (source === 'aily') {
+        const catalog = getHostEmbedContext()?.ailyLibraries
+        if (catalog == null) {
+          requestHostEmbedContext()
+          this.#notice = { text: this.#copy().hostCatalogUnavailable }
+          response = { ok: true, libraries: [], total: 0, categories: [], types: [] }
+        } else {
+          const dependencies = await readProjectDependencies(this.vscodeApi, root)
+          const result = createHostAilyLibraryPage(
+            catalog,
+            dependencies,
+            this.#query,
+            offset,
+            50
+          )
+          response = {
+            ok: true,
+            libraries: result.libraries satisfies readonly AilyLibraryEntry[],
+            total: result.total,
+            categories: [],
+            types: []
+          }
+        }
+      } else {
+        response = await callApi('search', {
+          source,
+          workspaceRoot: root,
+          query: this.#query,
+          category: this.#category,
+          type: this.#libraryType,
+          offset,
+          limit: 50,
+          forceRefresh
+        })
+      }
+      if (generation !== this.#searchGeneration || source !== this.#activeSource) return
       const page = response.libraries ?? []
-      this.#registryLibraries = reset ? page : [...this.#registryLibraries, ...page]
-      this.#total = response.total ?? this.#registryLibraries.length
-      this.#hasMore = page.length > 0 && this.#registryLibraries.length < this.#total
+      this.#libraries = reset ? page : [...this.#libraries, ...page]
+      this.#total = response.total ?? this.#libraries.length
+      this.#hasMore = page.length > 0 && this.#libraries.length < this.#total
       this.#categories = response.categories ?? this.#categories
       this.#types = response.types ?? this.#types
     } catch (error) {
-      if (generation !== this.#searchGeneration) return
-      if (reset) this.#registryLibraries = []
-      this.#notice = { text: strings(this.vscodeApi.env.language).failed('load', error instanceof Error ? error.message : String(error)), error: true }
+      if (generation !== this.#searchGeneration || source !== this.#activeSource) return
+      if (reset) this.#libraries = []
+      this.#notice = {
+        text: this.#copy().failed(
+          'load',
+          source,
+          error instanceof Error ? error.message : String(error)
+        ),
+        error: true
+      }
     } finally {
-      if (generation === this.#searchGeneration) { this.#loadingRegistry = false; this.#loadingMore = false; this.#sendState() }
+      if (generation === this.#searchGeneration && source === this.#activeSource) {
+        this.#loading = false
+        this.#loadingMore = false
+        this.#sendState()
+      }
     }
   }
 
   async #install(libraryId: string, source: LibrarySource, version: string): Promise<void> {
     const root = workspaceRoot(this.vscodeApi)
-    const library = this.#registryLibraries.find(item => item.id === libraryId)
+    const library = this.#libraries.find(item => item.id === libraryId && item.source === source)
     if (!root || !library || library.installed || this.#installing.has(libraryId)) return
-    this.#installing.add(libraryId); this.#notice = null; this.#sendState()
+    this.#installing.add(libraryId)
+    this.#notice = null
+    this.#sendState()
     try {
       const response = await callApi('install', { workspaceRoot: root, libraryId, source, version })
-      const update = (item: LibraryEntry): LibraryEntry => item.id === libraryId ? { ...item, ...response.library, installed: true, installedVersion: version } : item
-      this.#registryLibraries = this.#registryLibraries.map(update)
-      this.#notice = { text: strings(this.vscodeApi.env.language).added(library.name || library.folderName) }
+      const update = (item: LibraryEntry): LibraryEntry => item.id === libraryId
+        ? { ...item, ...response.library, source, installed: true, installedVersion: response.library?.installedVersion ?? version }
+        : item
+      this.#libraries = this.#libraries.map(update)
+      this.#notice = { text: this.#copy().added(library.name || library.folderName, source) }
     } catch (error) {
-      this.#notice = { text: strings(this.vscodeApi.env.language).failed('install', error instanceof Error ? error.message : String(error)), error: true }
+      this.#notice = {
+        text: this.#copy().failed(
+          'install',
+          source,
+          error instanceof Error ? error.message : String(error)
+        ),
+        error: true
+      }
     } finally {
-      this.#installing.delete(libraryId); this.#sendState()
+      this.#installing.delete(libraryId)
+      this.#sendState()
     }
   }
 }
@@ -310,7 +416,7 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
   const closeMenuItem = MenuRegistry.appendMenuItem(MenuId.AuxiliaryBarTitle, {
     command: {
       id: 'workbench.action.closeAuxiliaryBar',
-      title: strings(vscodeApi.env.language).close,
+      title: libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close,
       icon: Codicon.close
     },
     group: 'navigation',
@@ -320,10 +426,22 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
       ContextKeyExpr.notEquals('config.workbench.activityBar.location', 'default')
     )
   })
-  return { dispose: () => { registration.dispose(); closeMenuItem.dispose() }, refresh: () => provider.refresh() }
+  return {
+    dispose: () => { provider.dispose(); registration.dispose(); closeMenuItem.dispose() },
+    refresh: () => provider.refresh()
+  }
 }
 
 export async function openAilyComponentLibraryPanel(): Promise<void> {
   StandaloneServices.get(IWorkbenchLayoutService).setPartHidden(false, Parts.AUXILIARYBAR_PART)
   await StandaloneServices.get(IViewsService).openView(AILY_COMPONENT_LIBRARY_VIEW_ID, true)
+}
+
+export async function toggleAilyComponentLibraryPanel(): Promise<void> {
+  const layoutService = StandaloneServices.get(IWorkbenchLayoutService)
+  if (layoutService.isVisible(Parts.AUXILIARYBAR_PART, window)) {
+    layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART)
+    return
+  }
+  await openAilyComponentLibraryPanel()
 }

@@ -114,6 +114,82 @@ function rpc<T>(op: string, payload: Record<string, unknown>, timeoutMs = 120000
   })
 }
 
+export type NativeSearchRange = {
+  startLineNumber: number
+  startColumn: number
+  endLineNumber: number
+  endColumn: number
+}
+
+export type NativeTextSearchMatch = {
+  file: string
+  line?: number
+  column?: number
+  content?: string
+  previewText: string
+  sourceRange: NativeSearchRange
+  previewRange: NativeSearchRange
+}
+
+export type NativeTextSearchRequest = {
+  requestId: string
+  workspaceRoot: string
+  pattern: string
+  isRegex: boolean
+  isCaseSensitive: boolean
+  isWordMatch: boolean
+  isMultiline: boolean
+  usePCRE2: boolean
+  includeIgnoredFiles: boolean
+  includeHidden: boolean
+  includeGlobs: string[]
+  excludeGlobs: string[]
+  maxResults: number
+  maxLineLength: number
+  maxFileSize: number
+}
+
+export type NativeTextSearchResult = {
+  success: boolean
+  matches: NativeTextSearchMatch[]
+  numMatches: number
+  limitHit?: boolean
+  durationMs?: number
+  cancelled?: boolean
+  error?: string
+}
+
+export async function hasNativeTextSearchCapability(): Promise<boolean> {
+  if (!window.parent || window.parent === window) return false
+  try {
+    const capabilities = await rpc<{
+      protocolVersion?: number
+      textSearch?: boolean
+      cancellation?: boolean
+    }>('nativeSearchCapabilities', {}, 5000)
+    return (
+      capabilities.protocolVersion === 1
+      && capabilities.textSearch === true
+      && capabilities.cancellation === true
+    )
+  } catch {
+    // 旧宿主没有此 op：保留 @codingame 浏览器搜索 Provider。
+    return false
+  }
+}
+
+/** 在宿主 Electron 主进程调用有界、可取消的 ripgrep 文本搜索。 */
+export function searchNativeText(
+  request: NativeTextSearchRequest,
+): Promise<NativeTextSearchResult> {
+  return rpc<NativeTextSearchResult>('nativeSearchText', request, 30000)
+}
+
+/** search-on-type 发起新查询时，立即终止上一条 rg 子进程。 */
+export function cancelNativeTextSearch(requestId: string): Promise<void> {
+  return rpc('nativeSearchCancel', { requestId }, 5000).then(() => undefined)
+}
+
 export type NativeGitStatusResult = {
   /** Older hosts omit this field for initialized repositories. */
   initialized?: boolean

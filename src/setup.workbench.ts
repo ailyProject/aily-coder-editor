@@ -45,6 +45,7 @@ import { installEmbedWorkbenchStyles } from './embedWorkbenchStyles'
 import { installEmbedSidebarTopBar } from './embedSidebarTopBar'
 import { setCoderWorkbenchQueryRoot } from './coderWorkbenchDom.js'
 import { installAilyViewInlineRenameHost } from './features/ailyViewInlineRename.js'
+import { installNativeTextSearchProvider } from './features/nativeTextSearchProvider.js'
 
 /** 与宿主 `?theme=` 共用：dark→Default Dark+、light→Default Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -110,6 +111,15 @@ await initializeMonacoService(
   constructOptions,
   envOptions
 )
+
+if (useEmbedHostLocalFolder) {
+  try {
+    await installNativeTextSearchProvider()
+  } catch (error) {
+    // 能力探测或协议异常时保留 @codingame 浏览器 Provider，避免旧宿主不可搜索。
+    console.warn('[AilyCoder] native text search unavailable; using browser fallback', error)
+  }
+}
 
 const CODER_WORKSPACE_OPENED_KEY = 'ailyCoder.workspaceOpened'
 const CODER_LAST_ACTIVE_FILE_KEY = 'ailyCoder.lastActiveFile'

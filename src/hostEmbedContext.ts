@@ -40,6 +40,21 @@ export type HostPlatformPackageV1 = {
   diskDirName?: string
 }
 
+/** 主软件 Library Manager 已完成主板过滤与本地化后的只读库条目。 */
+export type HostAilyLibraryV1 = {
+  packageName: string
+  name: string
+  description: string
+  version: string
+  author: string
+  url: string
+  keywords: readonly string[]
+  architectures: readonly string[]
+  tested: boolean
+  installed: boolean
+  installedVersion: string
+}
+
 /** 与 Angular `code-editor-pro` 发送的 payload 对齐；`v` 用于日后无损升级。 */
 export type HostEmbedContextV1 = {
   v: 1
@@ -62,11 +77,19 @@ export type HostEmbedContextV1 = {
   platformPackages?: readonly HostPlatformPackageV1[]
   /** 虚拟 Board 节点：Blockly 主板支持的 framework / mode 列表 */
   boardProfile?: HostBoardProfileV1
-  /** 宿主轻量上下文；theme 更新不应触发 Runtime 或 iframe 重启。 */
-  meta?: Record<string, unknown> & { theme?: 'dark' | 'light' }
+  /** 主软件库管理的同源数据；宿主已按当前主板和语言处理。 */
+  ailyLibraries?: readonly HostAilyLibraryV1[]
+  /** 宿主轻量上下文；theme/lang 更新不应触发 Runtime 或 iframe 重启。 */
+  meta?: Record<string, unknown> & { theme?: 'dark' | 'light'; lang?: string }
 }
 
 export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-host-context'
+
+/** 子应用监听器就绪后主动向 Angular 宿主要最新快照。 */
+export const HOST_EMBED_CONTEXT_REQUEST_CHANNEL = 'aily-coder-host-context-request'
+
+/** iframe 主线程与 LocalProcess/Worker 扩展间同步宿主上下文。 */
+const HOST_EMBED_CONTEXT_BC = 'aily-embed-host-context'
 
 /** iframe → Angular：请求打开右上角 npm 库管理面板（Arduino 公共库归 Coder）。 */
 export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manager'
@@ -205,6 +228,40 @@ export function requestHostClipboardWriteText(text: string): boolean {
 
 let snapshot: HostEmbedContextV1 | null = null
 const listeners = new Set<() => void>()
+let hostContextBroadcastChannel: BroadcastChannel | null = null
+
+function setHostEmbedContextSnapshot(value: HostEmbedContextV1): void {
+  snapshot = value
+  emitHostEmbedContextChanged()
+}
+
+function installHostEmbedContextBroadcastListener(): void {
+  if (typeof BroadcastChannel === 'undefined' || hostContextBroadcastChannel != null) {
+    return
+  }
+  try {
+    const channel = new BroadcastChannel(HOST_EMBED_CONTEXT_BC)
+    hostContextBroadcastChannel = channel
+    channel.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data as { type?: string; payload?: HostEmbedContextV1 }
+      if (data?.type === 'request') {
+        if (snapshot != null) {
+          channel.postMessage({ type: 'snapshot', payload: snapshot })
+        }
+        return
+      }
+      if (data?.type === 'snapshot' && data.payload?.v === 1) {
+        setHostEmbedContextSnapshot(data.payload)
+      }
+    })
+    // BroadcastChannel 不保留历史消息；后启动的扩展主动向主线程索要当前快照。
+    channel.postMessage({ type: 'request' })
+  } catch {
+    hostContextBroadcastChannel = null
+  }
+}
+
+installHostEmbedContextBroadcastListener()
 
 /** 当前快照；扩展里只读。 */
 export function getHostEmbedContext(): HostEmbedContextV1 | null {
@@ -251,6 +308,18 @@ export function onHostEmbedContextChanged(cb: () => void): () => void {
   return () => listeners.delete(cb)
 }
 
+/** postMessage 不保留历史消息；初次启动或手动刷新时主动重取。 */
+export function requestHostEmbedContext(): void {
+  if (typeof window === 'undefined' || window.parent == null || window.parent === window) {
+    return
+  }
+  try {
+    window.parent.postMessage({ channel: HOST_EMBED_CONTEXT_REQUEST_CHANNEL }, '*')
+  } catch {
+    /* ignore */
+  }
+}
+
 function emitHostEmbedContextChanged(): void {
   for (const cb of listeners) {
     try {
@@ -273,8 +342,13 @@ export function installHostEmbedContextListener(): void {
     }
     const p = d.payload as HostEmbedContextV1
     if (p?.v === 1) {
-      snapshot = p
-      emitHostEmbedContextChanged()
+      setHostEmbedContextSnapshot(p)
+      try {
+        hostContextBroadcastChannel?.postMessage({ type: 'snapshot', payload: p })
+      } catch {
+        /* ignore */
+      }
     }
   })
+  requestHostEmbedContext()
 }

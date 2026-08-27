@@ -33,6 +33,9 @@
         "**/.workspace-history": true,
         "**/node_modules": true
     },
+    "search.maxResults": 500,
+    "search.searchOnType": true,
+    "search.searchOnTypeDebouncePeriod": 500,
     "debug.toolBarLocation": "docked",
     "editor.experimental.asyncTokenization": true,
     "terminal.integrated.tabs.title": "${sequence}",

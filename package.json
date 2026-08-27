@@ -70,8 +70,10 @@
     "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
     "test:package-runtime": "npm run build:runtime && node --test scripts/package-runtime.test.mjs",
     "test:component-libraries": "node --test server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
+    "test:aily-component-library": "tsx --test src/features/ailyComponentLibraryModel.test.ts",
     "test:aily-view-library": "tsx --test src/features/ailyLibraryProjection.test.ts",
     "test:inline-completion": "tsx --test src/features/aiInlineCompletionCloudTransport.test.ts src/features/aiInlineCompletionScope.test.ts",
+    "test:native-search": "tsx --test src/features/nativeTextSearchProvider.test.ts",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts"

@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { URL } from 'node:url'
 import {
+  installCoderLibrary,
   installArduinoComponentLibrary,
   installComponentLibrary,
   removeArduinoComponentLibrary,
@@ -82,6 +83,24 @@ export async function handleComponentLibraryApiRequest(request, response) {
       return true
     }
     if (url.pathname === `${API_PREFIX}install`) {
+      if (body.source === 'aily') {
+        const library = await installCoderLibrary({
+          workspaceRoot: body.workspaceRoot,
+          libraryRef: body.libraryId,
+          version: body.version,
+        })
+        sendJson(response, 200, {
+          ok: true,
+          library: {
+            id: body.libraryId,
+            source: 'aily',
+            packageName: library.packageName,
+            installed: true,
+            installedVersion: library.version,
+          },
+        })
+        return true
+      }
       const library = body.source === 'registry'
         ? await installArduinoComponentLibrary({
           workspaceRoot: body.workspaceRoot,
