@@ -48,11 +48,22 @@ test('ignores generated directory events that could feed Git command logs back i
     assert.equal(shouldRefreshGitScmForPath(path, true), false, path)
   }
   assert.equal(shouldRefreshGitScmForPath('sketch/src/main.cpp', true), true)
+  assert.equal(shouldRefreshGitScmForPath('', true), false)
+  assert.equal(shouldRefreshGitScmForPath('.', true), false)
+  assert.equal(shouldRefreshGitScmForPath('', undefined), false)
+})
+
+test('ignores transient Git locks without hiding persistent repository metadata', () => {
+  assert.equal(shouldRefreshGitScmForPath('.git/index.lock', true), false)
+  assert.equal(shouldRefreshGitScmForPath('.git/refs/heads/main.lock', true), false)
+  assert.equal(shouldRefreshGitScmForPath('.git/index', true), true)
+  assert.equal(shouldRefreshGitScmForPath('.git/HEAD', true), true)
 })
 
 test('only rechecks an uninitialized repository when Git metadata appears', () => {
   assert.equal(shouldRefreshGitScmForPath('sketch/src/main.cpp', false), false)
   assert.equal(shouldRefreshGitScmForPath('.git', false), true)
   assert.equal(shouldRefreshGitScmForPath('.git/HEAD', false), true)
+  assert.equal(shouldRefreshGitScmForPath('.git/index.lock', false), false)
   assert.equal(shouldRefreshGitScmForPath('', false), false)
 })

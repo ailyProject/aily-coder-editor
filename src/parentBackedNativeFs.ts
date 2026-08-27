@@ -15,6 +15,10 @@ import {
   isFileOpenForWriteOptions
 } from '@codingame/monaco-vscode-api/vscode/vs/platform/files/common/files'
 import type { IFileChange } from '@codingame/monaco-vscode-api/vscode/vs/platform/files/common/files'
+import {
+  NativeFsWatchEchoSuppressor,
+  resolveNativeFsWatchTargetPath
+} from './nativeFsWatchEvent.js'
 
 const CHANNEL = 'aily-coder-native-fs'
 export const CODEMBED_NATIVE_FS_REPLY = 'aily-coder-native-fs-reply'
@@ -25,6 +29,7 @@ export interface NativeFsWatchEventPayload {
   watchId?: number
   eventType?: string
   filename?: string
+  error?: string
 }
 
 export type NativeFsWatchCallback = (ev: NativeFsWatchEventPayload) => void
@@ -38,6 +43,9 @@ interface PendingEntry {
 
 const pendingById = new Map<number, PendingEntry>()
 let requestSeq = 0
+let replyListenerInstalled = false
+let watchListenerInstalled = false
+const nativeFsWatchEchoSuppressor = new NativeFsWatchEchoSuppressor()
 
 export function bytesToBase64(bytes: Uint8Array): string {
   const chunkSize = 0x8000
@@ -109,7 +117,8 @@ function rpc<T>(op: string, payload: Record<string, unknown>, timeoutMs = 120000
 export type NativeGitStatusResult = {
   /** Older hosts omit this field for initialized repositories. */
   initialized?: boolean
-  repositoryRoot: string
+  /** 兼容旧宿主；当前 SCM 只消费 initialized 与 status。 */
+  repositoryRoot?: string
   status: string
 }
 
@@ -215,6 +224,8 @@ export function commitNativeGitChanges(
 
 /** 挂载一次应答监听（setup.common 内尽早调用）。 */
 export function installParentBackedNativeFsReplyListener(): void {
+  if (replyListenerInstalled) return
+  replyListenerInstalled = true
   window.addEventListener('message', (ev: MessageEvent) => {
     const d = ev.data
     if (d?.channel !== CODEMBED_NATIVE_FS_REPLY) {
@@ -250,7 +261,10 @@ export async function startWorkspaceNativeWatch(
     recursive: true
   })
   watchCallbacksById.set(watchId, onEvent)
+  let disposed = false
   return () => {
+    if (disposed) return
+    disposed = true
     watchCallbacksById.delete(watchId)
     void rpc('nativeFsWatchStop', { watchId }).catch(() => {})
   }
@@ -291,6 +305,8 @@ export function shouldRefreshBuildOutputsNativeWatch(
 
 /** 挂载宿主 push 的 fs.watch 事件（与 reply listener 同级尽早调用）。 */
 export function installParentBackedNativeFsWatchListener(): void {
+  if (watchListenerInstalled) return
+  watchListenerInstalled = true
   window.addEventListener('message', (ev: MessageEvent) => {
     if (!window.parent || ev.source !== window.parent) {
       return
@@ -307,16 +323,8 @@ function mapWatchEventToFileChanges(
   watchRoot: string,
   ev: NativeFsWatchEventPayload,
 ): IFileChange[] {
-  const root = normalizeFsPathSep(watchRoot).replace(/\/$/, '')
-  let targetPath = root
-  if (ev.filename) {
-    const rel = normalizeFsPathSep(ev.filename)
-    // 仅当 filename 已是绝对路径时才直接使用；含 '/' 的相对路径（如 sketch/src/main.cpp）仍要拼到 watchRoot
-    const isAbsolute =
-      rel.startsWith('/') ||
-      /^[a-zA-Z]:\//.test(rel)
-    targetPath = isAbsolute ? rel : `${root}/${rel}`
-  }
+  const targetPath = resolveNativeFsWatchTargetPath(watchRoot, ev)
+  if (!targetPath || nativeFsWatchEchoSuppressor.shouldSuppress(targetPath)) return []
   return [{ type: FileChangeType.UPDATED, resource: URI.file(targetPath) }]
 }
 
@@ -429,7 +437,9 @@ export class ParentBackedNativeFsProvider {
   async writeFile(resource: URI, content: Uint8Array) {
     const p = this.uriPath(resource)
     assertUnderRoot(this.rootFsPathNormalized, p)
-    await rpc('nativeFsWriteBinary', { path: p, base64: bytesToBase64(content) })
+    await this.runLocalMutation([p], () =>
+      rpc('nativeFsWriteBinary', { path: p, base64: bytesToBase64(content) })
+    )
     this._fire({ type: FileChangeType.UPDATED, resource })
   }
 
@@ -466,10 +476,12 @@ export class ParentBackedNativeFsProvider {
     }
     this.fdMap.delete(fd)
     if (rec.dirty && rec.write) {
-      await rpc('nativeFsWriteBinary', {
-        path: rec.path,
-        base64: bytesToBase64(rec.buffer)
-      })
+      await this.runLocalMutation([rec.path], () =>
+        rpc('nativeFsWriteBinary', {
+          path: rec.path,
+          base64: bytesToBase64(rec.buffer)
+        })
+      )
       this._fire({ type: FileChangeType.UPDATED, resource: URI.file(rec.path) })
     }
   }
@@ -509,14 +521,16 @@ export class ParentBackedNativeFsProvider {
   async mkdir(resource: URI) {
     const p = this.uriPath(resource)
     assertUnderRoot(this.rootFsPathNormalized, p)
-    await rpc('nativeFsMkdir', { path: p })
+    await this.runLocalMutation([p], () => rpc('nativeFsMkdir', { path: p }))
     this._fire({ type: FileChangeType.ADDED, resource })
   }
 
   async delete(resource: URI, opts: { recursive?: boolean }) {
     const p = this.uriPath(resource)
     assertUnderRoot(this.rootFsPathNormalized, p)
-    await rpc('nativeFsDelete', { path: p, recursive: !!opts.recursive })
+    await this.runLocalMutation([p], () =>
+      rpc('nativeFsDelete', { path: p, recursive: !!opts.recursive })
+    )
     this._fire({ type: FileChangeType.DELETED, resource })
   }
 
@@ -525,7 +539,9 @@ export class ParentBackedNativeFsProvider {
     const tp = this.uriPath(to)
     assertUnderRoot(this.rootFsPathNormalized, fp)
     assertUnderRoot(this.rootFsPathNormalized, tp)
-    await rpc('nativeFsRename', { oldPath: fp, newPath: tp, overwrite: !!opts.overwrite })
+    await this.runLocalMutation([fp, tp], () =>
+      rpc('nativeFsRename', { oldPath: fp, newPath: tp, overwrite: !!opts.overwrite })
+    )
     this._fire(
       { type: FileChangeType.DELETED, resource: from },
       { type: FileChangeType.ADDED, resource: to },
@@ -572,6 +588,16 @@ export class ParentBackedNativeFsProvider {
 
   private _fire(...changes: IFileChange[]) {
     this._onDidChangeFile.fire(changes)
+  }
+
+  private async runLocalMutation<T>(paths: string[], task: () => Promise<T>): Promise<T> {
+    paths.forEach((path) => nativeFsWatchEchoSuppressor.mark(path))
+    try {
+      return await task()
+    } catch (error) {
+      paths.forEach((path) => nativeFsWatchEchoSuppressor.forget(path))
+      throw error
+    }
   }
 }
 

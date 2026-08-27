@@ -27,6 +27,7 @@ import {
   parseGitHistoryItems,
   type GitHistoryItem
 } from './gitScmHistory.js'
+import { createTrailingSingleFlight } from './gitScmRefresh.js'
 
 const BASELINE_SCHEME = 'aily-git-baseline'
 const EMPTY_SCHEME = 'aily-git-empty'
@@ -73,8 +74,7 @@ function workspaceFileUri(root: vscode.Uri, relativePath: string): vscode.Uri {
 function virtualUri(scheme: string, relativePath: string): vscode.Uri {
   return vscode.Uri.from({
     scheme,
-    path: `/${normalizeRelativePath(relativePath)}`,
-    query: `v=${Date.now()}-${Math.random().toString(36).slice(2)}`
+    path: `/${normalizeRelativePath(relativePath)}`
   })
 }
 
@@ -131,6 +131,7 @@ void getApi().then((api) => {
   let currentHistoryItemRemoteRef: vscode.SourceControlHistoryItemRef | undefined
   const currentHistoryRefsEmitter = new api.EventEmitter<void>()
   const historyItemRefsEmitter = new api.EventEmitter<vscode.SourceControlHistoryItemRefsChangeEvent>()
+  const baselineContentChangeEmitter = new api.EventEmitter<vscode.Uri>()
 
   const toHistoryItemRef = (ref: NativeGitHistoryRef): vscode.SourceControlHistoryItemRef => ({
     id: ref.id,
@@ -297,6 +298,7 @@ void getApi().then((api) => {
   updateScmPresentation('loading')
 
   api.workspace.registerTextDocumentContentProvider(BASELINE_SCHEME, {
+    onDidChange: baselineContentChangeEmitter.event,
     provideTextDocumentContent(uri: vscode.Uri): string {
       return baselineContentByUri.get(uri.toString()) ?? ''
     }
@@ -321,26 +323,20 @@ void getApi().then((api) => {
     }
   })
 
-  let refreshTimer: number | undefined
-  let refreshGeneration = 0
-  const scheduleRefresh = (delayMs = 120) => {
-    if (refreshTimer != null) {
-      window.clearTimeout(refreshTimer)
-    }
-    refreshTimer = window.setTimeout(() => {
-      refreshTimer = undefined
-      void refresh()
-    }, delayMs)
-  }
-
   const openDiff = async (entry: GitStatusEntry): Promise<void> => {
     const baselinePath = entry.originalPath || entry.path
     const baselineUri = virtualUri(BASELINE_SCHEME, baselinePath)
+    let baselineContent = ''
     try {
       const result = await readNativeGitHeadFile(workspaceRoot, baselinePath)
-      baselineContentByUri.set(baselineUri.toString(), result.content)
+      baselineContent = result.content
     } catch {
-      baselineContentByUri.set(baselineUri.toString(), '')
+      // 新增文件或无 HEAD 时，以空内容作为比较基线。
+    }
+    const baselineKey = baselineUri.toString()
+    if (baselineContentByUri.get(baselineKey) !== baselineContent) {
+      baselineContentByUri.set(baselineKey, baselineContent)
+      baselineContentChangeEmitter.fire(baselineUri)
     }
 
     const modifiedUri = isDeleted(entry)
@@ -348,18 +344,14 @@ void getApi().then((api) => {
       : workspaceFileUri(workspaceFolder.uri, entry.path)
     const title = `${entry.path}（Git 更改）`
     await api.commands.executeCommand('vscode.diff', baselineUri, modifiedUri, title, {
-      preview: false,
+      preview: true,
       preserveFocus: false
     })
   }
 
-  const refresh = async (): Promise<void> => {
-    const generation = ++refreshGeneration
+  const refresh = createTrailingSingleFlight(async () => {
     try {
       const result = await readNativeGitStatus(workspaceRoot)
-      if (generation !== refreshGeneration) {
-        return
-      }
       const initialized = result.initialized !== false
       repositoryInitialized = initialized
       if (!initialized) {
@@ -369,9 +361,6 @@ void getApi().then((api) => {
         return
       }
       const entries = parseGitPorcelainZ(result.status)
-      if (generation !== refreshGeneration) {
-        return
-      }
       changes.resourceStates = entries.map((entry) => {
         const presentation = statusPresentation(entry)
         return {
@@ -392,14 +381,22 @@ void getApi().then((api) => {
       sourceControl.count = entries.length
       updateScmPresentation('ready', entries.length > 0)
     } catch {
-      if (generation !== refreshGeneration) {
-        return
-      }
       changes.resourceStates = []
       sourceControl.count = 0
       repositoryInitialized = undefined
       updateScmPresentation('error')
     }
+  })
+
+  let refreshTimer: number | undefined
+  const scheduleRefresh = (delayMs = 120) => {
+    if (refreshTimer != null) {
+      window.clearTimeout(refreshTimer)
+    }
+    refreshTimer = window.setTimeout(() => {
+      refreshTimer = undefined
+      void refresh()
+    }, delayMs)
   }
 
   api.commands.registerCommand('aily.git.openDiff', async (entry: GitStatusEntry) => {
@@ -449,7 +446,8 @@ void getApi().then((api) => {
   const scheduleRefreshForUri = (uri: vscode.Uri) => {
     if (
       uri.scheme !== 'file' ||
-      api.workspace.getWorkspaceFolder(uri)?.uri.toString() !== workspaceFolder.uri.toString()
+      api.workspace.getWorkspaceFolder(uri)?.uri.toString() !== workspaceFolder.uri.toString() ||
+      uri.toString() === workspaceFolder.uri.toString()
     ) {
       return
     }
@@ -461,7 +459,7 @@ void getApi().then((api) => {
   watcher.onDidCreate(scheduleRefreshForUri)
   watcher.onDidChange(scheduleRefreshForUri)
   watcher.onDidDelete(scheduleRefreshForUri)
-  api.workspace.onDidSaveTextDocument((document) => scheduleRefreshForUri(document.uri))
+  // 保存会由文件服务 watcher 上报；再监听 onDidSaveTextDocument 会让一次写盘刷新两次。
 
   void refresh()
   void refreshHistoryRefs(false)

@@ -2051,7 +2051,9 @@ void getApi().then((vscode) => {
 
   /** 嵌入 Electron：系统级复制/删除/移动走宿主 fs.watch */
   let disposeEmbedSrcWatch: (() => void) | undefined
+  let embedSrcWatchGeneration = 0
   const setupEmbedSrcNativeWatcher = (): void => {
+    const generation = ++embedSrcWatchGeneration
     disposeEmbedSrcWatch?.()
     disposeEmbedSrcWatch = undefined
     if (!coderUseEmbedHostNativeFsBridge) {
@@ -2070,6 +2072,10 @@ void getApi().then((vscode) => {
       }
     })
       .then((dispose) => {
+        if (generation !== embedSrcWatchGeneration) {
+          dispose()
+          return
+        }
         disposeEmbedSrcWatch = dispose
       })
       .catch(() => {})

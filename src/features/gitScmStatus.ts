@@ -24,6 +24,12 @@ function isExcludedDirectoryPath(value: string): boolean {
     .some((segment) => SYSTEM_DIRECTORIES.has(segment.toLowerCase()))
 }
 
+function isTransientGitLockPath(value: string): boolean {
+  const segments = normalizeRelativePath(value).split('/')
+  const gitIndex = segments.findIndex((segment) => segment.toLowerCase() === '.git')
+  return gitIndex >= 0 && segments.at(-1)?.toLowerCase().endsWith('.lock') === true
+}
+
 /**
  * 判断工作区文件事件是否需要刷新 SCM。
  *
@@ -35,10 +41,17 @@ export function shouldRefreshGitScmForPath(
   repositoryInitialized: boolean | undefined
 ): boolean {
   const normalized = normalizeRelativePath(value)
-  if (!normalized) {
-    return repositoryInitialized !== false
+  if (!normalized || normalized === '.') {
+    // 递归 native watcher 可能只报告工作区根；该事件无法判断真实来源，且会被
+    // Git 命令写入 `.log` 反向触发。具体源码和 `.git` 事件仍会单独上报。
+    return false
   }
   if (isExcludedDirectoryPath(normalized)) {
+    return false
+  }
+  if (isTransientGitLockPath(normalized)) {
+    // `git status` 本身可能短暂创建 `.git/index.lock`。若把锁文件事件再次用于
+    // 刷新 SCM，会形成 status -> index.lock -> status 的自激循环。
     return false
   }
   if (repositoryInitialized === false) {
