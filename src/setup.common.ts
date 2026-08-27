@@ -157,9 +157,11 @@ export const CODER_EMBED_SCHEME_TO_WORKBENCH_COLOR_THEME: Record<
   CoderEmbedThemeScheme,
   string
 > = {
-  dark: 'Default Dark+',
+  // VS Code 1.109 renamed the built-in settings ids by dropping the "Default" prefix.
+  // Configuration loading migrates the legacy ids, but setColorTheme(id) does not.
+  dark: 'Dark+',
   /** Light+ 链路里 Activity Bar 仍偏深色；Modern 在主题里自带浅色 Activity Bar（#F8F8F8） */
-  light: 'Default Light Modern'
+  light: 'Light Modern'
 }
 
 export function parseCoderEmbedThemeParam(raw: string | null): CoderEmbedThemeScheme {

@@ -1,5 +1,7 @@
 import * as vscode from 'vscode'
 import { resolveStyleHost } from './embedWorkbenchStyles'
+import { getHostEmbedContext, onHostEmbedContextChanged } from './hostEmbedContext.js'
+import { initialHostLanguage, workbenchUiStrings } from './features/ailyWorkbenchI18n.js'
 
 /** 避免热重载重复挂载 */
 const SIDEBAR_NAV_ATTR = 'data-aily-embed-sidebar-nav'
@@ -10,19 +12,19 @@ const SIDEBAR_NAV_ITEMS = [
     id: 'explorer',
     command: 'workbench.view.explorer',
     icon: 'codicon-files',
-    title: '资源管理器'
+    titleKey: 'explorer'
   },
   {
     id: 'search',
     command: 'workbench.view.search',
     icon: 'codicon-search',
-    title: '搜索'
+    titleKey: 'search'
   },
   {
     id: 'scm',
     command: 'workbench.view.scm',
     icon: 'codicon-source-control',
-    title: 'Git'
+    titleKey: 'sourceControl'
   }
 ] as const
 
@@ -33,6 +35,25 @@ const SIDEBAR_POLL_MAX = 150
 const SIDEBAR_POLL_MS = 80
 
 let sidebarNavInstalled = false
+let mountedSidebarNav: HTMLElement | null = null
+
+function updateSidebarNavLabels(nav: HTMLElement): void {
+  const copy = workbenchUiStrings(
+    getHostEmbedContext()?.meta?.lang ?? initialHostLanguage()
+  ).sidebar
+  nav.setAttribute('aria-label', copy.toolbar)
+  for (const item of SIDEBAR_NAV_ITEMS) {
+    const button = nav.querySelector<HTMLButtonElement>(`[data-view-id="${item.id}"]`)
+    if (button == null) continue
+    const title = copy[item.titleKey]
+    button.title = title
+    button.setAttribute('aria-label', title)
+  }
+}
+
+onHostEmbedContextChanged(() => {
+  if (mountedSidebarNav != null) updateSidebarNavLabels(mountedSidebarNav)
+})
 
 /**
  * 在 shadowRoot / workbench 内查找侧栏 Part。
@@ -66,8 +87,6 @@ function createNavButton(
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = 'aily-embed-sidebar-nav__btn'
-  btn.title = item.title
-  btn.setAttribute('aria-label', item.title)
   btn.dataset.viewId = item.id
 
   const icon = document.createElement('span')
@@ -112,7 +131,6 @@ function mountSidebarNav(sidebar: HTMLElement): void {
   nav.className = 'aily-embed-sidebar-nav'
   nav.setAttribute(SIDEBAR_NAV_ATTR, 'true')
   nav.setAttribute('role', 'toolbar')
-  nav.setAttribute('aria-label', '侧栏视图')
 
   let activeId: SidebarNavId = 'explorer'
   const onSelect = (id: SidebarNavId) => {
@@ -124,6 +142,8 @@ function mountSidebarNav(sidebar: HTMLElement): void {
     nav.append(createNavButton(item, onSelect))
   }
 
+  mountedSidebarNav = nav
+  updateSidebarNavLabels(nav)
   setActiveNavButton(nav, activeId)
   sidebar.insertBefore(nav, sidebar.firstChild)
 }

@@ -9,13 +9,13 @@ import {
 import {
   clearStorage,
   coderWorkbenchColorThemeForScheme,
-  parseCoderEmbedThemeParam,
   remoteAuthority
 } from './setup.workbench'
 import { CustomEditorInput } from './features/customView.workbench'
 import { announceAilyCoderWorkbenchReady } from './embedLifecycle'
 import { getHostEmbedContext, onHostEmbedContextChanged } from './hostEmbedContext'
 import { installHostLifecycleBridge } from './hostLifecycle'
+import { createHostThemeSynchronizer } from './hostThemeSync'
 import './main.common'
 
 if (remoteAuthority != null) {
@@ -24,25 +24,40 @@ if (remoteAuthority != null) {
 
 installHostLifecycleBridge()
 
-let appliedHostTheme = parseCoderEmbedThemeParam(new URLSearchParams(window.location.search).get('theme'))
-
-async function syncHostTheme(): Promise<void> {
-  const requestedTheme = getHostEmbedContext()?.meta?.theme
-  if ((requestedTheme !== 'dark' && requestedTheme !== 'light') || requestedTheme === appliedHostTheme) {
-    return
-  }
-  appliedHostTheme = requestedTheme
+const hostThemeSync = createHostThemeSynchronizer(async requestedTheme => {
   const colorTheme = coderWorkbenchColorThemeForScheme(requestedTheme)
   const themeService = await getService(IWorkbenchThemeService)
-  await themeService.setColorTheme(colorTheme, ConfigurationTarget.USER)
+  const availableThemes = await themeService.getColorThemes()
+  const requestedColorTheme = availableThemes.find(theme => theme.settingsId === colorTheme)
+  const appliedTheme = await themeService.setColorTheme(
+    requestedColorTheme ?? colorTheme,
+    ConfigurationTarget.USER
+  )
+  if (appliedTheme == null) {
+    throw new Error(`Workbench theme is unavailable: ${colorTheme}`)
+  }
+}, (error, requestedTheme) => {
+  console.warn('[aily-coder] failed to synchronize host theme', requestedTheme, error)
+})
+
+function syncHostTheme(): void {
+  const requestedTheme = getHostEmbedContext()?.meta?.theme
+  if (requestedTheme !== 'dark' && requestedTheme !== 'light') {
+    return
+  }
+  void hostThemeSync.sync(requestedTheme)
 }
 
 onHostEmbedContextChanged(() => {
-  void syncHostTheme()
+  syncHostTheme()
 })
-void syncHostTheme()
+syncHostTheme()
 
 await announceAilyCoderWorkbenchReady()
+// A host snapshot may arrive while the Workbench theme extensions are still registering.
+// Re-run the latest request after the first committed Workbench frame so an early failed
+// application (notably a combined language + theme change) is deterministically retried.
+syncHostTheme()
 
 // document.querySelector('#customEditorPanel')!.addEventListener('click', async () => {
 //   const input = await createInstance(CustomEditorInput, undefined)

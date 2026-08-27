@@ -28,11 +28,13 @@ import {
   type GitHistoryItem
 } from './gitScmHistory.js'
 import { createTrailingSingleFlight } from './gitScmRefresh.js'
+import { initialHostLanguage, workbenchUiStrings } from './ailyWorkbenchI18n.js'
 
 const BASELINE_SCHEME = 'aily-git-baseline'
 const EMPTY_SCHEME = 'aily-git-empty'
 const REVISION_SCHEME = 'aily-git-revision'
 const baselineContentByUri = new Map<string, string>()
+const copy = workbenchUiStrings(initialHostLanguage()).git
 
 function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\//, '')
@@ -53,17 +55,17 @@ function statusPresentation(entry: GitStatusEntry): {
   switch (dominantStatus(entry)) {
     case '?':
     case 'A':
-      return { label: '新增', icon: 'diff-added' }
+      return { label: copy.added, icon: 'diff-added' }
     case 'D':
-      return { label: '删除', icon: 'diff-removed', strikeThrough: true }
+      return { label: copy.deleted, icon: 'diff-removed', strikeThrough: true }
     case 'R':
-      return { label: '重命名', icon: 'diff-renamed' }
+      return { label: copy.renamed, icon: 'diff-renamed' }
     case 'C':
-      return { label: '复制', icon: 'diff-added' }
+      return { label: copy.copied, icon: 'diff-added' }
     case 'U':
-      return { label: '冲突', icon: 'warning' }
+      return { label: copy.conflict, icon: 'warning' }
     default:
-      return { label: '修改', icon: 'diff-modified' }
+      return { label: copy.modified, icon: 'diff-modified' }
   }
 }
 
@@ -99,10 +101,10 @@ const manifest = {
   enabledApiProposals: ['scmActionButton', 'scmHistoryProvider'],
   contributes: {
     commands: [
-      { command: 'aily.git.init', title: 'Git: 初始化仓库' },
-      { command: 'aily.git.commit', title: 'Git: 提交' },
-      { command: 'aily.git.openDiff', title: 'Git: 打开更改' },
-      { command: 'aily.git.refresh', title: 'Git: 刷新' }
+      { command: 'aily.git.init', title: copy.initCommand },
+      { command: 'aily.git.commit', title: copy.commitCommand },
+      { command: 'aily.git.openDiff', title: copy.openChangeCommand },
+      { command: 'aily.git.refresh', title: copy.refreshCommand }
     ]
   }
 } as unknown as IExtensionManifest
@@ -117,12 +119,12 @@ void getApi().then((api) => {
 
   const workspaceRoot = workspaceFolder.uri.fsPath
   const sourceControl = api.scm.createSourceControl('aily-git', 'Git', workspaceFolder.uri)
-  const changes = sourceControl.createResourceGroup('changes', '更改')
+  const changes = sourceControl.createResourceGroup('changes', copy.changes)
   changes.hideWhenEmpty = true
-  sourceControl.inputBox.placeholder = '提交消息（按 Ctrl/Cmd+Enter 提交）'
+  sourceControl.inputBox.placeholder = copy.commitPlaceholder
   sourceControl.acceptInputCommand = {
     command: 'aily.git.commit',
-    title: '提交'
+    title: copy.commit
   }
 
   let repositoryInitialized: boolean | undefined
@@ -138,10 +140,10 @@ void getApi().then((api) => {
     name: ref.name,
     revision: ref.revision,
     category: ref.category === 'tag'
-      ? 'Tags'
+      ? copy.tags
       : ref.category === 'remote'
-        ? 'Remote Branches'
-        : 'Branches',
+        ? copy.remoteBranches
+        : copy.branches,
     icon: new api.ThemeIcon(ref.category === 'tag' ? 'tag' : 'git-branch')
   })
 
@@ -278,19 +280,19 @@ void getApi().then((api) => {
     const initialized = state === 'ready'
     sourceControl.inputBox.enabled = initialized || state === 'uninitialized'
     sourceControl.inputBox.placeholder = initialized
-      ? '提交消息（按 Ctrl/Cmd+Enter 提交）'
+      ? copy.commitPlaceholder
       : state === 'uninitialized'
-        ? '首次提交消息（提交时自动初始化 Git 仓库）'
-        : 'Git 暂不可用'
+        ? copy.firstCommitPlaceholder
+        : copy.unavailablePlaceholder
     sourceControl.acceptInputCommand = {
       command: 'aily.git.commit',
-      title: state === 'uninitialized' ? '初始化并提交' : '提交'
+      title: state === 'uninitialized' ? copy.initializeAndCommit : copy.commit
     }
     sourceControl.actionButton = {
       command: {
         command: 'aily.git.commit',
-        title: state === 'uninitialized' ? '初始化并提交' : '提交',
-        shortTitle: state === 'uninitialized' ? '首次提交' : '提交'
+        title: state === 'uninitialized' ? copy.initializeAndCommit : copy.commit,
+        shortTitle: state === 'uninitialized' ? copy.firstCommit : copy.commit
       },
       enabled: state === 'uninitialized' || (initialized && hasChanges)
     }
@@ -342,7 +344,7 @@ void getApi().then((api) => {
     const modifiedUri = isDeleted(entry)
       ? virtualUri(EMPTY_SCHEME, entry.path)
       : workspaceFileUri(workspaceFolder.uri, entry.path)
-    const title = `${entry.path}（Git 更改）`
+    const title = copy.diffTitle(entry.path)
     await api.commands.executeCommand('vscode.diff', baselineUri, modifiedUri, title, {
       preview: true,
       preserveFocus: false
@@ -367,7 +369,7 @@ void getApi().then((api) => {
           resourceUri: workspaceFileUri(workspaceFolder.uri, entry.path),
           command: {
             command: 'aily.git.openDiff',
-            title: '打开更改',
+            title: copy.openChange,
             arguments: [entry]
           },
           contextValue: 'ailyGitDiffable',
@@ -411,21 +413,21 @@ void getApi().then((api) => {
     try {
       const result = await initializeNativeGitRepository(workspaceRoot)
       await Promise.all([refresh(), refreshHistoryRefs(false)])
-      void api.window.showInformationMessage(result.summary || 'Git 仓库初始化成功')
+      void api.window.showInformationMessage(result.summary || copy.repositoryInitialized)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      await api.window.showErrorMessage(`Git 初始化失败：${detail}`)
+      await api.window.showErrorMessage(copy.initFailed(detail))
     }
   })
 
   api.commands.registerCommand('aily.git.commit', async () => {
     if (repositoryInitialized == null) {
-      await api.window.showWarningMessage('Git 暂不可用，请刷新后重试')
+      await api.window.showWarningMessage(copy.temporarilyUnavailable)
       return
     }
     const message = sourceControl.inputBox.value.trim()
     if (!message) {
-      await api.window.showWarningMessage('请输入提交消息')
+      await api.window.showWarningMessage(copy.enterCommitMessage)
       return
     }
 
@@ -434,11 +436,11 @@ void getApi().then((api) => {
       const result = await commitNativeGitChanges(workspaceRoot, message)
       sourceControl.inputBox.value = ''
       await Promise.all([refresh(), refreshHistoryRefs(false)])
-      void api.window.showInformationMessage(result.summary || 'Git 提交成功')
+      void api.window.showInformationMessage(result.summary || copy.commitSucceeded)
     } catch (error) {
       await refresh()
       const detail = error instanceof Error ? error.message : String(error)
-      await api.window.showErrorMessage(`Git 提交失败：${detail}`)
+      await api.window.showErrorMessage(copy.commitFailed(detail))
     }
   })
 

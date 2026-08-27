@@ -47,7 +47,7 @@ import { setCoderWorkbenchQueryRoot } from './coderWorkbenchDom.js'
 import { installAilyViewInlineRenameHost } from './features/ailyViewInlineRename.js'
 import { installNativeTextSearchProvider } from './features/nativeTextSearchProvider.js'
 
-/** 与宿主 `?theme=` 共用：dark→Default Dark+、light→Default Light Modern（见 setup.common.ts） */
+/** 与宿主 `?theme=` 共用：dark→Dark+、light→Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
 export {
   CODER_EMBED_SCHEME_TO_WORKBENCH_COLOR_THEME,
@@ -223,7 +223,9 @@ if (coderEmbedThemeQueryPresent) {
     await updateUserConfiguration(JSON.stringify(settings, null, 4))
 
     const themeSvc = await getService(IWorkbenchThemeService)
-    await themeSvc.setColorTheme(nextColorTheme, ConfigurationTarget.USER)
+    const availableThemes = await themeSvc.getColorThemes()
+    const requestedColorTheme = availableThemes.find(theme => theme.settingsId === nextColorTheme)
+    await themeSvc.setColorTheme(requestedColorTheme ?? nextColorTheme, ConfigurationTarget.USER)
   } catch {
     /* ignore */
   }

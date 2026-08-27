@@ -211,6 +211,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       const languageChanged = nextLanguage !== this.#language
       this.#language = nextLanguage
       if (languageChanged && this.#view != null) {
+        this.#view.title = this.#copy().panelTitle
         this.#renderWebviewHtml()
         return
       }
@@ -242,6 +243,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.#view = view
+    view.title = this.#copy().panelTitle
     view.webview.options = { enableScripts: true }
     this.#renderWebviewHtml()
     view.webview.onDidReceiveMessage((message: WebviewMessage) => {
@@ -413,7 +415,7 @@ export type ComponentLibraryViewRegistration = vscode.Disposable & { refresh(): 
 export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): ComponentLibraryViewRegistration {
   const provider = new ComponentLibraryViewProvider(vscodeApi)
   const registration = vscodeApi.window.registerWebviewViewProvider(AILY_COMPONENT_LIBRARY_VIEW_ID, provider, { webviewOptions: { retainContextWhenHidden: true } })
-  const closeMenuItem = MenuRegistry.appendMenuItem(MenuId.AuxiliaryBarTitle, {
+  const registerCloseMenuItem = () => MenuRegistry.appendMenuItem(MenuId.AuxiliaryBarTitle, {
     command: {
       id: 'workbench.action.closeAuxiliaryBar',
       title: libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close,
@@ -426,8 +428,17 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
       ContextKeyExpr.notEquals('config.workbench.activityBar.location', 'default')
     )
   })
+  let closeMenuItem = registerCloseMenuItem()
+  let closeTitle = libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close
+  const unsubscribeCloseTitle = onHostEmbedContextChanged(() => {
+    const nextTitle = libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close
+    if (nextTitle === closeTitle) return
+    closeTitle = nextTitle
+    closeMenuItem.dispose()
+    closeMenuItem = registerCloseMenuItem()
+  })
   return {
-    dispose: () => { provider.dispose(); registration.dispose(); closeMenuItem.dispose() },
+    dispose: () => { provider.dispose(); registration.dispose(); closeMenuItem.dispose(); unsubscribeCloseTitle() },
     refresh: () => provider.refresh()
   }
 }

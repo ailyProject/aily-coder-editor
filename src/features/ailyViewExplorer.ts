@@ -23,6 +23,7 @@ import {
   toggleAilyComponentLibraryPanel
 } from './ailyComponentLibraryView.js'
 import { libraryStrings } from './ailyComponentLibraryI18n.js'
+import { initialHostLanguage, workbenchUiStrings } from './ailyWorkbenchI18n.js'
 import {
   startVirtualTreeInlineRename,
   validateRenameEntryName
@@ -213,11 +214,13 @@ function withHostBoardDescription(node: ProjectTreeNode): ProjectTreeNode {
 // 工程视图节点蓝图：只保留用户源码、工程配置与项目库三个入口。
 // Aily View 的直属节点默认展开；更深层的真实目录仍由用户按需展开。
 // User View 直接映射磁盘目录；Library 合并本地库与已安装 Aily 库的虚拟映射；Config 收纳根 package.json 工程配置。
+const initialAilyViewCopy = workbenchUiStrings(initialHostLanguage()).ailyView
+
 const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
     id: 'user-view',
     type: 'directory',
-    label: 'User View',
+    label: initialAilyViewCopy.userView,
     icon: 'files',
     path: 'sketch/src',
     expandable: true,
@@ -227,7 +230,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
     id: 'config',
     type: 'group',
-    label: 'Config',
+    label: initialAilyViewCopy.config,
     icon: 'settings-gear',
     expandable: true,
     expandedByDefault: true,
@@ -248,7 +251,7 @@ const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
     id: 'library',
     type: 'directory',
-    label: 'Library',
+    label: initialAilyViewCopy.library,
     icon: 'folder-library',
     path: 'sketch/libraries',
     expandable: true,
@@ -288,7 +291,7 @@ const NODE_MODULES_SKIP = new Set(['.bin', '.cache'])
 const INSTALLED_LIBRARIES_EMPTY: ProjectTreeNode = {
   id: INSTALLED_LIBRARIES_EMPTY_ID,
   type: 'status',
-  label: 'No external libraries installed yet.',
+  label: initialAilyViewCopy.noExternalLibraries,
   icon: 'info',
   description: NODE_MODULES_REL,
   expandable: false,
@@ -300,7 +303,7 @@ const INSTALLED_LIBRARIES_EMPTY: ProjectTreeNode = {
 const COMPONENT_LIBRARIES_EMPTY: ProjectTreeNode = {
   id: COMPONENT_LIBRARIES_EMPTY_ID,
   type: 'status',
-  label: 'No project libraries yet.',
+  label: initialAilyViewCopy.noProjectLibraries,
   icon: 'info',
   description: COMPONENTS_REL,
   expandable: false,
@@ -312,7 +315,7 @@ const COMPONENT_LIBRARIES_EMPTY: ProjectTreeNode = {
 const PLATFORM_PACKAGES_EMPTY: ProjectTreeNode = {
   id: PLATFORM_PACKAGES_EMPTY_ID,
   type: 'status',
-  label: 'No platform packages resolved yet.',
+  label: initialAilyViewCopy.noPlatformPackages,
   icon: 'info',
   description: 'sdk / compiler / tools',
   expandable: false,
