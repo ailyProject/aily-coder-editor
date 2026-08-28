@@ -133,6 +133,18 @@ test('scans SDK libraries and installs a complete component atomically', async t
     await readFile(path.join(workspaceRoot, 'sketch', 'libraries', 'AilyTimer', 'src', 'AilyTimer.h'), 'utf8'),
     '#pragma once\n',
   )
+  assert.deepEqual(
+    JSON.parse(await readFile(
+      path.join(workspaceRoot, 'sketch', 'libraries', 'AilyTimer', '.aily-component-library.json'),
+      'utf8',
+    )),
+    {
+      source: 'arduino-platform',
+      libraryId: before[0].id,
+      name: 'Aily Timer',
+      version: '1.2.3',
+    },
+  )
 
   const after = await scanComponentLibraries({ workspaceRoot, appDataPath })
   assert.equal(after[0].installed, true)

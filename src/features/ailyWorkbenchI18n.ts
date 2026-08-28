@@ -95,9 +95,9 @@ const EN_AILY_VIEW: AilyViewStrings = {
   userView: 'User View',
   config: 'Config',
   library: 'Library',
-  noExternalLibraries: 'No external libraries installed yet.',
-  noProjectLibraries: 'No project libraries yet.',
-  noPlatformPackages: 'No platform packages resolved yet.'
+  noExternalLibraries: 'No external libraries installed yet',
+  noProjectLibraries: 'No project libraries yet',
+  noPlatformPackages: 'No platform packages resolved yet'
 }
 
 const ZH_CN: WorkbenchUiStrings = {
@@ -141,9 +141,9 @@ const ZH_CN: WorkbenchUiStrings = {
     userView: '用户视图',
     config: '配置',
     library: '库',
-    noExternalLibraries: '尚未安装外部库。',
-    noProjectLibraries: '暂无项目库。',
-    noPlatformPackages: '尚未解析平台软件包。'
+    noExternalLibraries: '尚未安装外部库',
+    noProjectLibraries: '暂无项目库',
+    noPlatformPackages: '尚未解析平台软件包'
   }
 }
 
@@ -188,9 +188,9 @@ const ZH_HK: WorkbenchUiStrings = {
     userView: '使用者檢視',
     config: '設定',
     library: '程式庫',
-    noExternalLibraries: '尚未安裝外部程式庫。',
-    noProjectLibraries: '暫無專案程式庫。',
-    noPlatformPackages: '尚未解析平台套件。'
+    noExternalLibraries: '尚未安裝外部程式庫',
+    noProjectLibraries: '暫無專案程式庫',
+    noPlatformPackages: '尚未解析平台套件'
   }
 }
 
@@ -208,51 +208,51 @@ const LOCALIZED_SIDEBARS: Readonly<Record<string, SidebarStrings>> = {
 const LOCALIZED_AILY_VIEWS: Readonly<Record<string, AilyViewStrings>> = {
   ja: {
     userView: 'ユーザービュー', config: '設定', library: 'ライブラリ',
-    noExternalLibraries: '外部ライブラリはまだインストールされていません。',
-    noProjectLibraries: 'プロジェクトライブラリはまだありません。',
-    noPlatformPackages: 'プラットフォームパッケージはまだ解決されていません。'
+    noExternalLibraries: '外部ライブラリはまだインストールされていません',
+    noProjectLibraries: 'プロジェクトライブラリはまだありません',
+    noPlatformPackages: 'プラットフォームパッケージはまだ解決されていません'
   },
   ko: {
     userView: '사용자 보기', config: '구성', library: '라이브러리',
-    noExternalLibraries: '설치된 외부 라이브러리가 없습니다.',
-    noProjectLibraries: '프로젝트 라이브러리가 없습니다.',
-    noPlatformPackages: '확인된 플랫폼 패키지가 없습니다.'
+    noExternalLibraries: '설치된 외부 라이브러리가 없습니다',
+    noProjectLibraries: '프로젝트 라이브러리가 없습니다',
+    noPlatformPackages: '확인된 플랫폼 패키지가 없습니다'
   },
   de: {
     userView: 'Benutzeransicht', config: 'Konfiguration', library: 'Bibliothek',
-    noExternalLibraries: 'Noch keine externen Bibliotheken installiert.',
-    noProjectLibraries: 'Noch keine Projektbibliotheken vorhanden.',
-    noPlatformPackages: 'Noch keine Plattformpakete aufgelöst.'
+    noExternalLibraries: 'Noch keine externen Bibliotheken installiert',
+    noProjectLibraries: 'Noch keine Projektbibliotheken vorhanden',
+    noPlatformPackages: 'Noch keine Plattformpakete aufgelöst'
   },
   fr: {
     userView: 'Vue utilisateur', config: 'Configuration', library: 'Bibliothèque',
-    noExternalLibraries: 'Aucune bibliothèque externe installée.',
-    noProjectLibraries: 'Aucune bibliothèque de projet.',
-    noPlatformPackages: 'Aucun paquet de plateforme résolu.'
+    noExternalLibraries: 'Aucune bibliothèque externe installée',
+    noProjectLibraries: 'Aucune bibliothèque de projet',
+    noPlatformPackages: 'Aucun paquet de plateforme résolu'
   },
   es: {
     userView: 'Vista de usuario', config: 'Configuración', library: 'Biblioteca',
-    noExternalLibraries: 'Aún no hay bibliotecas externas instaladas.',
-    noProjectLibraries: 'Aún no hay bibliotecas del proyecto.',
-    noPlatformPackages: 'Aún no hay paquetes de plataforma resueltos.'
+    noExternalLibraries: 'Aún no hay bibliotecas externas instaladas',
+    noProjectLibraries: 'Aún no hay bibliotecas del proyecto',
+    noPlatformPackages: 'Aún no hay paquetes de plataforma resueltos'
   },
   pt: {
     userView: 'Vista do usuário', config: 'Configuração', library: 'Biblioteca',
-    noExternalLibraries: 'Ainda não há bibliotecas externas instaladas.',
-    noProjectLibraries: 'Ainda não há bibliotecas do projeto.',
-    noPlatformPackages: 'Ainda não há pacotes de plataforma resolvidos.'
+    noExternalLibraries: 'Ainda não há bibliotecas externas instaladas',
+    noProjectLibraries: 'Ainda não há bibliotecas do projeto',
+    noPlatformPackages: 'Ainda não há pacotes de plataforma resolvidos'
   },
   ru: {
     userView: 'Пользовательское представление', config: 'Конфигурация', library: 'Библиотека',
-    noExternalLibraries: 'Внешние библиотеки пока не установлены.',
-    noProjectLibraries: 'Библиотеки проекта пока отсутствуют.',
-    noPlatformPackages: 'Пакеты платформы пока не определены.'
+    noExternalLibraries: 'Внешние библиотеки пока не установлены',
+    noProjectLibraries: 'Библиотеки проекта пока отсутствуют',
+    noPlatformPackages: 'Пакеты платформы пока не определены'
   },
   ar: {
     userView: 'عرض المستخدم', config: 'الإعدادات', library: 'المكتبة',
-    noExternalLibraries: 'لم يتم تثبيت مكتبات خارجية بعد.',
-    noProjectLibraries: 'لا توجد مكتبات للمشروع بعد.',
-    noPlatformPackages: 'لم يتم تحديد حزم المنصة بعد.'
+    noExternalLibraries: 'لم يتم تثبيت مكتبات خارجية بعد',
+    noProjectLibraries: 'لا توجد مكتبات للمشروع بعد',
+    noPlatformPackages: 'لم يتم تحديد حزم المنصة بعد'
   }
 }
 

@@ -38,6 +38,14 @@ import {
   listAilyLibraryProjections,
   type ProjectDirectoryEntry
 } from './ailyLibraryProjection.js'
+import {
+  AILY_LIBRARY_RECEIPT_FILE,
+  ARDUINO_LIBRARY_RECEIPT_FILE,
+  classifyWorkspaceLibrarySource,
+  iconForLibraryTreeSource,
+  LOCAL_LIBRARY_PACKAGE_FILE,
+  type LibraryTreeSource
+} from './ailyLibrarySource.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -385,7 +393,7 @@ type FsTreeElement = {
   /** 是否为 Installed Libraries 下的顶层包（用于 package 图标） */
   readonly isTopLevelPackage: boolean
   /** Library 下一级库的来源；仅用于区分库图标。 */
-  readonly librarySource?: 'aily' | 'arduino'
+  readonly librarySource?: LibraryTreeSource
 }
 
 // 提供给 TreeDataProvider：蓝图静态节点 + node_modules 动态节点
@@ -647,11 +655,8 @@ function iconForFsEntry(
   isTopLevelPackage: boolean,
   librarySource?: FsTreeElement['librarySource']
 ): string {
-  if (librarySource === 'aily') {
-    return 'sparkle'
-  }
-  if (librarySource === 'arduino') {
-    return 'circuit-board'
+  if (librarySource != null) {
+    return iconForLibraryTreeSource(librarySource)
   }
   if (isDirectory) {
     return isTopLevelPackage ? 'package' : 'folder'
@@ -704,6 +709,37 @@ async function readProjectDirectoryEntries(
   }
 }
 
+async function readOptionalProjectTextFile(
+  vscodeApi: typeof vscode,
+  relPath: string
+): Promise<string | undefined> {
+  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
+  if (root == null) {
+    return undefined
+  }
+  const segments = relPath.split('/').filter((segment) => segment.length > 0)
+  try {
+    const content = await vscodeApi.workspace.fs.readFile(
+      vscodeApi.Uri.joinPath(root, ...segments)
+    )
+    return new TextDecoder().decode(content)
+  } catch {
+    return undefined
+  }
+}
+
+async function classifyProjectLibraryDirectory(
+  vscodeApi: typeof vscode,
+  libraryRelPath: string
+): Promise<LibraryTreeSource> {
+  const [ailyReceipt, arduinoReceipt, packageJson] = await Promise.all([
+    readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${AILY_LIBRARY_RECEIPT_FILE}`),
+    readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${ARDUINO_LIBRARY_RECEIPT_FILE}`),
+    readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${LOCAL_LIBRARY_PACKAGE_FILE}`)
+  ])
+  return classifyWorkspaceLibrarySource({ ailyReceipt, arduinoReceipt, packageJson })
+}
+
 /** 列出目录真实子项；node_modules 与 Library 的直接子目录用库图标。 */
 async function listFsDirectoryChildren(
   vscodeApi: typeof vscode,
@@ -740,20 +776,26 @@ async function listFsDirectoryChildren(
       label: name,
       isDirectory,
       isTopLevelPackage:
-        (relPath === NODE_MODULES_REL || relPath === COMPONENTS_REL) && isDirectory,
-      librarySource:
-        relPath === COMPONENTS_REL && isDirectory ? 'arduino' : undefined
+        (relPath === NODE_MODULES_REL || relPath === COMPONENTS_REL) && isDirectory
     })
   }
 
-  out.sort((a, b) => {
+  const classified = relPath === COMPONENTS_REL
+    ? await Promise.all(out.map(async (item) => (
+        item.isDirectory
+          ? { ...item, librarySource: await classifyProjectLibraryDirectory(vscodeApi, item.relPath) }
+          : item
+      )))
+    : out
+
+  classified.sort((a, b) => {
     if (a.isDirectory !== b.isDirectory) {
       return a.isDirectory ? -1 : 1
     }
     return a.label.localeCompare(b.label)
   })
 
-  return out
+  return classified
 }
 
 /** 列出已安装 Aily 库最深连续 src 下的直属库，作为 Library 的虚拟直属子节点。 */

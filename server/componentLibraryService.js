@@ -542,6 +542,15 @@ export async function installComponentLibrary({
   )
   try {
     await copyDirectoryWithoutLinks(library.sourcePath, stagingPath)
+    await writeFile(
+      path.join(stagingPath, COMPONENT_LIBRARY_RECEIPT),
+      JSON.stringify({
+        source: 'arduino-platform',
+        libraryId: library.id,
+        name: library.name || library.folderName,
+        version: library.version,
+      }, null, 2),
+    )
     if (await pathExists(targetPath)) {
       return { ...library, installed: true, alreadyInstalled: true }
     }
