@@ -18,6 +18,7 @@ import {
 } from '@codingame/monaco-vscode-storage-service-override'
 import { URI } from '@codingame/monaco-vscode-api/vscode/vs/base/common/uri'
 import { StorageTarget } from '@codingame/monaco-vscode-api/vscode/vs/platform/storage/common/storage'
+import { IExplorerService } from '@codingame/monaco-vscode-api/vscode/vs/workbench/contrib/files/browser/files.service'
 import { ExtensionHostKind } from '@codingame/monaco-vscode-extensions-service-override'
 import { registerExtension } from '@codingame/monaco-vscode-api/extensions'
 import {
@@ -45,6 +46,7 @@ import { installEmbedWorkbenchStyles } from './embedWorkbenchStyles'
 import { installEmbedSidebarTopBar } from './embedSidebarTopBar'
 import { setCoderWorkbenchQueryRoot } from './coderWorkbenchDom.js'
 import { installAilyViewInlineRenameHost } from './features/ailyViewInlineRename.js'
+import { showNodeModulesInExplorer } from './features/coderDirectoryVisibility.js'
 import { installNativeTextSearchProvider } from './features/nativeTextSearchProvider.js'
 
 /** 与宿主 `?theme=` 共用：dark→Dark+、light→Light Modern（见 setup.common.ts） */
@@ -111,6 +113,24 @@ await initializeMonacoService(
   constructOptions,
   envOptions
 )
+
+/** 兼容旧版持久化设置：Explorer 显示 node_modules，搜索与 SCM 继续使用各自过滤链。 */
+async function migrateExplorerNodeModulesVisibility(): Promise<void> {
+  let configuration: Record<string, unknown>
+  try {
+    configuration = JSON.parse(await getUserConfiguration()) as Record<string, unknown>
+  } catch {
+    return
+  }
+
+  const migration = showNodeModulesInExplorer(configuration)
+  if (migration.changed) {
+    await updateUserConfiguration(JSON.stringify(migration.configuration, null, 4))
+    await (await getService(IExplorerService)).refresh()
+  }
+}
+
+await migrateExplorerNodeModulesVisibility()
 
 if (useEmbedHostLocalFolder) {
   try {

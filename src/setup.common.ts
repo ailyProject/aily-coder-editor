@@ -486,8 +486,7 @@ export const constructOptions: IWorkbenchConstructionOptions = {
       "**/.aily": true,
       "**/.build": true,
       "**/.log": true,
-      "**/.workspace-history": true,
-      "**/node_modules": true
+      "**/.workspace-history": true
     },
     "search.exclude": {
       "**/.aily": true,
