@@ -1,6 +1,6 @@
 {
-  "AILY_CODER": {
-    "TITLE": "Aily Coder",
+  "AILY_CODER_EDITOR": {
+    "TITLE": "Aily Coder Editor",
     "DESCRIPTION": "VS Code-style embedded editor required by Coder mode for browsing and editing Aily Code projects"
   }
 }

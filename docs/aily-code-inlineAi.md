@@ -6,7 +6,7 @@
 
 ## 1. 文档目标
 
-本文档定义 **aily-coder 内嵌代码编辑器** 的行内补全（Inline Completion / Ghost Text）方案，技术栈固定为：
+本文档定义 **aily-coder-editor 内嵌代码编辑器** 的行内补全（Inline Completion / Ghost Text）方案，技术栈固定为：
 
 | 组件 | 选型 | 职责 |
 |------|------|------|
@@ -56,7 +56,7 @@ flowchart LR
     Build[构建 · 烧录 · 依赖]
   end
 
-  subgraph embed["aily-coder iframe"]
+  subgraph embed["aily-coder-editor iframe"]
     Editor[Monaco 编辑器]
     Inline[行内 AI 补全]
     LSP[clangd LSP 客户端]
@@ -92,7 +92,7 @@ clangd 保证符号、类型、头文件路径正确；DeepSeek Coder 1.3B 在�
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ 浏览器 / Electron iframe（aily-coder）                        │
+│ 浏览器 / Electron iframe（aily-coder-editor）                        │
 │  ┌──────────────┐    ┌─────────────────────────────────┐  │
 │  │ Monaco Editor│───▶│ aiInlineCompletion Provider     │  │
 │  └──────┬───────┘    └──────────────┬──────────────────┘  │
@@ -197,7 +197,7 @@ sequenceDiagram
 4. 在模型加载页设置：`context_length=4096`、`gpu_offload=max`、`top_k=32`、`repeat_penalty=1.05`。
 5. `curl http://127.0.0.1:1234/v1/models` 确认 model id 与 `.env` 一致。
 
-### 4.4 aily-coder 环境变量
+### 4.4 aily-coder-editor 环境变量
 
 ```bash
 VITE_AI_INLINE_COMPLETION_URL=http://127.0.0.1:1234/v1
@@ -320,7 +320,7 @@ clangd 为内嵌编辑器提供 **非 AI** 的语言智能：
 ### 5.2 启动 LSP 代理
 
 ```bash
-# 终端 1：aily-coder 开发服务
+# 终端 1：aily-coder-editor 开发服务
 npm start
 
 # 终端 2：WebSocket ⇄ clangd stdio
@@ -429,7 +429,7 @@ clangd 索引质量直接决定 LSP 补全与诊断是否可用。按 [aily-code
 
 | ID | 任务 | 验收标准 |
 |----|------|----------|
-| IA-06 | Aily Blockly `code-editor-pro` iframe 加载 aily-coder | 嵌入模式下 inline + LSP 均可用 |
+| IA-06 | Aily Blockly `code-editor-pro` iframe 加载 aily-coder-editor | 嵌入模式下 inline + LSP 均可用 |
 | IA-07 | 宿主构建完成后刷新 bridge / compile_commands | Rebuild 后 clangd 诊断更新 |
 | IA-08 | Electron 下 LM Studio  localhost 可达 | 无 CORS 问题（fetch 127.0.0.1） |
 | IA-09 | 记录联调手册（本文 §8） | 新同学 30 分钟内跑通 |
@@ -461,10 +461,10 @@ clangd 索引质量直接决定 LSP 补全与诊断是否可用。按 [aily-code
 # T1 — LM Studio：UI 内 Start Server（1234）
 
 # T2 — LSP 代理
-cd child/aily-coder
+cd child/aily-coder-editor
 npm run lsp-proxy -- --compile-commands-dir=/absolute/path/to/project/.aily/bridge
 
-# T3 — aily-coder（确保 .env 已配 LM Studio）
+# T3 — aily-coder-editor（确保 .env 已配 LM Studio）
 npm start
 
 # T4 —（可选）Aily Blockly 宿主

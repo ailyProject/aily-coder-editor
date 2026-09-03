@@ -1,6 +1,19 @@
 {
-  "name": "@aily-project/subapp-aily-coder",
+  "name": "@aily-project/subapp-aily-coder-editor",
   "version": "0.1.2",
+  "description": "VS Code-style embedded editor subapp for Aily Coder projects",
+  "keywords": [
+    "aily",
+    "aily-coder-editor",
+    "subapp",
+    "code-editor",
+    "monaco",
+    "vscode"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ailyProject/aily-coder-editor.git"
+  },
   "type": "module",
   "main": "index.js",
   "hide": true,
@@ -23,10 +36,10 @@
     "uiIndex": "ui/index.html"
   },
   "ailySubapp": {
-    "id": "aily-coder",
-    "package": "@aily-project/subapp-aily-coder",
-    "namespace": "AILY_CODER",
-    "titleKey": "AILY_CODER.TITLE",
+    "id": "aily-coder-editor",
+    "package": "@aily-project/subapp-aily-coder-editor",
+    "namespace": "AILY_CODER_EDITOR",
+    "titleKey": "AILY_CODER_EDITOR.TITLE",
     "app": {
       "icon": "fa-light fa-code",
       "enabled": true,

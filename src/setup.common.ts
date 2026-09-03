@@ -104,10 +104,10 @@ installHostEmbedContextListener()
 
 /**
  * Extension Host 在 Worker 内发 BroadcastChannel；Worker 与 iframe 同源，与 Angular 父窗口往往不同源，父页 Listen 不到。
- * iframe 主线程收到后再 postMessage 给父窗口（与 code-editor-pro `AILY_CODER_REVEAL_IN_OS_CHANNEL` 一致）。
+ * iframe 主线程收到后再 postMessage 给父窗口（与 code-editor-pro `AILY_CODER_EDITOR_REVEAL_IN_OS_CHANNEL` 一致）。
  */
 const AILY_EMBED_OS_REVEAL_BC = 'aily-embed-os-reveal'
-const AILY_CODER_REVEAL_IN_OS_PM = 'aily-coder-reveal-in-os'
+const AILY_CODER_EDITOR_REVEAL_IN_OS_PM = 'aily-coder-editor-reveal-in-os'
 
 function installEmbedOsRevealRelayToParent(): void {
   if (typeof BroadcastChannel === 'undefined') {
@@ -125,7 +125,7 @@ function installEmbedOsRevealRelayToParent(): void {
         return
       }
       window.parent.postMessage(
-        { channel: AILY_CODER_REVEAL_IN_OS_PM, absPath: absPath.trim() },
+        { channel: AILY_CODER_EDITOR_REVEAL_IN_OS_PM, absPath: absPath.trim() },
         '*'
       )
     })

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const scriptPath = path.join(packageRoot, 'scripts', 'link-dev.mjs')
-const packageName = '@aily-project/subapp-aily-coder'
+const packageName = '@aily-project/subapp-aily-coder-editor'
 
 function runLink(args) {
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
@@ -20,10 +20,10 @@ function runLink(args) {
   assert.equal(result.status, 0, result.stderr || result.stdout)
 }
 
-test('dev link registers, discovers, and cleanly restores Aily Coder', async (t) => {
-  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-link-'))
+test('dev link registers, discovers, and cleanly restores Aily Coder Editor', async (t) => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-link-'))
   const installRoot = path.join(fixtureRoot, 'npm-global', 'app')
-  const packagePath = path.join(installRoot, 'node_modules', '@aily-project', 'subapp-aily-coder')
+  const packagePath = path.join(installRoot, 'node_modules', '@aily-project', 'subapp-aily-coder-editor')
   const indexPath = path.join(installRoot, 'subapp-index.json')
   const originalIndex = {
     'remote-only': {
@@ -50,9 +50,9 @@ test('dev link registers, discovers, and cleanly restores Aily Coder', async (t)
   const developmentIndex = JSON.parse(await readFile(indexPath, 'utf8'))
   assert.equal(developmentIndex.dev, true)
   assert.equal(developmentIndex['remote-only'].id, 'remote-only')
-  assert.equal(developmentIndex['aily-coder'].package, packageName)
-  assert.equal(developmentIndex['aily-coder'].app.extension, true)
-  assert.equal(developmentIndex['aily-coder'].i18n.locales.zh_cn.TITLE, 'Aily Coder')
+  assert.equal(developmentIndex['aily-coder-editor'].package, packageName)
+  assert.equal(developmentIndex['aily-coder-editor'].app.extension, true)
+  assert.equal(developmentIndex['aily-coder-editor'].i18n.locales.zh_cn.TITLE, 'Aily Coder Editor')
 
   runLink(['--app-root', installRoot, '--unlink'])
 
@@ -65,7 +65,7 @@ test('dev link registers, discovers, and cleanly restores Aily Coder', async (t)
 })
 
 test('dev unlink preserves another repository development link and shared index backup', async (t) => {
-  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-coexist-'))
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-coexist-'))
   const installRoot = path.join(fixtureRoot, 'npm-global', 'app')
   const otherSource = path.join(fixtureRoot, 'other-source')
   const otherPackage = '@aily-project/subapp-other'
@@ -99,7 +99,7 @@ test('dev unlink preserves another repository development link and shared index 
   const retainedIndex = JSON.parse(await readFile(indexPath, 'utf8'))
   assert.equal(retainedIndex.dev, true)
   assert.deepEqual(retainedIndex.other, otherDevelopmentIndex.other)
-  assert.equal(retainedIndex['aily-coder'], undefined)
+  assert.equal(retainedIndex['aily-coder-editor'], undefined)
   assert.equal(existsSync(`${indexPath}.aily-dev-backup`), true)
   assert.equal((await lstat(otherLink)).isSymbolicLink(), true)
 })

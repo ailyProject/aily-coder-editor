@@ -1,4 +1,4 @@
-# aily-coder
+# aily-coder-editor
 
 **Aily Blockly 内嵌代码编辑器子应用** — 基于 Monaco + VS Code API 的 Web 工作台，用于在宿主中直接打开、浏览与编辑 Aily Code 工程源码。
 
@@ -8,7 +8,7 @@
 
 > **请先阅读本节，再评估本仓库的职责边界。**
 
-| 维度 | Aily Blockly（主应用） | aily-coder（本仓库） |
+| 维度 | Aily Blockly（主应用） | aily-coder-editor（本仓库） |
 |------|------------------------|----------------------|
 | 角色 | 主产品：Blockly 可视化编程、工程管理、构建/烧录、库与板卡管理 | **子应用**：内嵌 iframe，承载「代码侧」可视化编辑 |
 | AI 工具链 | **核心所在**：对话、Agent、MCP、项目级 AI 工作流等 | **不承担**主 AI 能力；仅可选提供编辑器内行间补全等轻量体验 |
@@ -17,7 +17,7 @@
 
 **结论：**
 
-1. **aily-coder 不是独立 IDE，也不是 AI 产品本体。**
+1. **aily-coder-editor 不是独立 IDE，也不是 AI 产品本体。**
 2. **核心 AI 工具链、Blockly 逻辑与工程闭环均在 Aily Blockly 主仓库（Angular + Electron 宿主）中实现。**
 3. **本仓库的职责是：在宿主内提供 VS Code 风格的代码编辑 surface**，包括逻辑工程树（Aily View）、物理文件树、C/C++ 语言服务桥接，以及与宿主对齐的嵌入布局与原生文件系统桥接。
 
@@ -44,7 +44,7 @@ flowchart TB
     UI[库管理 · 板卡选择 · 项目面板]
   end
 
-  subgraph embed["aily-coder（本子应用 · iframe）"]
+  subgraph embed["aily-coder-editor（本子应用 · iframe）"]
     WB[Monaco VS Code Workbench]
     AV[Aily View / Files View]
     LSP[C/C++ LSP 客户端]
@@ -97,7 +97,7 @@ flowchart TB
 ## 目录概览
 
 ```text
-aily-coder/
+aily-coder-editor/
 ├── src/
 │   ├── entry.ts              # 入口（sandbox / loader）
 │   ├── setup.common.ts       # Workbench 与服务注入、嵌入 FS
@@ -118,8 +118,8 @@ aily-coder/
 
 ## 独立依赖包
 
-Coder 以 `@aily-project/subapp-aily-coder` 发布，不再复制到 Aily Blockly 的
-`child/aily-coder` 目录。包内包含：
+Coder 以 `@aily-project/subapp-aily-coder-editor` 发布，不再复制到 Aily Blockly 的
+`child/aily-coder-editor` 目录。包内包含：
 
 - `ui/`：符合统一子应用契约的生产 Workbench 静态资源；
 - `index.js`：与其它 Aily 子应用一致的 `serve --host --port` 入口；
@@ -145,7 +145,7 @@ npm pack
 ```bash
 AILY_SUBAPP_ROOT="/Users/downey/Library/aily-project/npm-global/app"
 npm install --prefix "$AILY_SUBAPP_ROOT" \
-  ./aily-project-subapp-aily-coder-0.1.2.tgz \
+  ./aily-project-subapp-aily-coder-editor-0.1.2.tgz \
   --omit=dev --save-exact --no-audit --no-fund
 ```
 
@@ -200,8 +200,8 @@ npm start
 `node index.js serve --host 127.0.0.1 --port 0` 启动，再以 iframe 形式嵌入代码编辑区域。宿主需：
 
 1. 传入工作区路径（如 `?folder=`）并建立 `parentBackedNativeFs`（Electron 场景）。
-2. 通过 `aily-coder-host-context` 通道推送 `HostEmbedContextV1`。
-3. 监听 `aily-coder-open-library-manager`、`aily-coder-open-board-selector` 等子应用请求，复用主应用已有 UI。
+2. 通过 `aily-coder-editor-host-context` 通道推送 `HostEmbedContextV1`。
+3. 监听 `aily-coder-editor-open-library-manager`、`aily-coder-editor-open-board-selector` 等子应用请求，复用主应用已有 UI。
 
 具体集成代码在 **Aily Blockly** 仓库的 `code-editor-pro` 等模块中维护。
 

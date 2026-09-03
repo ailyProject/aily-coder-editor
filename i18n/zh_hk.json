@@ -1,6 +1,6 @@
 {
-  "AILY_CODER": {
-    "TITLE": "Aily Coder",
+  "AILY_CODER_EDITOR": {
+    "TITLE": "Aily Coder Editor",
     "DESCRIPTION": "Coder 模式所需的 VS Code 風格內嵌程式碼編輯器，用於瀏覽和編輯 Aily Code 專案"
   }
 }

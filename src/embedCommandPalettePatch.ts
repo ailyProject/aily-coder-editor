@@ -21,6 +21,6 @@ export function installEmbedCommandPaletteBlock(): void {
 
   // 覆盖列表头：优先于 Workbench 已注册的 ShowAllCommandsAction
   CommandsRegistry.registerCommand(SHOW_COMMANDS, () => {
-    console.warn('[aily-coder] Command Palette disabled:', SHOW_COMMANDS)
+    console.warn('[aily-coder-editor] Command Palette disabled:', SHOW_COMMANDS)
   })
 }

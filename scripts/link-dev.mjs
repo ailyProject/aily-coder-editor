@@ -24,7 +24,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const packageJson = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'))
 const subapp = packageJson.ailySubapp || {}
 const packageName = String(subapp.package || packageJson.name || '').trim()
-const catalogId = String(subapp.id || 'aily-coder').trim()
+const catalogId = String(subapp.id || 'aily-coder-editor').trim()
 const markerPath = path.join(packageRoot, '.aily-dev.json')
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const booleanOptions = new Set(['help', 'skip-build', 'unlink', 'watch'])
@@ -213,7 +213,7 @@ async function loadCatalogLocales() {
     }
   }
   if (!locales.en?.TITLE || !locales.en?.DESCRIPTION) {
-    throw new Error('i18n/en.json must define AILY_CODER.TITLE and AILY_CODER.DESCRIPTION')
+    throw new Error('i18n/en.json must define AILY_CODER_EDITOR.TITLE and AILY_CODER_EDITOR.DESCRIPTION')
   }
   return locales
 }
@@ -302,7 +302,7 @@ function printHelp() {
   console.log(`Usage: npm run dev -- [options]
        npm run dev:link -- [options]
 
-Build and link Aily Coder into the same user-level npm subapp directory used in
+Build and link Aily Coder Editor into the same user-level npm subapp directory used in
 production. npm run dev also watches the Vite build and reloads the iframe.
 
 Options:
@@ -397,7 +397,7 @@ async function startWatchMode() {
 }
 
 if (!packageName || !catalogId || !subapp.namespace || !subapp.titleKey) {
-  throw new Error('package.json is missing aily-coder subapp metadata')
+  throw new Error('package.json is missing aily-coder-editor subapp metadata')
 }
 
 const options = parseArgs(process.argv.slice(2))

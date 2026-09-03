@@ -148,7 +148,7 @@ const AILY_EMBED_OS_REVEAL_CHANNEL = 'aily-embed-os-reveal'
  * 与 setup.common 中转用的 postMessage 通道一致；
  * LocalProcess 扩展共享主线程 window，可直接 postMessage 给 Angular 父窗口，避免 BroadcastChannel 异步派发与 close 之间的竞b态。
  */
-const AILY_CODER_REVEAL_IN_OS_PM = 'aily-coder-reveal-in-os'
+const AILY_CODER_EDITOR_REVEAL_IN_OS_PM = 'aily-coder-editor-reveal-in-os'
 
 // 命令清单：与 docs/aily-code工程视图与信息架构设计.md §7 严格对齐
 // 命令 id 用前缀 `ailyView.`，未来切换到 performTreeAction(nodeId, actionId) 时按 actionId 平滑替换
@@ -1431,7 +1431,7 @@ void getApi().then((vscode) => {
     ) {
       try {
         window.parent.postMessage(
-          { channel: AILY_CODER_REVEAL_IN_OS_PM, absPath: trimmed },
+          { channel: AILY_CODER_EDITOR_REVEAL_IN_OS_PM, absPath: trimmed },
           '*'
         )
         return true

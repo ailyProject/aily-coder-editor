@@ -2,7 +2,7 @@ import type { IWorkbenchLayoutService } from '@codingame/monaco-vscode-api'
 import { Parts } from '@codingame/monaco-vscode-workbench-service-override'
 
 /** 宿主 → iframe：请求重排 workbench（右侧面板开关导致 iframe 变窄时） */
-export const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-host-layout-refresh'
+export const CODER_HOST_LAYOUT_REFRESH_CHANNEL = 'aily-coder-editor-host-layout-refresh'
 
 function runLayoutRefresh(layoutService: IWorkbenchLayoutService): void {
   try {

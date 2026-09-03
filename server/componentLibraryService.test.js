@@ -84,7 +84,7 @@ test('groups the Arduino Library Manager index by library and keeps every versio
 })
 
 test('scans SDK libraries and installs a complete component atomically', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-components-'))
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-components-'))
   t.after(async () => {
     const { rm } = await import('node:fs/promises')
     await rm(tempRoot, { recursive: true, force: true })
@@ -156,7 +156,7 @@ test('scans SDK libraries and installs a complete component atomically', async t
 })
 
 test('resolves the active SDK from current boardDependencies without platform metadata', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-board-sdk-'))
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-board-sdk-'))
   t.after(() => rm(tempRoot, { recursive: true, force: true }))
 
   const workspaceRoot = path.join(tempRoot, 'project')
@@ -207,7 +207,7 @@ test('resolves the active SDK from current boardDependencies without platform me
 })
 
 test('removes only an exact Coder-managed Arduino registry library version', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-arduino-remove-'))
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-arduino-remove-'))
   t.after(async () => {
     const { rm } = await import('node:fs/promises')
     await rm(tempRoot, { recursive: true, force: true })
@@ -302,7 +302,7 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
 })
 
 test('removes managed Aily and Arduino libraries from local receipts without loading a catalog', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-offline-remove-'))
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-offline-remove-'))
   t.after(() => rm(tempRoot, { recursive: true, force: true }))
   const workspaceRoot = path.join(tempRoot, 'project')
   const librariesRoot = path.join(workspaceRoot, 'sketch', 'libraries')
@@ -356,7 +356,7 @@ test('removes managed Aily and Arduino libraries from local receipts without loa
 })
 
 test('selects the Coder index from the active main-application region', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-region-index-'))
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-region-index-'))
   t.after(() => rm(tempRoot, { recursive: true, force: true }))
   const appDataPath = path.join(tempRoot, 'appdata')
   await mkdir(appDataPath, { recursive: true })
@@ -399,7 +399,7 @@ test('rejects Coder index archives that can escape the staging directory', () =>
 })
 
 test('searches the regional Coder index and installs its ZIP under sketch/libraries', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-index-library-'))
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-index-library-'))
   t.after(() => rm(tempRoot, { recursive: true, force: true }))
   const workspaceRoot = path.join(tempRoot, 'project')
   const appDataPath = path.join(tempRoot, 'appdata')

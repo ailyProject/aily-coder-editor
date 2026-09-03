@@ -1,4 +1,4 @@
-name: Check and Deploy Aily Coder to NPM
+name: Check and Deploy Aily Coder Editor to NPM
 
 on:
   push:
@@ -51,7 +51,7 @@ jobs:
 
       - name: Create npm package
         run: |
-          package_dir="$RUNNER_TEMP/aily-coder-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          package_dir="$RUNNER_TEMP/aily-coder-editor-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$package_dir"
           npm pack --ignore-scripts . --pack-destination "$package_dir"
           shopt -s nullglob
@@ -64,8 +64,8 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: aily-coder-package
-          path: ${{ runner.temp }}/aily-coder-package-${{ github.run_id }}-${{ github.run_attempt }}/*.tgz
+          name: aily-coder-editor-package
+          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}/*.tgz
           if-no-files-found: error
 
   publish-default:
@@ -91,8 +91,8 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v4
         with:
-          name: aily-coder-package
-          path: ${{ runner.temp }}/aily-coder-package-${{ github.run_id }}-${{ github.run_attempt }}
+          name: aily-coder-editor-package
+          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Publish package to default registry
         env:
@@ -120,7 +120,7 @@ jobs:
             done
           }
 
-          package_dir="$RUNNER_TEMP/aily-coder-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          package_dir="$RUNNER_TEMP/aily-coder-editor-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           shopt -s nullglob
           package_tarballs=("$package_dir"/*.tgz)
           if [ "${#package_tarballs[@]}" -ne 1 ]; then
@@ -188,8 +188,8 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@v4
         with:
-          name: aily-coder-package
-          path: ${{ runner.temp }}/aily-coder-package-${{ github.run_id }}-${{ github.run_attempt }}
+          name: aily-coder-editor-package
+          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Publish package to registry 2
         env:
@@ -230,7 +230,7 @@ jobs:
           echo "//$REGISTRY_2_NO_PROTO/:_authToken=$TOKEN_2" >> .npmrc
           trap 'rm -f .npmrc' EXIT
 
-          package_dir="$RUNNER_TEMP/aily-coder-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          package_dir="$RUNNER_TEMP/aily-coder-editor-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           shopt -s nullglob
           package_tarballs=("$package_dir"/*.tgz)
           if [ "${#package_tarballs[@]}" -ne 1 ]; then
@@ -339,7 +339,7 @@ jobs:
               const merged = { ...remote, ...local }
               if (rootPackage.hide === true) {
                 const subapp = isObject(rootPackage.ailySubapp) ? rootPackage.ailySubapp : {}
-                const id = typeof subapp.id === "string" && subapp.id.trim() ? subapp.id.trim() : "aily-coder"
+                const id = typeof subapp.id === "string" && subapp.id.trim() ? subapp.id.trim() : "aily-coder-editor"
                 delete merged[id]
               }
 

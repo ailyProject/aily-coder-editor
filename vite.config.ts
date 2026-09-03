@@ -135,7 +135,7 @@ export default defineConfig({
     port: 5174,
     host: '0.0.0.0',
     fs: {
-      // 既允许从 child/aily-coder 软链路径启动，也允许访问真实仓库路径。
+      // 既允许从 child/aily-coder-editor 软链路径启动，也允许访问真实仓库路径。
       allow: serveRoots
     }
   },

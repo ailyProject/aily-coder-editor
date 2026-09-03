@@ -1,7 +1,7 @@
-/** 宿主 Angular ↔ 内嵌 aily-coder iframe：AI 编辑 Diff 预览通道 */
+/** 宿主 Angular ↔ 内嵌 aily-coder-editor iframe：AI 编辑 Diff 预览通道 */
 
-export const AILY_CODER_AI_EDIT_DIFF_CHANNEL = 'aily-coder-ai-edit-diff'
-export const AILY_CODER_AI_EDIT_DIFF_RESULT_CHANNEL = 'aily-coder-ai-edit-diff-result'
+export const AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL = 'aily-coder-editor-ai-edit-diff'
+export const AILY_CODER_EDITOR_AI_EDIT_DIFF_RESULT_CHANNEL = 'aily-coder-editor-ai-edit-diff-result'
 
 export type AiEditDiffFileType = 'create' | 'modify' | 'delete'
 
@@ -22,13 +22,13 @@ export interface AiEditDiffOpenPayload {
 }
 
 export type AiEditDiffHostMessage =
-  | { channel: typeof AILY_CODER_AI_EDIT_DIFF_CHANNEL; op: 'open'; payload: AiEditDiffOpenPayload }
-  | { channel: typeof AILY_CODER_AI_EDIT_DIFF_CHANNEL; op: 'close'; payload?: { previewId?: string } }
+  | { channel: typeof AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL; op: 'open'; payload: AiEditDiffOpenPayload }
+  | { channel: typeof AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL; op: 'close'; payload?: { previewId?: string } }
 
 export type AiEditDiffResultAction = 'acceptFile' | 'rejectFile' | 'acceptAll' | 'rejectAll'
 
 export interface AiEditDiffResultPayload {
-  channel: typeof AILY_CODER_AI_EDIT_DIFF_RESULT_CHANNEL
+  channel: typeof AILY_CODER_EDITOR_AI_EDIT_DIFF_RESULT_CHANNEL
   previewId: string
   action: AiEditDiffResultAction
   filePath?: string

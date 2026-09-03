@@ -66,28 +66,28 @@ export type HostEmbedContextV1 = {
   meta?: Record<string, unknown> & { theme?: 'dark' | 'light'; lang?: string }
 }
 
-export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-host-context'
+export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-editor-host-context'
 
 /** 子应用监听器就绪后主动向 Angular 宿主要最新快照。 */
-export const HOST_EMBED_CONTEXT_REQUEST_CHANNEL = 'aily-coder-host-context-request'
+export const HOST_EMBED_CONTEXT_REQUEST_CHANNEL = 'aily-coder-editor-host-context-request'
 
 /** iframe 主线程与 LocalProcess/Worker 扩展间同步宿主上下文。 */
 const HOST_EMBED_CONTEXT_BC = 'aily-embed-host-context'
 
 /** iframe → Angular：请求打开右上角 npm 库管理面板（Arduino 公共库归 Coder）。 */
-export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-open-library-manager'
+export const HOST_OPEN_LIBRARY_MANAGER_CHANNEL = 'aily-coder-editor-open-library-manager'
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_LIBRARY_MANAGER_CHANNEL 须一致 */
 export const AILY_EMBED_OPEN_LIBRARY_MANAGER_BC = 'aily-embed-open-library-manager'
 
 /** iframe → Angular：请求打开切换开发板弹窗（与 Header board-select 同源） */
-export const HOST_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-open-board-selector'
+export const HOST_OPEN_BOARD_SELECTOR_CHANNEL = 'aily-coder-editor-open-board-selector'
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_OPEN_BOARD_SELECTOR_CHANNEL 须一致 */
 export const AILY_EMBED_OPEN_BOARD_SELECTOR_BC = 'aily-embed-open-board-selector'
 
 /** iframe → Angular：写入系统剪贴板（iframe 内 Clipboard API 常被 Permissions-Policy 禁用） */
-export const HOST_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-clipboard-write'
+export const HOST_CLIPBOARD_WRITE_CHANNEL = 'aily-coder-editor-clipboard-write'
 
 /** 与 Angular code-editor-pro 中 AILY_EMBED_CLIPBOARD_WRITE_CHANNEL 须一致 */
 export const AILY_EMBED_CLIPBOARD_WRITE_BC = 'aily-embed-clipboard-write'

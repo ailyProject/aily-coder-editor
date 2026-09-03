@@ -10,7 +10,7 @@ import {
 const context = {
   actor: 'agent',
   actorId: 'subapp-agent-host',
-  workspaceRoot: '/tmp/aily-coder-rpc-project',
+  workspaceRoot: '/tmp/aily-coder-editor-rpc-project',
   developmentMode: 'coder',
 }
 

@@ -37,7 +37,7 @@ const hostThemeSync = createHostThemeSynchronizer(async requestedTheme => {
     throw new Error(`Workbench theme is unavailable: ${colorTheme}`)
   }
 }, (error, requestedTheme) => {
-  console.warn('[aily-coder] failed to synchronize host theme', requestedTheme, error)
+  console.warn('[aily-coder-editor] failed to synchronize host theme', requestedTheme, error)
 })
 
 function syncHostTheme(): void {

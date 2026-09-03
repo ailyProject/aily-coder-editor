@@ -5,7 +5,7 @@ import {
 } from '@codingame/monaco-vscode-api/extensions'
 import * as vscode from 'vscode'
 import {
-  AILY_CODER_AI_EDIT_DIFF_RESULT_CHANNEL,
+  AILY_CODER_EDITOR_AI_EDIT_DIFF_RESULT_CHANNEL,
   type AiEditDiffFilePayload,
   type AiEditDiffOpenPayload,
   type AiEditDiffResultAction
@@ -89,7 +89,7 @@ function postResultToHost(
   }
   window.parent.postMessage(
     {
-      channel: AILY_CODER_AI_EDIT_DIFF_RESULT_CHANNEL,
+      channel: AILY_CODER_EDITOR_AI_EDIT_DIFF_RESULT_CHANNEL,
       previewId,
       action,
       ...(filePath ? { filePath } : {})

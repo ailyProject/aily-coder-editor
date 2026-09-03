@@ -1,7 +1,7 @@
 import { IEditorService, StandaloneServices } from '@codingame/monaco-vscode-api'
 
-export const HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-host-lifecycle-request'
-export const HOST_LIFECYCLE_RESPONSE_CHANNEL = 'aily-coder-host-lifecycle-response'
+export const HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-editor-host-lifecycle-request'
+export const HOST_LIFECYCLE_RESPONSE_CHANNEL = 'aily-coder-editor-host-lifecycle-response'
 
 type HostLifecycleAction = 'status' | 'save-all'
 

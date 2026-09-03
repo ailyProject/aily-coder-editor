@@ -1,5 +1,5 @@
-export const AILY_CODER_READY_PROTOCOL_CHANNEL = 'aily-coder-ready-protocol'
-export const AILY_CODER_READY_CHANNEL = 'aily-coder-ready'
+export const AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL = 'aily-coder-editor-ready-protocol'
+export const AILY_CODER_EDITOR_READY_CHANNEL = 'aily-coder-editor-ready'
 
 const LIFECYCLE_PROTOCOL_VERSION = 1
 
@@ -21,7 +21,7 @@ function postLifecycleMessage(channel: string): void {
  * 宿主据此取消旧版本的 iframe-load 定时兜底。
  */
 export function announceAilyCoderReadyProtocol(): void {
-  postLifecycleMessage(AILY_CODER_READY_PROTOCOL_CHANNEL)
+  postLifecycleMessage(AILY_CODER_EDITOR_READY_PROTOCOL_CHANNEL)
 }
 
 /**
@@ -31,5 +31,5 @@ export async function announceAilyCoderWorkbenchReady(): Promise<void> {
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
   })
-  postLifecycleMessage(AILY_CODER_READY_CHANNEL)
+  postLifecycleMessage(AILY_CODER_EDITOR_READY_CHANNEL)
 }

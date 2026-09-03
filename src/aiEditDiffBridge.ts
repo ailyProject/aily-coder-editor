@@ -1,5 +1,5 @@
 import {
-  AILY_CODER_AI_EDIT_DIFF_CHANNEL,
+  AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL,
   type AiEditDiffHostMessage
 } from './aiEditDiffChannels.js'
 import { closeAiEditDiffPreview, openAiEditDiffPreview } from './features/aiEditDiff.js'
@@ -9,7 +9,7 @@ function isAiEditDiffHostMessage(data: unknown): data is AiEditDiffHostMessage {
     return false
   }
   const msg = data as { channel?: string; op?: string }
-  return msg.channel === AILY_CODER_AI_EDIT_DIFF_CHANNEL && typeof msg.op === 'string'
+  return msg.channel === AILY_CODER_EDITOR_AI_EDIT_DIFF_CHANNEL && typeof msg.op === 'string'
 }
 
 export function installAiEditDiffBridgeListener(): void {

@@ -100,7 +100,7 @@ function createNavButton(
         await vscode.commands.executeCommand(item.command)
         onSelect(item.id)
       } catch (err) {
-        console.warn('[aily-coder] sidebar nav command failed:', item.command, err)
+        console.warn('[aily-coder-editor] sidebar nav command failed:', item.command, err)
       }
     })()
   })
@@ -160,7 +160,7 @@ export async function installEmbedSidebarTopBar(container: ParentNode): Promise<
   const host = resolveStyleHost(container)
   const sidebar = await waitForSidebarPart(host)
   if (!sidebar) {
-    console.warn('[aily-coder] sidebar part not found; skip custom top bar')
+    console.warn('[aily-coder-editor] sidebar part not found; skip custom top bar')
     return
   }
 

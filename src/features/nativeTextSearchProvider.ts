@@ -29,7 +29,7 @@ import type {
   NativeTextSearchMatch
 } from '../parentBackedNativeFs.js'
 import {
-  AILY_CODER_SEARCH_MAX_RESULTS,
+  AILY_CODER_EDITOR_SEARCH_MAX_RESULTS,
   HOST_SEARCH_MAX_RESULTS,
   boundedPositiveInteger,
   createNativeTextSearchRequest,
@@ -40,7 +40,7 @@ let nativeSearchSequence = 0
 
 function nextNativeSearchRequestId(): string {
   nativeSearchSequence += 1
-  return `aily-coder-search-${Date.now().toString(36)}-${nativeSearchSequence.toString(36)}`
+  return `aily-coder-editor-search-${Date.now().toString(36)}-${nativeSearchSequence.toString(36)}`
 }
 
 function isValidRange(range: NativeSearchRange | undefined): range is NativeSearchRange {
@@ -117,7 +117,7 @@ class NativeTextSearchProvider implements ISearchResultProvider {
   ): Promise<ISearchComplete> {
     const configuredLimit = boundedPositiveInteger(
       query.maxResults,
-      AILY_CODER_SEARCH_MAX_RESULTS,
+      AILY_CODER_EDITOR_SEARCH_MAX_RESULTS,
       HOST_SEARCH_MAX_RESULTS
     )
     const fileMatches: FileMatch[] = []

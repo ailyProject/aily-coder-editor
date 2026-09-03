@@ -12,7 +12,7 @@ const entryPath = existsSync(developmentEntry)
   : productionEntry
 
 if (!existsSync(entryPath)) {
-  throw new Error(`Aily Coder Runtime has not been built: ${entryPath}`)
+  throw new Error(`Aily Coder Editor Runtime has not been built: ${entryPath}`)
 }
 
 await import(pathToFileURL(entryPath).href)

@@ -4,7 +4,7 @@ import type {
 } from '@codingame/monaco-vscode-api/vscode/vs/workbench/services/search/common/search'
 import type { NativeTextSearchRequest } from '../parentBackedNativeFs.js'
 
-export const AILY_CODER_SEARCH_MAX_RESULTS = 500
+export const AILY_CODER_EDITOR_SEARCH_MAX_RESULTS = 500
 export const HOST_SEARCH_MAX_RESULTS = 1000
 const DEFAULT_SEARCH_FILE_SIZE = 10 * 1024 * 1024
 const HOST_SEARCH_MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -83,7 +83,7 @@ export function createNativeTextSearchRequest(
     includeHidden: true,
     includeGlobs: enabledGlobPatterns(query.includePattern, folderQuery.includePattern),
     excludeGlobs: folderExcludePatterns(query, folderQuery),
-    maxResults: boundedPositiveInteger(maxResults, AILY_CODER_SEARCH_MAX_RESULTS, HOST_SEARCH_MAX_RESULTS),
+    maxResults: boundedPositiveInteger(maxResults, AILY_CODER_EDITOR_SEARCH_MAX_RESULTS, HOST_SEARCH_MAX_RESULTS),
     maxLineLength: boundedPositiveInteger(
       query.previewOptions?.charsPerLine,
       DEFAULT_PREVIEW_LENGTH,

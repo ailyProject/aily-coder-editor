@@ -20,10 +20,10 @@ import {
   resolveNativeFsWatchTargetPath
 } from './nativeFsWatchEvent.js'
 
-const CHANNEL = 'aily-coder-native-fs'
-export const CODEMBED_NATIVE_FS_REPLY = 'aily-coder-native-fs-reply'
+const CHANNEL = 'aily-coder-editor-native-fs'
+export const CODEMBED_NATIVE_FS_REPLY = 'aily-coder-editor-native-fs-reply'
 /** 宿主 → iframe：磁盘 watch 事件推送 */
-export const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-native-fs-watch-event'
+export const CODEMBED_NATIVE_FS_WATCH_EVENT = 'aily-coder-editor-native-fs-watch-event'
 
 export interface NativeFsWatchEventPayload {
   watchId?: number

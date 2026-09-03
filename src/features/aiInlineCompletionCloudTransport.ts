@@ -1,5 +1,5 @@
-export const HOST_CODE_COMPLETION_REQUEST_CHANNEL = 'aily-coder-code-completion-request'
-export const HOST_CODE_COMPLETION_EVENT_CHANNEL = 'aily-coder-code-completion-event'
+export const HOST_CODE_COMPLETION_REQUEST_CHANNEL = 'aily-coder-editor-code-completion-request'
+export const HOST_CODE_COMPLETION_EVENT_CHANNEL = 'aily-coder-editor-code-completion-event'
 
 export type CloudCompletionTriggerKind = 'automatic' | 'invoke'
 export type CloudCompletionFeedbackEvent =
@@ -38,7 +38,7 @@ export interface CloudCompletionRequest {
     partialAccept: boolean
   }
   client: {
-    name: 'aily-coder'
+    name: 'aily-coder-editor'
     version: string
     sessionId: string
   }
@@ -612,7 +612,7 @@ export class CloudInlineCompletionClient {
       context: input.context ?? [],
       capabilities: { stream: true, partialAccept: true },
       client: {
-        name: 'aily-coder',
+        name: 'aily-coder-editor',
         version: this.clientVersion,
         sessionId: this.sessionId
       }
@@ -750,7 +750,7 @@ export class CloudInlineCompletionClient {
 }
 
 export function createInlineCompletionSessionId(): string {
-  const key = 'aily-coder-inline-completion-session-id'
+  const key = 'aily-coder-editor-inline-completion-session-id'
   try {
     const existing = globalThis.localStorage?.getItem(key)
     if (existing != null && existing.length >= 8) {
