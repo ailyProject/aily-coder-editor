@@ -1,6 +1,6 @@
 {
   "name": "@aily-project/subapp-aily-coder-editor",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "VS Code-style embedded editor subapp for Aily Coder projects",
   "keywords": [
     "aily",
