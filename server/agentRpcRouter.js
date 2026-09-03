@@ -73,7 +73,6 @@ function mutationParams(params) {
 function searchParams(params) {
   return {
     query: requiredText(params, 'query', 256),
-    candidates: params.candidates === true,
     offset: boundedInteger(params.offset, 0, 0, Number.MAX_SAFE_INTEGER),
     limit: boundedInteger(params.limit, 25, 1, 50),
     forceRefresh: params.forceRefresh === true,
@@ -95,13 +94,11 @@ function classifyError(error) {
   const rules = [
     [/Workspace root .*does not exist|not an Aily Coder project/iu, 'CODER_PROJECT_REQUIRED'],
     [/must be copied exactly from coder_library_search/iu, 'CODER_LIBRARY_REF_INVALID'],
-    [/Official Arduino candidates require an exact version/iu, 'CODER_LIBRARY_VERSION_REQUIRED'],
-    [/must be an exact @aily-project\/lib-/iu, 'BLOCKLY_LIBRARY_PACKAGE_INVALID'],
-    [/does not contain src\.7z/iu, 'BLOCKLY_LIBRARY_ARCHIVE_MISSING'],
-    [/src\.7z/iu, 'BLOCKLY_LIBRARY_ARCHIVE_INVALID'],
-    [/no Blockly package provenance/iu, 'BLOCKLY_LIBRARY_PROVENANCE_REQUIRED'],
-    [/provenance metadata|belongs to another library package/iu, 'BLOCKLY_LIBRARY_PROVENANCE_CONFLICT'],
-    [/not a replaceable directory/iu, 'BLOCKLY_LIBRARY_PATH_CONFLICT'],
+    [/Aily Coder libraries require an exact version/iu, 'CODER_LIBRARY_VERSION_REQUIRED'],
+    [/archive checksum|archive size|archive contains unsafe|Symbolic links|archive entry escapes|does not contain one library root|library metadata|library version/iu, 'CODER_LIBRARY_ARCHIVE_INVALID'],
+    [/not a managed Aily Coder library/iu, 'CODER_LIBRARY_PROVENANCE_REQUIRED'],
+    [/conflicting Aily Coder library provenance|Multiple sketch\/libraries entries/iu, 'CODER_LIBRARY_PROVENANCE_CONFLICT'],
+    [/already exists and is not this managed Aily Coder library/iu, 'CODER_LIBRARY_PATH_CONFLICT'],
   ]
   const matched = rules.find(([pattern]) => pattern.test(message))
   return new CoderAgentRpcError(matched?.[1] ?? 'CODER_LIBRARY_FAILED', message)

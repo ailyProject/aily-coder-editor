@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import assert from 'node:assert/strict'
 import { gzip } from 'node:zlib'
 import { promisify } from 'node:util'
@@ -20,6 +21,10 @@ import {
   searchArduinoComponentLibraries,
   searchCoderLibraries,
 } from './componentLibraryService.js'
+import {
+  parseCoderLibraryIndex,
+  resolveCoderLibraryIndexUrl,
+} from './coderLibraryRegistry.js'
 
 const gzipAsync = promisify(gzip)
 
@@ -216,15 +221,15 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
   const indexPayload = {
     libraries: [{
       name: 'Servo',
-      version: '1.2.0',
+      version: '1.3.0',
       author: 'Arduino',
       sentence: 'Servo library',
       category: 'Device Control',
       architectures: ['avr'],
       types: ['Arduino'],
-      url: 'https://downloads.arduino.cc/libraries/Servo-1.2.0.zip',
-      archiveFileName: 'Servo-1.2.0.zip',
-      size: 123,
+      url: 'https://downloads.arduino.cc/libraries/Servo-1.3.0.zip',
+      archiveFileName: 'Servo-1.3.0.zip',
+      size: 124,
       checksum,
     }],
   }
@@ -253,17 +258,16 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
     query: 'Servo',
   })
   assert.equal(unmanagedSearch.libraries[0].installed, true)
+  assert.equal(unmanagedSearch.libraries[0].version, '1.3.0')
+  assert.equal(unmanagedSearch.libraries[0].installedVersion, '1.2.0')
   assert.equal(unmanagedSearch.libraries[0].managed, false)
 
-  await assert.rejects(
-    removeArduinoComponentLibrary({
-      workspaceRoot,
-      appDataPath,
-      libraryId,
-      version: '1.2.0',
-    }),
-    /no Coder Arduino installation metadata/u,
-  )
+  const ignored = await removeArduinoComponentLibrary({
+    workspaceRoot,
+    libraryId,
+    version: '1.2.0',
+  })
+  assert.equal(ignored.alreadyRemoved, true)
   assert.match(await readFile(path.join(componentRoot, 'library.properties'), 'utf8'), /name=Servo/u)
   await writeFile(
     path.join(componentRoot, '.aily-component-library.json'),
@@ -283,7 +287,6 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
 
   const removed = await removeArduinoComponentLibrary({
     workspaceRoot,
-    appDataPath,
     libraryId,
     version: '1.2.0',
   })
@@ -292,156 +295,225 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
 
   const repeated = await removeArduinoComponentLibrary({
     workspaceRoot,
-    appDataPath,
     libraryId,
     version: '1.2.0',
   })
   assert.equal(repeated.alreadyRemoved, true)
 })
 
-test('prefers the shared Blockly catalog and expands src.7z inside the npm package', async t => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-blockly-library-'))
+test('removes managed Aily and Arduino libraries from local receipts without loading a catalog', async t => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-offline-remove-'))
+  t.after(() => rm(tempRoot, { recursive: true, force: true }))
+  const workspaceRoot = path.join(tempRoot, 'project')
+  const librariesRoot = path.join(workspaceRoot, 'sketch', 'libraries')
+  const ailyRoot = path.join(librariesRoot, 'Offline_Aily')
+  const arduinoRoot = path.join(librariesRoot, 'Offline_Arduino')
+  const ailyRef = 'coder:0123456789abcdef01234567'
+  const arduinoId = 'arduino:offline-library'
+
+  await mkdir(ailyRoot, { recursive: true })
+  await mkdir(arduinoRoot, { recursive: true })
+  await writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({
+    name: 'offline-remove-test',
+    type: 'coder',
+    framework: 'arduino',
+  }))
+  await writeFile(path.join(ailyRoot, 'library.properties'), 'name=Offline Aily\nversion=1.0.0\n')
+  await writeFile(path.join(ailyRoot, '.aily-component-library.json'), JSON.stringify({
+    source: 'aily-coder-index',
+    libraryId: ailyRef,
+    name: 'Offline Aily',
+    version: '1.0.0',
+  }))
+  await writeFile(path.join(arduinoRoot, 'library.properties'), 'name=Offline Arduino\nversion=2.0.0\n')
+  await writeFile(path.join(arduinoRoot, '.aily-component-library.json'), JSON.stringify({
+    source: 'arduino-library-manager',
+    libraryId: arduinoId,
+    name: 'Offline Arduino',
+    version: '2.0.0',
+  }))
+
+  await assert.rejects(
+    removeCoderLibrary({ workspaceRoot, libraryRef: ailyRef, version: '1.0.1' }),
+    error => error?.code === 'CODER_LIBRARY_PROVENANCE_CONFLICT',
+  )
+  assert.match(await readFile(path.join(ailyRoot, 'library.properties'), 'utf8'), /Offline Aily/u)
+
+  const ailyRemoved = await removeCoderLibrary({
+    workspaceRoot,
+    libraryRef: ailyRef,
+    version: '1.0.0',
+  })
+  const arduinoRemoved = await removeArduinoComponentLibrary({
+    workspaceRoot,
+    libraryId: arduinoId,
+    version: '2.0.0',
+  })
+  assert.equal(ailyRemoved.removed, true)
+  assert.equal(arduinoRemoved.removed, true)
+  await assert.rejects(readFile(path.join(ailyRoot, 'library.properties')))
+  await assert.rejects(readFile(path.join(arduinoRoot, 'library.properties')))
+})
+
+test('selects the Coder index from the active main-application region', async t => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-region-index-'))
+  t.after(() => rm(tempRoot, { recursive: true, force: true }))
+  const appDataPath = path.join(tempRoot, 'appdata')
+  await mkdir(appDataPath, { recursive: true })
+  await writeFile(path.join(appDataPath, 'config.json'), JSON.stringify({
+    region: 'cn',
+    regions: {
+      cn: { resource: 'https://blockly.yiyu.pro/' },
+      eu: { resource: 'https://rs1.aily.pro/' },
+    },
+  }))
+  assert.equal(
+    await resolveCoderLibraryIndexUrl({ cacheRoot: appDataPath }),
+    'https://blockly.yiyu.pro/libraries-coder-index.json',
+  )
+
+  await writeFile(path.join(appDataPath, 'config.json'), JSON.stringify({
+    region: 'eu',
+    regions: {
+      cn: { resource: 'https://blockly.yiyu.pro/' },
+      eu: { resource: 'https://rs1.aily.pro/' },
+    },
+  }))
+  assert.equal(
+    await resolveCoderLibraryIndexUrl({ cacheRoot: appDataPath }),
+    'https://rs1.aily.pro/libraries-coder-index.json',
+  )
+})
+
+test('rejects Coder index archives that can escape the staging directory', () => {
+  assert.throws(() => parseCoderLibraryIndex({
+    libraries: [{
+      name: 'Unsafe Archive',
+      version: '1.0.0',
+      url: 'https://archives.example/unsafe.zip',
+      archiveFileName: '../unsafe.zip',
+      size: 10,
+      checksum: `SHA-256:${'0'.repeat(64)}`,
+    }],
+  }), /contains no valid libraries/)
+})
+
+test('searches the regional Coder index and installs its ZIP under sketch/libraries', async t => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-index-library-'))
   t.after(() => rm(tempRoot, { recursive: true, force: true }))
   const workspaceRoot = path.join(tempRoot, 'project')
   const appDataPath = path.join(tempRoot, 'appdata')
-  const packageName = '@aily-project/lib-arduinojson'
+  const archive = Buffer.from(
+    'UEsDBBQAAAAIAO9YI110vtPEQwAAAEMAAAAiAAAAQWlseV9UZXN0LTEuMi4zL2xpYnJhcnkucHJvcGVydGllc8tLzE21dczMqVQISS0u4SpLLSrOzM+zNdQz0jPmSixKzsgsSU0uKS1KLbbV4ipOzStJzUtOtQWpVcjJTCpKLKrkAgBQSwMEFAAAAAgA71gjXXgcNZYPAAAADQAAAB4AAABBaWx5X1Rlc3QtMS4yLjMvc3JjL0FpbHlUZXN0LmhTLihKTM9NVMjPS07lAgBQSwECFAMUAAAACADvWCNddL7TxEMAAABDAAAAIgAAAAAAAAAAAAAAgAEAAAAAQWlseV9UZXN0LTEuMi4zL2xpYnJhcnkucHJvcGVydGllc1BLAQIUAxQAAAAIAO9YI114HDWWDwAAAA0AAAAeAAAAAAAAAAAAAACAAYMAAABBaWx5X1Rlc3QtMS4yLjMvc3JjL0FpbHlUZXN0LmhQSwUGAAAAAAIAAgCcAAAAzgAAAAAA',
+    'base64',
+  )
+  const indexPayload = {
+    libraries: [{
+      name: 'Aily Test',
+      version: '1.2.3',
+      author: 'Aily',
+      sentence: 'A regional Coder library',
+      category: 'Device Control',
+      architectures: ['*'],
+      types: ['Arduino'],
+      dependencies: [{ name: 'Dependency Test' }],
+      providesIncludes: ['AilyTest.h'],
+      url: 'https://archives.example/Aily_Test-1.2.3.zip',
+      archiveFileName: 'Aily_Test-1.2.3.zip',
+      size: archive.byteLength,
+      checksum: 'SHA-256:e4aeda77c147a3218cd38908d2d1c88b58ddd13c35f090c3f1cf9240326a319f',
+    }],
+  }
+  const indexUrl = 'https://catalog.example/libraries-coder-index.json'
+  const fetched = []
+  const fetchImpl = async url => {
+    fetched.push(String(url))
+    if (String(url) === indexUrl) {
+      return new globalThis.Response(JSON.stringify(indexPayload), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (String(url) === indexPayload.libraries[0].url) {
+      return new globalThis.Response(archive, {
+        headers: { 'Content-Length': String(archive.byteLength) },
+      })
+    }
+    return new globalThis.Response('', { status: 404 })
+  }
+
   await mkdir(path.join(workspaceRoot, 'sketch', 'src'), { recursive: true })
-  await mkdir(appDataPath, { recursive: true })
+  await mkdir(path.join(appDataPath, 'sdk', 'test_1.0.0'), { recursive: true })
   await writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({
-    name: 'coder-json-test',
+    name: 'coder-index-test',
     type: 'coder',
     entry: 'src/main.cpp',
     dependencies: {},
-  }))
-  await writeFile(path.join(appDataPath, 'libraries-index.json'), JSON.stringify({
-    libraries: [{
-      name: 'lib-arduinojson',
-      displayName: 'ArduinoJson',
-      category: 'protocol',
-      tags: ['ArduinoJson', 'json'],
-    }],
-  }))
-  await writeFile(path.join(appDataPath, 'libraries.json'), JSON.stringify([{
-    name: packageName,
-    nickname: 'ArduinoJson',
-    version: '1.0.0',
-    description: 'JSON support',
-  }]))
-  await mkdir(path.join(workspaceRoot, 'sketch', 'libraries', 'ArduinoJson'), { recursive: true })
-  await writeFile(
-    path.join(workspaceRoot, 'sketch', 'libraries', 'ArduinoJson', 'ArduinoJson.h'),
-    '#pragma once\n',
-  )
-  await writeFile(path.join(workspaceRoot, 'sketch', 'library-cache.json'), JSON.stringify({
-    [packageName]: {
-      schemaVersion: 2,
-      sourceFingerprint: 'sha256:legacy',
-      targetNames: ['ArduinoJson'],
-    },
+    boardDependencies: { '@aily-project/sdk-test': '1.0.0' },
   }))
 
-  const preferred = await searchCoderLibraries({
+  const search = await searchCoderLibraries({
     workspaceRoot,
     appDataPath,
-    query: 'ArduinoJson JSON parse',
+    indexUrl,
+    fetchImpl,
+    query: 'AilyTest Dependency',
   })
-  assert.equal(preferred.tier, 'preferred')
-  assert.equal(preferred.libraries[0].libraryRef, `blockly:${packageName}`)
-  assert.equal(preferred.libraries[0].version, '1.0.0')
-  assert.deepEqual(preferred.libraries[0].matchedQueries, ['arduinojson', 'json'])
-  assert.ok(preferred.libraries[0].score > 0)
-
-  const runNpmCommand = async ({ projectRoot, args }) => {
-    const manifestPath = path.join(projectRoot, 'package.json')
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
-    if (args[0] === 'install') {
-      assert.ok(args.includes('--save-exact'))
-      manifest.dependencies[packageName] = '1.0.0'
-      const packageRoot = path.join(projectRoot, 'node_modules', '@aily-project', 'lib-arduinojson')
-      await mkdir(packageRoot, { recursive: true })
-      await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({
-        name: packageName,
-        nickname: 'ArduinoJson',
-        version: '1.0.0',
-      }))
-      await writeFile(path.join(packageRoot, 'src.7z'), 'test archive')
-    } else {
-      delete manifest.dependencies[packageName]
-      await rm(path.join(projectRoot, 'node_modules', '@aily-project', 'lib-arduinojson'), {
-        recursive: true,
-        force: true,
-      })
-    }
-    await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
-    return { stdout: '', stderr: '' }
-  }
-  const extractArchive = async ({ destination }) => {
-    const libraryRoot = path.join(destination, 'src', 'ArduinoJson')
-    await mkdir(libraryRoot, { recursive: true })
-    await writeFile(path.join(libraryRoot, 'ArduinoJson.h'), '#pragma once\n')
-  }
+  assert.equal(search.tier, 'preferred')
+  assert.equal(search.indexUrl, indexUrl)
+  assert.equal(search.libraries.length, 1)
+  assert.match(search.libraries[0].libraryRef, /^coder:[a-f0-9]{24}$/u)
+  assert.deepEqual(search.libraries[0].providesIncludes, ['AilyTest.h'])
+  assert.deepEqual(search.libraries[0].dependencies, [{ name: 'Dependency Test' }])
 
   const installed = await installCoderLibrary({
     workspaceRoot,
-    libraryRef: `blockly:${packageName}`,
-    version: '1.0.0',
-    runNpmCommand,
-    extractArchive,
+    appDataPath,
+    indexUrl,
+    fetchImpl,
+    libraryRef: search.libraries[0].libraryRef,
+    version: '1.2.3',
   })
-  assert.equal(installed.packageJsonLinked, true)
   assert.equal(installed.ready, true)
-  assert.equal(installed.archive, 'src.7z')
-  assert.equal(installed.packageDirectory, 'node_modules/@aily-project/lib-arduinojson')
-  assert.equal(installed.sourceDirectory, 'node_modules/@aily-project/lib-arduinojson/src')
-  assert.deepEqual(installed.libraryRoots, [
-    'node_modules/@aily-project/lib-arduinojson/src/ArduinoJson',
-  ])
-  assert.deepEqual(installed.removedLegacyRoots, ['ArduinoJson'])
+  assert.equal(installed.sourceDirectory, 'sketch/libraries/Aily_Test')
+  assert.deepEqual(installed.libraryRoots, ['sketch/libraries/Aily_Test'])
   assert.equal(
-    await readFile(path.join(
-      workspaceRoot,
-      'node_modules',
-      '@aily-project',
-      'lib-arduinojson',
-      'src',
-      'ArduinoJson',
-      'ArduinoJson.h',
-    ), 'utf8'),
+    await readFile(path.join(workspaceRoot, 'sketch', 'libraries', 'Aily_Test', 'src', 'AilyTest.h'), 'utf8'),
     '#pragma once\n',
   )
-  assert.equal(
-    JSON.parse(await readFile(path.join(workspaceRoot, 'package.json'), 'utf8')).dependencies[packageName],
-    '1.0.0',
+  const receipt = JSON.parse(await readFile(
+    path.join(workspaceRoot, 'sketch', 'libraries', 'Aily_Test', '.aily-component-library.json'),
+    'utf8',
+  ))
+  assert.equal(receipt.source, 'aily-coder-index')
+  assert.equal(receipt.indexUrl, indexUrl)
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(workspaceRoot, 'package.json'), 'utf8')).dependencies,
+    {},
   )
-  await assert.rejects(readFile(path.join(workspaceRoot, 'sketch', 'libraries', 'ArduinoJson', 'ArduinoJson.h')))
-  assert.equal(
-    JSON.parse(await readFile(path.join(workspaceRoot, 'sketch', 'library-cache.json'), 'utf8'))[packageName],
-    undefined,
+  assert.equal(fetched.includes(indexPayload.libraries[0].url), true)
+
+  await assert.rejects(
+    installCoderLibrary({
+      workspaceRoot,
+      appDataPath,
+      indexUrl,
+      fetchImpl,
+      libraryRef: 'blockly:@aily-project/lib-aily-test',
+      version: '1.2.3',
+    }),
+    error => error?.code === 'CODER_LIBRARY_REF_INVALID',
   )
 
   const removed = await removeCoderLibrary({
     workspaceRoot,
-    libraryRef: `blockly:${packageName}`,
-    version: '1.0.0',
-    runNpmCommand,
+    appDataPath,
+    indexUrl,
+    fetchImpl,
+    libraryRef: search.libraries[0].libraryRef,
+    version: '1.2.3',
   })
   assert.equal(removed.removed, true)
-  assert.deepEqual(removed.libraryRoots, [
-    'node_modules/@aily-project/lib-arduinojson/src/ArduinoJson',
-  ])
-  assert.deepEqual(removed.removedLegacyRoots, [])
-  assert.equal(removed.cacheCleaned, true)
-  assert.equal(
-    JSON.parse(await readFile(path.join(workspaceRoot, 'package.json'), 'utf8')).dependencies[packageName],
-    undefined,
-  )
-  await assert.rejects(readFile(path.join(
-    workspaceRoot,
-    'node_modules',
-    '@aily-project',
-    'lib-arduinojson',
-    'src',
-    'ArduinoJson',
-    'ArduinoJson.h',
-  )))
+  await assert.rejects(readFile(
+    path.join(workspaceRoot, 'sketch', 'libraries', 'Aily_Test', 'library.properties'),
+  ))
 })

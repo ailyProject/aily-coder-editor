@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "coder_library_search",
-      "description": "Search libraries for the active Aily Coder project through one unified entry. By default it searches the shared Blockly @aily-project/lib-* catalog, which is always preferred. Only when those results are unsuitable, call the same tool again with candidates=true to search the official Arduino catalog for fallback candidates. Copy libraryRef and version exactly from a result.",
+      "description": "Search the region-specific Aily Coder library catalog for the active project. The catalog is loaded only from libraries-coder-index.json under the main application's selected region resource. Results expose installed, installedVersion, and managed. Copy libraryRef and version exactly for installation; for removal use installedVersion and proceed only when installed=true and managed=true. Ignore legacy @aily-project/lib-* root dependencies and node_modules copies even when present; do not use Blockly library package names or sources.",
       "rpc": {
         "method": "coder.library.search"
       },
@@ -39,11 +39,6 @@
             "maxLength": 256,
             "description": "Prefer an exact library name when known. Additional functionality keywords are ranking hints; verify actual capabilities from result metadata and the installed API."
           },
-          "candidates": {
-            "type": "boolean",
-            "default": false,
-            "description": "False searches preferred shared Blockly libraries; true searches official Arduino fallback candidates."
-          },
           "offset": {
             "type": "integer",
             "minimum": 0,
@@ -58,7 +53,7 @@
           "forceRefresh": {
             "type": "boolean",
             "default": false,
-            "description": "Refresh the official Arduino candidate index when candidates=true."
+            "description": "Refresh libraries-coder-index.json from the resource configured for the selected region."
           }
         },
         "additionalProperties": false
@@ -66,7 +61,7 @@
     },
     {
       "name": "coder_library_install",
-      "description": "Install one exact result from coder_library_search and wait until it is ready on disk. Preferred shared results keep the @aily-project/lib-* package intact under node_modules and safely expand src.7z in place as that package's src/... tree; the result returns packageDirectory, sourceDirectory, and exact libraryRoots that already exist. Official Arduino candidates are supported only as the fallback tier. Copy libraryRef and version exactly; do not guess paths or either value.",
+      "description": "Install one exact result from coder_library_search. The Coder Runtime downloads the ZIP URL from libraries-coder-index.json, verifies its declared size and SHA-256 checksum, safely extracts it into sketch/libraries, and returns the exact sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not use npm, Blockly library archives, or guessed paths.",
       "rpc": {
         "method": "coder.library.install"
       },
@@ -92,7 +87,8 @@
       "inputSchema": {
         "type": "object",
         "required": [
-          "libraryRef"
+          "libraryRef",
+          "version"
         ],
         "properties": {
           "libraryRef": {
@@ -104,7 +100,7 @@
           "version": {
             "type": "string",
             "maxLength": 64,
-            "description": "Exact returned version. Required for official Arduino candidates and used when present for preferred Blockly packages."
+            "description": "Exact version returned by coder_library_search."
           }
         },
         "additionalProperties": false
@@ -112,7 +108,7 @@
     },
     {
       "name": "coder_library_remove",
-      "description": "Remove one exact result previously installed through coder_library_install. Preferred shared results are unlinked from root package.json and removed as one intact node_modules/@aily-project/lib-* package, including its generated src tree; verified legacy sketch/libraries projections are cleaned during migration. Official Arduino candidates retain their existing managed-provenance protection.",
+      "description": "Remove one exact Aily Coder catalog library previously installed under sketch/libraries by coder_library_install. First search for the library and proceed only when installed=true and managed=true, then pass its exact libraryRef and installedVersion. Removal is resolved from the project-local managed receipt, so the current online index does not need to contain that installed version. Never remove a local, copied, malformed, or differently sourced library, and never change root package.json or node_modules.",
       "rpc": {
         "method": "coder.library.remove"
       },
@@ -138,7 +134,8 @@
       "inputSchema": {
         "type": "object",
         "required": [
-          "libraryRef"
+          "libraryRef",
+          "version"
         ],
         "properties": {
           "libraryRef": {
@@ -150,7 +147,7 @@
           "version": {
             "type": "string",
             "maxLength": 64,
-            "description": "Exact installed version. Required for official Arduino candidates."
+            "description": "Exact installedVersion returned by coder_library_search; do not substitute the catalog's selected version."
           }
         },
         "additionalProperties": false

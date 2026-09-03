@@ -89,7 +89,7 @@ test('serves token-protected Aily child RPC on the shared HTTP server', async t 
   socket.send(JSON.stringify({
     id: 'request-1',
     method: 'coder.library.install',
-    params: { libraryRef: 'blockly:@aily-project/lib-arduinojson', version: '1.0.0' },
+    params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
     context: {
       actor: 'agent',
       actorId: 'subapp-agent-host',

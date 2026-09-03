@@ -40,6 +40,9 @@ export function classifyWorkspaceLibrarySource(input: {
   }
 
   const arduinoSource = sourceFrom(input.arduinoReceipt)
+  if (arduinoSource === 'aily-coder-index') {
+    return 'aily'
+  }
   if (
     arduinoSource === 'arduino-library-manager' ||
     arduinoSource === 'arduino-platform' ||

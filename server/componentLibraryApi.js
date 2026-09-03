@@ -4,8 +4,10 @@ import {
   installCoderLibrary,
   installArduinoComponentLibrary,
   installComponentLibrary,
+  removeCoderLibrary,
   removeArduinoComponentLibrary,
   scanComponentLibraries,
+  searchCoderLibraries,
   searchArduinoComponentLibraries,
 } from './componentLibraryService.js'
 
@@ -66,7 +68,8 @@ export async function handleComponentLibraryApiRequest(request, response) {
       return true
     }
     if (url.pathname === `${API_PREFIX}search`) {
-      const result = await searchArduinoComponentLibraries({
+      const search = body.source === 'aily' ? searchCoderLibraries : searchArduinoComponentLibraries
+      const result = await search({
         workspaceRoot: body.workspaceRoot,
         query: body.query,
         category: body.category,
@@ -91,13 +94,7 @@ export async function handleComponentLibraryApiRequest(request, response) {
         })
         sendJson(response, 200, {
           ok: true,
-          library: {
-            id: body.libraryId,
-            source: 'aily',
-            packageName: library.packageName,
-            installed: true,
-            installedVersion: library.version,
-          },
+          library: toClientLibrary(library),
         })
         return true
       }
@@ -118,11 +115,17 @@ export async function handleComponentLibraryApiRequest(request, response) {
       return true
     }
     if (url.pathname === `${API_PREFIX}remove`) {
-      const library = await removeArduinoComponentLibrary({
-        workspaceRoot: body.workspaceRoot,
-        libraryId: body.libraryId,
-        version: body.version,
-      })
+      const library = body.source === 'aily'
+        ? await removeCoderLibrary({
+          workspaceRoot: body.workspaceRoot,
+          libraryRef: body.libraryId,
+          version: body.version,
+        })
+        : await removeArduinoComponentLibrary({
+          workspaceRoot: body.workspaceRoot,
+          libraryId: body.libraryId,
+          version: body.version,
+        })
       sendJson(response, 200, {
         ok: true,
         library: toClientLibrary(library),

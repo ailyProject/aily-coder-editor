@@ -40,21 +40,6 @@ export type HostPlatformPackageV1 = {
   diskDirName?: string
 }
 
-/** 主软件 Library Manager 已完成主板过滤与本地化后的只读库条目。 */
-export type HostAilyLibraryV1 = {
-  packageName: string
-  name: string
-  description: string
-  version: string
-  author: string
-  url: string
-  keywords: readonly string[]
-  architectures: readonly string[]
-  tested: boolean
-  installed: boolean
-  installedVersion: string
-}
-
 /** 与 Angular `code-editor-pro` 发送的 payload 对齐；`v` 用于日后无损升级。 */
 export type HostEmbedContextV1 = {
   v: 1
@@ -77,8 +62,6 @@ export type HostEmbedContextV1 = {
   platformPackages?: readonly HostPlatformPackageV1[]
   /** 虚拟 Board 节点：Blockly 主板支持的 framework / mode 列表 */
   boardProfile?: HostBoardProfileV1
-  /** 主软件库管理的同源数据；宿主已按当前主板和语言处理。 */
-  ailyLibraries?: readonly HostAilyLibraryV1[]
   /** 宿主轻量上下文；theme/lang 更新不应触发 Runtime 或 iframe 重启。 */
   meta?: Record<string, unknown> & { theme?: 'dark' | 'light'; lang?: string }
 }

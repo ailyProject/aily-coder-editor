@@ -9,12 +9,9 @@ import { IViewsService } from '@codingame/monaco-vscode-api/vscode/vs/workbench/
 import {
   getHostEmbedContext,
   onHostEmbedContextChanged,
-  requestHostEmbedContext
 } from '../hostEmbedContext.js'
 import {
-  createHostAilyLibraryPage,
   normalizeLibraryLanguage,
-  type AilyLibraryEntry
 } from './ailyComponentLibraryModel.js'
 import {
   libraryStrings,
@@ -46,6 +43,7 @@ type LibraryEntry = {
   readonly compatible?: boolean
   readonly installed: boolean
   readonly installedVersion?: string
+  readonly managed?: boolean
 }
 
 type ApiResponse = {
@@ -59,7 +57,7 @@ type ApiResponse = {
 }
 
 async function callApi(
-  action: 'search' | 'install',
+  action: 'search' | 'install' | 'remove',
   body: Record<string, unknown>
 ): Promise<ApiResponse> {
   const response = await fetch(`/api/component-libraries/${action}`, {
@@ -70,25 +68,6 @@ async function callApi(
     throw new Error(payload.error?.trim() || `${action} failed`)
   }
   return payload
-}
-
-async function readProjectDependencies(
-  vscodeApi: typeof vscode,
-  root: string
-): Promise<Record<string, unknown>> {
-  try {
-    const content = await vscodeApi.workspace.fs.readFile(
-      vscodeApi.Uri.joinPath(vscodeApi.Uri.file(root), 'package.json')
-    )
-    const project = JSON.parse(new TextDecoder().decode(content)) as {
-      dependencies?: Record<string, unknown>
-    }
-    return project.dependencies != null && typeof project.dependencies === 'object'
-      ? project.dependencies
-      : {}
-  } catch {
-    return {}
-  }
 }
 
 function workspaceRoot(vscodeApi: typeof vscode): string | undefined {
@@ -140,17 +119,17 @@ function webviewHtml(webview: vscode.Webview, copy: UiStrings, language: string)
   <script nonce="${scriptNonce}">
     const vscode=acquireVsCodeApi(),copy=${serializedCopy};
     const sourceTabs=document.querySelector('.source-tabs'),ailyTab=document.getElementById('aily-tab'),arduinoTab=document.getElementById('arduino-tab'),ailyTabLabel=document.getElementById('aily-tab-label'),arduinoTabLabel=document.getElementById('arduino-tab-label'),search=document.getElementById('search'),refresh=document.getElementById('refresh'),filters=document.getElementById('filters'),type=document.getElementById('type'),category=document.getElementById('category'),notice=document.getElementById('notice'),sectionTitle=document.getElementById('section-title'),libraryList=document.getElementById('library-list'),libraryCount=document.getElementById('library-count'),more=document.getElementById('more'),pagingStatus=document.getElementById('paging-status');
-    let state={activeSource:'aily',query:'',libraries:[],total:0,categories:[],types:[],loading:true,loadingMore:false,hasMore:false,installing:[],notice:null},searchTimer;
+    let state={activeSource:'aily',query:'',libraries:[],total:0,categories:[],types:[],loading:true,loadingMore:false,hasMore:false,installing:[],removing:[],notice:null},searchTimer;
     sourceTabs.setAttribute('aria-label',copy.sourceTabsLabel);ailyTabLabel.textContent=copy.ailyTab;arduinoTabLabel.textContent=copy.arduinoTab;refresh.textContent=copy.refresh;more.textContent=copy.loadMore;pagingStatus.textContent=copy.endOfResults;
     const text=(tag,className,value)=>{const element=document.createElement(tag);element.className=className;element.textContent=value;return element};
     function setOptions(select,values,allLabel){const selected=select.value;select.replaceChildren();const all=document.createElement('option');all.value='';all.textContent=allLabel;select.appendChild(all);for(const value of values){const option=document.createElement('option');option.value=value;option.textContent=value;select.appendChild(option)}select.value=values.includes(selected)?selected:''}
     function card(library){
       const card=document.createElement('article');card.className='card'+(library.installed?' installed':'');
       const titleRow=document.createElement('div');titleRow.className='title-row';const title=text('div','title',library.name||library.folderName);title.title=library.name||library.folderName;
-      const versions=library.versions?.length?library.versions:[library.version||(library.source==='aily'?'latest':'Arduino')],version=document.createElement('select');version.className='version-select';version.setAttribute('aria-label',(library.name||library.folderName)+' '+copy.versionLabel);for(const item of versions){const option=document.createElement('option');option.value=item;option.textContent=item;option.selected=item===library.version;version.appendChild(option)}version.disabled=versions.length<2;version.addEventListener('change',()=>vscode.postMessage({type:'selectVersion',libraryId:library.id,version:version.value}));titleRow.append(title,version);
+      const versions=library.versions?.length?library.versions:[library.version||(library.source==='aily'?'latest':'Arduino')],version=document.createElement('select'),displayVersion=library.installedVersion||library.version;version.className='version-select';version.setAttribute('aria-label',(library.name||library.folderName)+' '+copy.versionLabel);for(const item of versions){const option=document.createElement('option');option.value=item;option.textContent=item;option.selected=item===displayVersion;version.appendChild(option)}const installing=state.installing.includes(library.id),removing=state.removing.includes(library.id),mutating=installing||removing;version.disabled=library.installed||mutating||versions.length<2;version.addEventListener('change',()=>vscode.postMessage({type:'selectVersion',libraryId:library.id,version:version.value}));titleRow.append(title,version);
       card.appendChild(titleRow);const metadata=library.author||library.maintainer;if(metadata)card.appendChild(text('div','meta',metadata));card.appendChild(text('p','description',library.sentence||library.paragraph||library.packageName||library.folderName));
       const chips=document.createElement('div');chips.className='chips';if(library.source!=='aily')chips.appendChild(text('span','chip '+(library.compatible?'compatible':'incompatible'),library.compatible?copy.compatible:copy.otherArchitecture));for(const value of [library.category,...(library.architectures||[])].filter(Boolean).slice(0,5))chips.appendChild(text('span','chip',value));if(chips.childElementCount>0)card.appendChild(chips);
-      const footer=document.createElement('footer');footer.className='footer';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));footer.appendChild(docs)}const actions=document.createElement('div');actions.className='actions';const installing=state.installing.includes(library.id),installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed,install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||installing;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install);footer.appendChild(actions);card.appendChild(footer);return card;
+      const footer=document.createElement('footer');footer.className='footer';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));footer.appendChild(docs)}const actions=document.createElement('div');actions.className='actions';const installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed;if(library.installed&&library.managed){const remove=text('button','secondary',removing?copy.removing:copy.remove);remove.type='button';remove.disabled=mutating;remove.addEventListener('click',()=>vscode.postMessage({type:'remove',libraryId:library.id,source:library.source,version:library.installedVersion||version.value}));actions.appendChild(remove)}else{const install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||mutating;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install)}footer.appendChild(actions);card.appendChild(footer);return card;
     }
     function render(){
       const isAily=state.activeSource==='aily',busy=state.loading||state.loadingMore;ailyTab.setAttribute('aria-selected',String(isAily));arduinoTab.setAttribute('aria-selected',String(!isAily));search.placeholder=isAily?copy.searchAily:copy.searchArduino;if(document.activeElement!==search)search.value=state.query||'';filters.hidden=isAily;sectionTitle.textContent=isAily?copy.ailySection:copy.arduinoSection;refresh.disabled=busy;notice.hidden=!state.notice;notice.classList.toggle('error',state.notice?.error===true);notice.textContent=state.notice?.text||'';setOptions(type,state.types,copy.allTypes);setOptions(category,state.categories,copy.allTopics);
@@ -174,6 +153,7 @@ type ViewState = {
   readonly loadingMore: boolean
   readonly hasMore: boolean
   readonly installing: readonly string[]
+  readonly removing: readonly string[]
   readonly notice: { readonly text: string; readonly error?: boolean } | null
 }
 
@@ -183,6 +163,7 @@ type WebviewMessage =
   | { readonly type: 'search'; readonly query?: string; readonly category?: string; readonly libraryType?: string }
   | { readonly type: 'selectVersion'; readonly libraryId?: string; readonly version?: string }
   | { readonly type: 'install'; readonly libraryId?: string; readonly source?: LibrarySource; readonly version?: string }
+  | { readonly type: 'remove'; readonly libraryId?: string; readonly source?: LibrarySource; readonly version?: string }
   | { readonly type: 'openUrl'; readonly url?: string }
 
 class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
@@ -196,6 +177,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
   #loadingMore = false
   #hasMore = false
   #installing = new Set<string>()
+  #removing = new Set<string>()
   #notice: ViewState['notice'] = null
   #query = ''
   #category = ''
@@ -264,6 +246,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       else if (message.type === 'selectVersion' && message.libraryId && message.version) {
         this.#libraries = this.#libraries.map(item => item.id === message.libraryId && item.versions.includes(message.version!) ? { ...item, version: message.version! } : item)
       } else if (message.type === 'install' && message.libraryId && message.source && message.version) void this.#install(message.libraryId, message.source, message.version)
+      else if (message.type === 'remove' && message.libraryId && message.source && message.version) void this.#remove(message.libraryId, message.source, message.version)
       else if (message.type === 'openUrl' && /^https?:\/\//iu.test(message.url ?? '')) void this.vscodeApi.env.openExternal(this.vscodeApi.Uri.parse(message.url!))
     })
   }
@@ -280,6 +263,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       loadingMore: this.#loadingMore,
       hasMore: this.#hasMore,
       installing: [...this.#installing],
+      removing: [...this.#removing],
       notice: this.#notice
     } satisfies ViewState })
   }
@@ -317,42 +301,16 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     this.#notice = null
     this.#sendState()
     try {
-      let response: ApiResponse
-      if (source === 'aily') {
-        const catalog = getHostEmbedContext()?.ailyLibraries
-        if (catalog == null) {
-          requestHostEmbedContext()
-          this.#notice = { text: this.#copy().hostCatalogUnavailable }
-          response = { ok: true, libraries: [], total: 0, categories: [], types: [] }
-        } else {
-          const dependencies = await readProjectDependencies(this.vscodeApi, root)
-          const result = createHostAilyLibraryPage(
-            catalog,
-            dependencies,
-            this.#query,
-            offset,
-            50
-          )
-          response = {
-            ok: true,
-            libraries: result.libraries satisfies readonly AilyLibraryEntry[],
-            total: result.total,
-            categories: [],
-            types: []
-          }
-        }
-      } else {
-        response = await callApi('search', {
-          source,
-          workspaceRoot: root,
-          query: this.#query,
-          category: this.#category,
-          type: this.#libraryType,
-          offset,
-          limit: 50,
-          forceRefresh
-        })
-      }
+      const response = await callApi('search', {
+        source,
+        workspaceRoot: root,
+        query: this.#query,
+        category: source === 'registry' ? this.#category : '',
+        type: source === 'registry' ? this.#libraryType : '',
+        offset,
+        limit: 50,
+        forceRefresh
+      })
       if (generation !== this.#searchGeneration || source !== this.#activeSource) return
       const page = response.libraries ?? []
       this.#libraries = reset ? page : [...this.#libraries, ...page]
@@ -383,7 +341,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
   async #install(libraryId: string, source: LibrarySource, version: string): Promise<void> {
     const root = workspaceRoot(this.vscodeApi)
     const library = this.#libraries.find(item => item.id === libraryId && item.source === source)
-    if (!root || !library || library.installed || this.#installing.has(libraryId)) return
+    if (!root || !library || library.installed || this.#installing.has(libraryId) || this.#removing.has(libraryId)) return
     this.#installing.add(libraryId)
     this.#notice = null
     this.#sendState()
@@ -405,6 +363,42 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       }
     } finally {
       this.#installing.delete(libraryId)
+      this.#sendState()
+    }
+  }
+
+  async #remove(libraryId: string, source: LibrarySource, version: string): Promise<void> {
+    const root = workspaceRoot(this.vscodeApi)
+    const library = this.#libraries.find(item => item.id === libraryId && item.source === source)
+    const installedVersion = library?.installedVersion?.trim() || version.trim()
+    if (
+      !root
+      || !library?.installed
+      || library.managed !== true
+      || !installedVersion
+      || this.#installing.has(libraryId)
+      || this.#removing.has(libraryId)
+    ) return
+    this.#removing.add(libraryId)
+    this.#notice = null
+    this.#sendState()
+    try {
+      await callApi('remove', { workspaceRoot: root, libraryId, source, version: installedVersion })
+      this.#libraries = this.#libraries.map(item => item.id === libraryId
+        ? { ...item, installed: false, installedVersion: '', managed: false, folderName: '' }
+        : item)
+      this.#notice = { text: this.#copy().removed(library.name || library.folderName, source) }
+    } catch (error) {
+      this.#notice = {
+        text: this.#copy().failed(
+          'remove',
+          source,
+          error instanceof Error ? error.message : String(error)
+        ),
+        error: true
+      }
+    } finally {
+      this.#removing.delete(libraryId)
       this.#sendState()
     }
   }

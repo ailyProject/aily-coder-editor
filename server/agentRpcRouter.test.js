@@ -14,7 +14,7 @@ const context = {
   developmentMode: 'coder',
 }
 
-test('declares package install and remove as external workspace mutations', async () => {
+test('declares Coder ZIP install and remove as external workspace mutations', async () => {
   const manifest = JSON.parse(
     await readFile(new URL('../agent/tools.json', import.meta.url), 'utf8'),
   )
@@ -23,6 +23,12 @@ test('declares package install and remove as external workspace mutations', asyn
     const tool = manifest.tools.find(candidate => candidate.name === name)
     assert.equal(tool?.effects?.executionDomain, 'workspace-external-mutation')
   }
+  const search = manifest.tools.find(candidate => candidate.name === 'coder_library_search')
+  const remove = manifest.tools.find(candidate => candidate.name === 'coder_library_remove')
+  assert.match(search?.description ?? '', /installedVersion/u)
+  assert.match(search?.description ?? '', /managed/u)
+  assert.match(remove?.description ?? '', /project-local managed receipt/u)
+  assert.match(remove?.inputSchema?.properties?.version?.description ?? '', /installedVersion/u)
 })
 
 test('rejects a Coder library call outside Coder mode', async () => {
@@ -30,23 +36,23 @@ test('rejects a Coder library call outside Coder mode', async () => {
   await assert.rejects(
     router.execute({
       method: 'coder.library.install',
-      params: { libraryRef: 'blockly:@aily-project/lib-arduinojson' },
+      params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
       context: { ...context, developmentMode: 'blockly' },
     }),
     error => error instanceof CoderAgentRpcError && error.code === 'CODER_MODE_REQUIRED',
   )
 })
 
-test('routes unified searches and mutations by exact library reference', async () => {
+test('routes regional Coder searches and mutations by exact library reference', async () => {
   const calls = []
   const operation = name => async input => {
     calls.push({ name, input })
     return { libraryRef: input.libraryRef, sourcePath: '/private/source' }
   }
   const router = createCoderAgentRpcRouter({
-    search: async input => ({
-      tier: input.candidates ? 'candidate' : 'preferred',
-      libraries: [{ libraryRef: 'blockly:@aily-project/lib-arduinojson', sourcePath: '/private/index' }],
+    search: async () => ({
+      tier: 'preferred',
+      libraries: [{ libraryRef: 'coder:0123456789abcdef01234567', sourcePath: '/private/index' }],
     }),
     install: operation('install'),
     remove: operation('remove'),
@@ -54,17 +60,17 @@ test('routes unified searches and mutations by exact library reference', async (
 
   const search = await router.execute({
     method: 'coder.library.search',
-    params: { query: 'json', candidates: false },
+    params: { query: 'json' },
     context,
   })
   const install = await router.execute({
     method: 'coder.library.install',
-    params: { libraryRef: 'blockly:@aily-project/lib-arduinojson', version: '1.0.0' },
+    params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
     context,
   })
   const remove = await router.execute({
     method: 'coder.library.remove',
-    params: { libraryRef: 'blockly:@aily-project/lib-arduinojson', version: '1.0.0' },
+    params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
     context,
   })
 
@@ -72,7 +78,7 @@ test('routes unified searches and mutations by exact library reference', async (
   assert.equal(search.libraries[0].sourcePath, undefined)
   assert.deepEqual(calls.map(call => call.name), ['install', 'remove'])
   assert.equal(calls[0].input.workspaceRoot, context.workspaceRoot)
-  assert.equal(calls[0].input.libraryRef, 'blockly:@aily-project/lib-arduinojson')
+  assert.equal(calls[0].input.libraryRef, 'coder:0123456789abcdef01234567')
   assert.equal(calls[0].input.version, '1.0.0')
   assert.equal(install.library.sourcePath, undefined)
   assert.equal(remove.library.sourcePath, undefined)
@@ -83,7 +89,7 @@ test('requires the authenticated generic host Agent context', async () => {
   await assert.rejects(
     router.execute({
       method: 'coder.library.install',
-      params: { libraryRef: 'blockly:@aily-project/lib-arduinojson' },
+      params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
       context: { ...context, actorId: 'model-supplied' },
     }),
     error => error instanceof CoderAgentRpcError && error.code === 'SUBAPP_AGENT_CONTEXT_REQUIRED',

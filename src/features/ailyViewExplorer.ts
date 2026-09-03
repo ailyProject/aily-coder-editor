@@ -35,10 +35,6 @@ import {
   statAbsolutePathViaHost
 } from '../parentBackedNativeFs.js'
 import {
-  listAilyLibraryProjections,
-  type ProjectDirectoryEntry
-} from './ailyLibraryProjection.js'
-import {
   AILY_LIBRARY_RECEIPT_FILE,
   ARDUINO_LIBRARY_RECEIPT_FILE,
   classifyWorkspaceLibrarySource,
@@ -386,7 +382,7 @@ function platformPackageToTreeNode(entry: HostPlatformPackageV1): ProjectTreeNod
 /** 来自磁盘 node_modules 的动态子节点（挂在 Installed Libraries 或包目录下） */
 type FsTreeElement = {
   readonly kind: 'fs'
-  /** 相对工程根的路径，如 node_modules/@aily-project/lib-dht */
+  /** 相对工程根的路径。 */
   readonly relPath: string
   readonly label: string
   readonly isDirectory: boolean
@@ -686,29 +682,6 @@ function isFsDirectory(
   return fileType === dir || Number(fileType) === Number(dir)
 }
 
-/** 读取工作区目录，转为 Aily 库映射扫描所需的中性结构。 */
-async function readProjectDirectoryEntries(
-  vscodeApi: typeof vscode,
-  relPath: string
-): Promise<ProjectDirectoryEntry[]> {
-  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
-  if (root == null) {
-    return []
-  }
-  const segments = relPath.split('/').filter((segment) => segment.length > 0)
-  try {
-    const entries = await vscodeApi.workspace.fs.readDirectory(
-      vscodeApi.Uri.joinPath(root, ...segments)
-    )
-    return entries.map(([name, fileType]) => ({
-      name,
-      isDirectory: isFsDirectory(vscodeApi, fileType)
-    }))
-  } catch {
-    return []
-  }
-}
-
 async function readOptionalProjectTextFile(
   vscodeApi: typeof vscode,
   relPath: string
@@ -796,23 +769,6 @@ async function listFsDirectoryChildren(
   })
 
   return classified
-}
-
-/** 列出已安装 Aily 库最深连续 src 下的直属库，作为 Library 的虚拟直属子节点。 */
-async function listInstalledAilyLibraryChildren(
-  vscodeApi: typeof vscode
-): Promise<FsTreeElement[]> {
-  const projections = await listAilyLibraryProjections(
-    async (relPath) => readProjectDirectoryEntries(vscodeApi, relPath)
-  )
-  return projections.map((projection) => ({
-    kind: 'fs',
-    relPath: projection.relPath,
-    label: projection.label,
-    isDirectory: true,
-    isTopLevelPackage: true,
-    librarySource: 'aily'
-  }))
 }
 
 function sortFsTreeElements(items: FsTreeElement[]): FsTreeElement[] {
@@ -1095,13 +1051,11 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       return listFsDirectoryChildren(this.#vscode, SRC_REL)
     }
 
-    // Library：合并 sketch/libraries 与已安装 Aily 库最深连续 src 下的直属库。
+    // Library：直接镜像 sketch/libraries。目录来源由安装回执区分。
     if (node.id === 'library') {
-      const [localItems, installedAilyItems] = await Promise.all([
-        listFsDirectoryChildren(this.#vscode, COMPONENTS_REL),
-        listInstalledAilyLibraryChildren(this.#vscode)
-      ])
-      const items = sortFsTreeElements([...localItems, ...installedAilyItems])
+      const items = sortFsTreeElements(
+        await listFsDirectoryChildren(this.#vscode, COMPONENTS_REL)
+      )
       if (items.length === 0) {
         return [wrap(COMPONENT_LIBRARIES_EMPTY)]
       }
