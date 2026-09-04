@@ -16,7 +16,7 @@
   },
   "type": "module",
   "main": "index.js",
-  "hide": true,
+  "only": "aily coder",
   "files": [
     "ui",
     "!ui/**/*.map",

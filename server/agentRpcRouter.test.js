@@ -24,9 +24,13 @@ test('declares Coder ZIP install and remove as external workspace mutations', as
     assert.equal(tool?.effects?.executionDomain, 'workspace-external-mutation')
   }
   const search = manifest.tools.find(candidate => candidate.name === 'coder_library_search')
+  const install = manifest.tools.find(candidate => candidate.name === 'coder_library_install')
   const remove = manifest.tools.find(candidate => candidate.name === 'coder_library_remove')
   assert.match(search?.description ?? '', /installedVersion/u)
   assert.match(search?.description ?? '', /managed/u)
+  assert.match(search?.description ?? '', /compatibleAlternatives/u)
+  assert.equal(install?.inputSchema?.properties?.allowIncompatible?.default, false)
+  assert.match(install?.description ?? '', /times out, is skipped, or is unavailable/u)
   assert.match(remove?.description ?? '', /project-local managed receipt/u)
   assert.match(remove?.inputSchema?.properties?.version?.description ?? '', /installedVersion/u)
 })
@@ -80,8 +84,32 @@ test('routes regional Coder searches and mutations by exact library reference', 
   assert.equal(calls[0].input.workspaceRoot, context.workspaceRoot)
   assert.equal(calls[0].input.libraryRef, 'coder:0123456789abcdef01234567')
   assert.equal(calls[0].input.version, '1.0.0')
+  assert.equal(calls[0].input.allowIncompatible, false)
   assert.equal(install.library.sourcePath, undefined)
   assert.equal(remove.library.sourcePath, undefined)
+})
+
+test('forwards an explicit incompatible-library override only when true', async () => {
+  const calls = []
+  const router = createCoderAgentRpcRouter({
+    install: async input => {
+      calls.push(input)
+      return { compatibilityOverride: input.allowIncompatible }
+    },
+  })
+
+  const result = await router.execute({
+    method: 'coder.library.install',
+    params: {
+      libraryRef: 'coder:0123456789abcdef01234567',
+      version: '1.0.0',
+      allowIncompatible: true,
+    },
+    context,
+  })
+
+  assert.equal(calls[0].allowIncompatible, true)
+  assert.equal(result.library.compatibilityOverride, true)
 })
 
 test('requires the authenticated generic host Agent context', async () => {

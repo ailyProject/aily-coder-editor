@@ -125,7 +125,8 @@ Coder 以 `@aily-project/subapp-aily-coder-editor` 发布，不再复制到 Aily
 - `index.js`：与其它 Aily 子应用一致的 `serve --host --port` 入口；
 - `runtime/index.js`：已内联 Node 服务端依赖的自包含生产 bundle，发布包不含 `node_modules`；
 - `i18n/`：供本地开发目录和远端子应用目录使用的标题、描述；
-- `aily.uiIndex` / `ailySubapp`：供宿主发现 UI、extension 属性和启动超时配置。
+- `aily.uiIndex` / `ailySubapp`：供宿主发现 UI、extension 属性和启动超时配置；
+- 根 `package.json` 的 `only: "aily coder"`：只在独立 Aily Coder 产品的子应用列表中展示；未配置 `only` 的普通子应用默认为 `all`。
 
 Aily Blockly 在用户首次选择 Coder 模式时，将包安装到用户级
 `npm-global/app/node_modules`，然后通过标准子应用会话启动。Blockly 模式不依赖

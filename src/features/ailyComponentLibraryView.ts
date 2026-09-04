@@ -41,19 +41,45 @@ type LibraryEntry = {
   readonly architectures: readonly string[]
   readonly types?: readonly string[]
   readonly compatible?: boolean
+  readonly compatibility?: CompatibilityDetails
   readonly installed: boolean
   readonly installedVersion?: string
   readonly managed?: boolean
 }
 
+type CompatibleAlternative = {
+  readonly name?: string
+  readonly version?: string
+}
+
+type CompatibilityDetails = {
+  readonly supportedArchitectures?: readonly string[]
+  readonly activeArchitectures?: readonly string[]
+  readonly compatibleAlternatives?: readonly CompatibleAlternative[]
+}
+
 type ApiResponse = {
   readonly ok?: boolean
   readonly error?: string
+  readonly errorCode?: string
+  readonly details?: CompatibilityDetails
   readonly libraries?: readonly LibraryEntry[]
   readonly library?: Partial<LibraryEntry>
   readonly total?: number
   readonly categories?: readonly string[]
   readonly types?: readonly string[]
+}
+
+class ComponentLibraryApiError extends Error {
+  constructor(
+    message: string,
+    readonly errorCode = '',
+    readonly details?: CompatibilityDetails,
+    readonly status?: number,
+  ) {
+    super(message)
+    this.name = 'ComponentLibraryApiError'
+  }
 }
 
 async function callApi(
@@ -63,9 +89,26 @@ async function callApi(
   const response = await fetch(`/api/component-libraries/${action}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   })
-  const payload = (await response.json().catch(() => ({}))) as ApiResponse
+  const responseText = await response.text()
+  let payload: ApiResponse = {}
+  try {
+    payload = JSON.parse(responseText) as ApiResponse
+  } catch {
+    payload = {}
+  }
   if (!response.ok || payload.ok !== true) {
-    throw new Error(payload.error?.trim() || `${action} failed`)
+    const readableBody = responseText.trim().replace(/\s+/gu, ' ').slice(0, 500)
+    const errorCode = payload.errorCode?.trim() ?? ''
+    const diagnostics = [response.status ? `HTTP ${response.status}` : '', errorCode].filter(Boolean)
+    const detail = payload.error?.trim()
+      || readableBody
+      || `${action} failed`
+    throw new ComponentLibraryApiError(
+      `${diagnostics.length > 0 ? `[${diagnostics.join(' / ')}] ` : ''}${detail}`,
+      errorCode,
+      payload.details,
+      response.status,
+    )
   }
   return payload
 }
@@ -128,7 +171,7 @@ function webviewHtml(webview: vscode.Webview, copy: UiStrings, language: string)
       const titleRow=document.createElement('div');titleRow.className='title-row';const title=text('div','title',library.name||library.folderName);title.title=library.name||library.folderName;
       const versions=library.versions?.length?library.versions:[library.version||(library.source==='aily'?'latest':'Arduino')],version=document.createElement('select'),displayVersion=library.installedVersion||library.version;version.className='version-select';version.setAttribute('aria-label',(library.name||library.folderName)+' '+copy.versionLabel);for(const item of versions){const option=document.createElement('option');option.value=item;option.textContent=item;option.selected=item===displayVersion;version.appendChild(option)}const installing=state.installing.includes(library.id),removing=state.removing.includes(library.id),mutating=installing||removing;version.disabled=library.installed||mutating||versions.length<2;version.addEventListener('change',()=>vscode.postMessage({type:'selectVersion',libraryId:library.id,version:version.value}));titleRow.append(title,version);
       card.appendChild(titleRow);const metadata=library.author||library.maintainer;if(metadata)card.appendChild(text('div','meta',metadata));card.appendChild(text('p','description',library.sentence||library.paragraph||library.packageName||library.folderName));
-      const chips=document.createElement('div');chips.className='chips';if(library.source!=='aily')chips.appendChild(text('span','chip '+(library.compatible?'compatible':'incompatible'),library.compatible?copy.compatible:copy.otherArchitecture));for(const value of [library.category,...(library.architectures||[])].filter(Boolean).slice(0,5))chips.appendChild(text('span','chip',value));if(chips.childElementCount>0)card.appendChild(chips);
+      const chips=document.createElement('div');chips.className='chips';if(typeof library.compatible==='boolean')chips.appendChild(text('span','chip '+(library.compatible?'compatible':'incompatible'),library.compatible?copy.compatible:copy.otherArchitecture));for(const value of [library.category,...(library.architectures||[])].filter(Boolean).slice(0,5))chips.appendChild(text('span','chip',value));if(chips.childElementCount>0)card.appendChild(chips);
       const footer=document.createElement('footer');footer.className='footer';if(/^https?:\\/\\//iu.test(library.url)){const docs=text('a','',copy.docs);docs.tabIndex=0;docs.addEventListener('click',()=>vscode.postMessage({type:'openUrl',url:library.url}));footer.appendChild(docs)}const actions=document.createElement('div');actions.className='actions';const installedLabel=library.installedVersion?copy.installed+' '+library.installedVersion:copy.installed;if(library.installed&&library.managed){const remove=text('button','secondary',removing?copy.removing:copy.remove);remove.type='button';remove.disabled=mutating;remove.addEventListener('click',()=>vscode.postMessage({type:'remove',libraryId:library.id,source:library.source,version:library.installedVersion||version.value}));actions.appendChild(remove)}else{const install=text('button',library.installed?'secondary':'',library.installed?installedLabel:installing?copy.adding:copy.add);install.type='button';install.disabled=library.installed||mutating;install.addEventListener('click',()=>vscode.postMessage({type:'install',libraryId:library.id,source:library.source,version:version.value}));actions.appendChild(install)}footer.appendChild(actions);card.appendChild(footer);return card;
     }
     function render(){
@@ -346,7 +389,25 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     this.#notice = null
     this.#sendState()
     try {
-      const response = await callApi('install', { workspaceRoot: root, libraryId, source, version })
+      let response: ApiResponse
+      try {
+        response = await callApi('install', { workspaceRoot: root, libraryId, source, version })
+      } catch (error) {
+        if (
+          !(error instanceof ComponentLibraryApiError)
+          || !['CODER_LIBRARY_INCOMPATIBLE', 'ARDUINO_LIBRARY_INCOMPATIBLE'].includes(error.errorCode)
+        ) throw error
+
+        const shouldContinue = await this.#confirmIncompatibleInstall(library, error.details)
+        if (!shouldContinue) return
+        response = await callApi('install', {
+          workspaceRoot: root,
+          libraryId,
+          source,
+          version,
+          allowIncompatible: true,
+        })
+      }
       const update = (item: LibraryEntry): LibraryEntry => item.id === libraryId
         ? { ...item, ...response.library, source, installed: true, installedVersion: response.library?.installedVersion ?? version }
         : item
@@ -361,10 +422,30 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
         ),
         error: true
       }
+      void Promise.resolve(this.vscodeApi.window.showErrorMessage(this.#notice.text)).catch(() => undefined)
     } finally {
       this.#installing.delete(libraryId)
       this.#sendState()
     }
+  }
+
+  async #confirmIncompatibleInstall(
+    library: LibraryEntry,
+    details?: CompatibilityDetails,
+  ): Promise<boolean> {
+    const copy = this.#copy()
+    const supported = details?.supportedArchitectures ?? library.architectures
+    const active = details?.activeArchitectures ?? library.compatibility?.activeArchitectures ?? []
+    const alternatives = details?.compatibleAlternatives?.flatMap(item => item.name ? [item.name] : []) ?? []
+    const choice = await this.vscodeApi.window.showWarningMessage(
+      copy.incompatibleTitle(library.name || library.folderName),
+      {
+        modal: true,
+        detail: copy.incompatibleDetail(supported, active, alternatives),
+      },
+      copy.continueInstall,
+    )
+    return choice === copy.continueInstall
   }
 
   async #remove(libraryId: string, source: LibrarySource, version: string): Promise<void> {

@@ -163,6 +163,9 @@ async function generateIndex() {
   const entry = {
     ...subapp,
     id,
+    only: typeof packageJson.only === 'string' && packageJson.only.trim()
+      ? packageJson.only.trim().toLowerCase()
+      : 'all',
     titleKey,
     namespace,
     app: {

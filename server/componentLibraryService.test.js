@@ -517,3 +517,109 @@ test('searches the regional Coder index and installs its ZIP under sketch/librar
     path.join(workspaceRoot, 'sketch', 'libraries', 'Aily_Test', 'library.properties'),
   ))
 })
+
+test('requires an explicit override for an incompatible Coder library and suggests compatible alternatives', async t => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-incompatible-library-'))
+  t.after(() => rm(tempRoot, { recursive: true, force: true }))
+  const workspaceRoot = path.join(tempRoot, 'project')
+  const appDataPath = path.join(tempRoot, 'appdata')
+  const archive = Buffer.from(
+    'UEsDBBQAAAAIAO9YI110vtPEQwAAAEMAAAAiAAAAQWlseV9UZXN0LTEuMi4zL2xpYnJhcnkucHJvcGVydGllc8tLzE21dczMqVQISS0u4SpLLSrOzM+zNdQz0jPmSixKzsgsSU0uKS1KLbbV4ipOzStJzUtOtQWpVcjJTCpKLKrkAgBQSwMEFAAAAAgA71gjXXgcNZYPAAAADQAAAB4AAABBaWx5X1Rlc3QtMS4yLjMvc3JjL0FpbHlUZXN0LmhTLihKTM9NVMjPS07lAgBQSwECFAMUAAAACADvWCNddL7TxEMAAABDAAAAIgAAAAAAAAAAAAAAgAEAAAAAQWlseV9UZXN0LTEuMi4zL2xpYnJhcnkucHJvcGVydGllc1BLAQIUAxQAAAAIAO9YI114HDWWDwAAAA0AAAAeAAAAAAAAAAAAAACAAYMAAABBaWx5X1Rlc3QtMS4yLjMvc3JjL0FpbHlUZXN0LmhQSwUGAAAAAAIAAgCcAAAAzgAAAAAA',
+    'base64',
+  )
+  const target = {
+    name: 'Aily Test',
+    version: '1.2.3',
+    author: 'Aily',
+    sentence: 'Regional timer control library',
+    category: 'Device Control',
+    architectures: ['samd'],
+    types: ['Arduino'],
+    providesIncludes: ['AilyTest.h'],
+    url: 'https://archives.example/Aily_Test-1.2.3.zip',
+    archiveFileName: 'Aily_Test-1.2.3.zip',
+    size: archive.byteLength,
+    checksum: 'SHA-256:e4aeda77c147a3218cd38908d2d1c88b58ddd13c35f090c3f1cf9240326a319f',
+  }
+  const alternative = {
+    name: 'Compatible Timer',
+    version: '2.0.0',
+    author: 'Aily',
+    sentence: 'Compatible timer control library',
+    category: 'Device Control',
+    architectures: ['test'],
+    types: ['Arduino'],
+    providesIncludes: ['CompatibleTimer.h'],
+    url: 'https://archives.example/Compatible_Timer-2.0.0.zip',
+    archiveFileName: 'Compatible_Timer-2.0.0.zip',
+    size: 123,
+    checksum: `SHA-256:${'a'.repeat(64)}`,
+  }
+  const indexPayload = { libraries: [target, alternative] }
+  const indexUrl = 'https://catalog.example/incompatible-libraries-coder-index.json'
+  const fetchImpl = async url => {
+    if (String(url) === indexUrl) {
+      return new globalThis.Response(JSON.stringify(indexPayload), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (String(url) === target.url) {
+      return new globalThis.Response(archive, {
+        headers: { 'Content-Length': String(archive.byteLength) },
+      })
+    }
+    return new globalThis.Response('', { status: 404 })
+  }
+
+  await mkdir(path.join(workspaceRoot, 'sketch', 'src'), { recursive: true })
+  await mkdir(path.join(appDataPath, 'sdk', 'test_1.0.0'), { recursive: true })
+  await writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({
+    name: 'coder-incompatible-test',
+    type: 'coder',
+    framework: 'arduino',
+    boardDependencies: { '@aily-project/sdk-test': '1.0.0' },
+  }))
+
+  const search = await searchCoderLibraries({
+    workspaceRoot,
+    appDataPath,
+    indexUrl,
+    fetchImpl,
+    query: 'Aily Test',
+  })
+  assert.deepEqual(search.activeArchitectures, ['test'])
+  assert.equal(search.libraries[0].compatible, false)
+  assert.deepEqual(search.libraries[0].compatibility.activeArchitectures, ['test'])
+  assert.equal(search.compatibleAlternatives[0].name, 'Compatible Timer')
+
+  await assert.rejects(
+    installCoderLibrary({
+      workspaceRoot,
+      appDataPath,
+      indexUrl,
+      fetchImpl,
+      libraryRef: search.libraries[0].libraryRef,
+      version: '1.2.3',
+    }),
+    error => (
+      error?.code === 'CODER_LIBRARY_INCOMPATIBLE'
+      && error.details?.supportedArchitectures?.[0] === 'samd'
+      && error.details?.activeArchitectures?.[0] === 'test'
+      && error.details?.compatibleAlternatives?.[0]?.name === 'Compatible Timer'
+    ),
+  )
+
+  const installed = await installCoderLibrary({
+    workspaceRoot,
+    appDataPath,
+    indexUrl,
+    fetchImpl,
+    libraryRef: search.libraries[0].libraryRef,
+    version: '1.2.3',
+    allowIncompatible: true,
+  })
+  assert.equal(installed.ready, true)
+  assert.equal(installed.compatible, false)
+  assert.equal(installed.compatibilityOverride, true)
+  assert.match(installed.compatibilityWarning, /incompatible active Coder architecture/u)
+})

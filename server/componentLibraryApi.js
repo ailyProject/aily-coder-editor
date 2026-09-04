@@ -91,6 +91,7 @@ export async function handleComponentLibraryApiRequest(request, response) {
           workspaceRoot: body.workspaceRoot,
           libraryRef: body.libraryId,
           version: body.version,
+          allowIncompatible: body.allowIncompatible === true,
         })
         sendJson(response, 200, {
           ok: true,
@@ -103,6 +104,7 @@ export async function handleComponentLibraryApiRequest(request, response) {
           workspaceRoot: body.workspaceRoot,
           libraryId: body.libraryId,
           version: body.version,
+          allowIncompatible: body.allowIncompatible === true,
         })
         : await installComponentLibrary({
           workspaceRoot: body.workspaceRoot,

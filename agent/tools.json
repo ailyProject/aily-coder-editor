@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "coder_library_search",
-      "description": "Search the region-specific Aily Coder library catalog for the active project. The catalog is loaded only from libraries-coder-index.json under the main application's selected region resource. Results expose installed, installedVersion, and managed. Copy libraryRef and version exactly for installation; for removal use installedVersion and proceed only when installed=true and managed=true. Ignore legacy @aily-project/lib-* root dependencies and node_modules copies even when present; do not use Blockly library package names or sources.",
+      "description": "Search the region-specific Aily Coder library catalog for the active project. The catalog is loaded only from libraries-coder-index.json under the main application's selected region resource. Results expose compatibility, activeArchitectures, compatibleAlternatives for a single incompatible match, installed, installedVersion, and managed. Treat alternatives as metadata-ranked candidates and verify their APIs before recommendation. Copy libraryRef and version exactly for installation; for removal use installedVersion and proceed only when installed=true and managed=true. Ignore legacy @aily-project/lib-* root dependencies and node_modules copies even when present; do not use Blockly library package names or sources.",
       "rpc": {
         "method": "coder.library.search"
       },
@@ -61,7 +61,7 @@
     },
     {
       "name": "coder_library_install",
-      "description": "Install one exact result from coder_library_search. The Coder Runtime downloads the ZIP URL from libraries-coder-index.json, verifies its declared size and SHA-256 checksum, safely extracts it into sketch/libraries, and returns the exact sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not use npm, Blockly library archives, or guessed paths.",
+      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true. Use that override only when the user explicitly requested this named library and confirmed after being told the supported/current architectures and compatible alternatives; if that confirmation UI times out, is skipped, or is unavailable, the original explicit install request remains authoritative and the override may be used, but the final response must disclose the incompatibility and alternatives. Never override compatibility for an Agent-selected library. The Coder Runtime downloads the ZIP URL from libraries-coder-index.json, verifies its declared size and SHA-256 checksum, safely extracts it into sketch/libraries, and returns the exact sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not use npm, Blockly library archives, or guessed paths.",
       "rpc": {
         "method": "coder.library.install"
       },
@@ -101,6 +101,11 @@
             "type": "string",
             "maxLength": 64,
             "description": "Exact version returned by coder_library_search."
+          },
+          "allowIncompatible": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit compatibility override. Set true only for a user-named library after confirmation, or when that confirmation timed out, was skipped, or was unavailable while the user's original request explicitly required installing this library."
           }
         },
         "additionalProperties": false

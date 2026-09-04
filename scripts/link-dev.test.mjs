@@ -51,6 +51,7 @@ test('dev link registers, discovers, and cleanly restores Aily Coder Editor', as
   assert.equal(developmentIndex.dev, true)
   assert.equal(developmentIndex['remote-only'].id, 'remote-only')
   assert.equal(developmentIndex['aily-coder-editor'].package, packageName)
+  assert.equal(developmentIndex['aily-coder-editor'].only, 'aily coder')
   assert.equal(developmentIndex['aily-coder-editor'].app.extension, true)
   assert.equal(developmentIndex['aily-coder-editor'].i18n.locales.zh_cn.TITLE, 'Aily Coder Editor')
 

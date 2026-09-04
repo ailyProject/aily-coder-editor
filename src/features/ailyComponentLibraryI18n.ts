@@ -34,6 +34,13 @@ export type UiStrings = {
   readonly endOfResults: string
   readonly sourceTabsLabel: string
   readonly versionLabel: string
+  readonly continueInstall: string
+  incompatibleTitle(name: string): string
+  incompatibleDetail(
+    supportedArchitectures: readonly string[],
+    activeArchitectures: readonly string[],
+    compatibleAlternatives: readonly string[],
+  ): string
   added(name: string, source: LibrarySource): string
   removed(name: string, source: LibrarySource): string
   failed(action: 'load' | 'install' | 'remove', source: LibrarySource, detail: string): string
@@ -52,6 +59,14 @@ const EN: UiStrings = {
   otherArchitecture: 'Other architecture',
   resultUnit: 'libraries',
   endOfResults: 'All matching libraries are shown', sourceTabsLabel: 'Library source', versionLabel: 'version',
+  continueInstall: 'Install anyway',
+  incompatibleTitle: name => `${name} may not be compatible with the current platform`,
+  incompatibleDetail: (supported, active, alternatives) => [
+    `Supported architectures: ${supported.join(', ') || 'not declared'}`,
+    `Current architectures: ${active.join(', ') || 'unknown'}`,
+    'Continuing may cause compilation errors or incorrect runtime behavior.',
+    ...(alternatives.length > 0 ? [`Similar compatible libraries: ${alternatives.join(', ')}`] : []),
+  ].join('\n'),
   added: (name, source) => source === 'aily'
     ? `${name} was installed from Aily Library Manager`
     : `${name} was installed under sketch/libraries`,
@@ -73,6 +88,14 @@ const ZH_CN: UiStrings = {
   compatible: '兼容当前平台', otherArchitecture: '其他架构',
   resultUnit: '个库', endOfResults: '已显示全部匹配库',
   sourceTabsLabel: '库来源', versionLabel: '版本',
+  continueInstall: '仍然安装',
+  incompatibleTitle: name => `${name} 可能与当前平台不兼容`,
+  incompatibleDetail: (supported, active, alternatives) => [
+    `支持的架构：${supported.join('、') || '未声明'}`,
+    `当前架构：${active.join('、') || '未知'}`,
+    '继续安装可能导致编译失败或运行异常。',
+    ...(alternatives.length > 0 ? [`可考虑的相近兼容库：${alternatives.join('、')}`] : []),
+  ].join('\n'),
   added: (name, source) => source === 'aily'
     ? `${name} 已从 Aily 库安装到当前工程`
     : `${name} 已安装到 sketch/libraries`,
@@ -94,6 +117,14 @@ const ZH_HK: UiStrings = {
   compatible: '相容目前平台', otherArchitecture: '其他架構',
   resultUnit: '個函式庫', endOfResults: '已顯示所有相符函式庫',
   sourceTabsLabel: '函式庫來源', versionLabel: '版本',
+  continueInstall: '仍要安裝',
+  incompatibleTitle: name => `${name} 可能與目前平台不相容`,
+  incompatibleDetail: (supported, active, alternatives) => [
+    `支援的架構：${supported.join('、') || '未宣告'}`,
+    `目前架構：${active.join('、') || '未知'}`,
+    '繼續安裝可能導致編譯失敗或執行異常。',
+    ...(alternatives.length > 0 ? [`可考慮的相近相容函式庫：${alternatives.join('、')}`] : []),
+  ].join('\n'),
   added: (name, source) => source === 'aily'
     ? `${name} 已從 Aily 函式庫安裝到目前專案`
     : `${name} 已安裝到 sketch/libraries`,

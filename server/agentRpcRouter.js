@@ -67,6 +67,7 @@ function mutationParams(params) {
   return {
     libraryRef: requiredText(params, 'libraryRef', 160),
     version: nonEmptyText(params.version).slice(0, 64),
+    allowIncompatible: params.allowIncompatible === true,
   }
 }
 

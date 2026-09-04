@@ -462,9 +462,9 @@ function activeArduinoArchitectures(sdkRoots) {
   const architectures = new Set()
   for (const sdk of sdkRoots) {
     const shortName = sdk.packageName.replace(/^@aily-project\/sdk-/u, '')
-    architectures.add(shortName)
+    architectures.add(shortName.toLocaleLowerCase('en'))
     const lastSegment = shortName.split('-').at(-1)
-    if (lastSegment) architectures.add(lastSegment)
+    if (lastSegment) architectures.add(lastSegment.toLocaleLowerCase('en'))
   }
   return architectures
 }
@@ -475,8 +475,18 @@ function releaseIsCompatible(release, activeArchitectures) {
     || release.architectures.some(item => activeArchitectures.has(item.toLocaleLowerCase('en')))
 }
 
+function compatibilityDetails(release, activeArchitectures, compatibleAlternatives = []) {
+  return {
+    compatible: releaseIsCompatible(release, activeArchitectures),
+    supportedArchitectures: [...release.architectures],
+    activeArchitectures: [...activeArchitectures].sort((left, right) => left.localeCompare(right, 'en')),
+    compatibleAlternatives,
+  }
+}
+
 function toRegistryClientLibrary(library, installed, activeArchitectures, selectedVersion) {
   const selected = library.versions.find(item => item.version === selectedVersion) ?? library.versions[0]
+  const compatibility = compatibilityDetails(selected, activeArchitectures)
   const managed = Boolean(
     installed?.receipt
     && installed.receipt.source === 'arduino-library-manager'
@@ -500,7 +510,8 @@ function toRegistryClientLibrary(library, installed, activeArchitectures, select
     url: selected.website || selected.repository,
     architectures: selected.architectures,
     types: selected.types,
-    compatible: releaseIsCompatible(selected, activeArchitectures),
+    compatible: compatibility.compatible,
+    compatibility,
     installed: Boolean(installed),
     installedVersion: installed?.version ?? '',
     managed,
@@ -678,6 +689,7 @@ export async function installArduinoComponentLibrary({
   appDataPath,
   libraryId,
   version,
+  allowIncompatible = false,
 }) {
   const projectRoot = await resolveWorkspaceRoot(workspaceRoot)
   const appDataRoot = await resolveAppDataRoot(appDataPath)
@@ -691,11 +703,13 @@ export async function installArduinoComponentLibrary({
   }
 
   const sdkRoots = await resolveSdkRoots(projectRoot, appDataRoot)
-  if (!releaseIsCompatible(match.release, activeArduinoArchitectures(sdkRoots))) {
+  const activeArchitectures = activeArduinoArchitectures(sdkRoots)
+  const compatibility = compatibilityDetails(match.release, activeArchitectures)
+  if (!compatibility.compatible && !allowIncompatible) {
     throw new ComponentLibraryError(
       'ARDUINO_LIBRARY_INCOMPATIBLE',
       `${match.library.name} ${match.release.version} is not compatible with the active Coder architecture`,
-      { architectures: match.release.architectures },
+      compatibility,
     )
   }
 
@@ -748,8 +762,12 @@ export async function installArduinoComponentLibrary({
             folderName,
             version: match.release.version,
             receipt: existingReceipt,
-          }, new Set(), match.release.version),
+          }, activeArchitectures, match.release.version),
           alreadyInstalled: true,
+          compatibilityOverride: !compatibility.compatible,
+          ...(!compatibility.compatible
+            ? { compatibilityWarning: 'Installed despite an incompatible active Coder architecture' }
+            : {}),
         }
       }
       throw new ComponentLibraryError(
@@ -763,8 +781,12 @@ export async function installArduinoComponentLibrary({
         folderName,
         version: match.release.version,
         receipt,
-      }, new Set(), match.release.version),
+      }, activeArchitectures, match.release.version),
       alreadyInstalled: false,
+      compatibilityOverride: !compatibility.compatible,
+      ...(!compatibility.compatible
+        ? { compatibilityWarning: 'Installed despite an incompatible active Coder architecture' }
+        : {}),
     }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
@@ -789,6 +811,7 @@ export async function removeArduinoComponentLibrary({
 
 function toCoderIndexClientLibrary(library, installed, activeArchitectures, selectedVersion) {
   const selected = library.versions.find(item => item.version === selectedVersion) ?? library.versions[0]
+  const compatibility = compatibilityDetails(selected, activeArchitectures)
   const managed = Boolean(
     installed?.receipt
     && installed.receipt.source === 'aily-coder-index'
@@ -816,11 +839,62 @@ function toCoderIndexClientLibrary(library, installed, activeArchitectures, sele
     types: selected.types,
     dependencies: selected.dependencies,
     providesIncludes: selected.providesIncludes,
-    compatible: releaseIsCompatible(selected, activeArchitectures),
+    compatible: compatibility.compatible,
+    compatibility,
     installed: Boolean(installed),
     installedVersion: installed?.version ?? '',
     managed,
   }
+}
+
+function similarityTokens(release) {
+  const ignored = new Set(['aily', 'arduino', 'library', 'libraries', 'the', 'and', 'for', 'with'])
+  return new Set([
+    release.name,
+    release.sentence,
+    release.paragraph,
+    ...release.providesIncludes,
+  ].join(' ').normalize('NFKC').toLocaleLowerCase('en')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(token => token.length >= 3 && !ignored.has(token)))
+}
+
+function compatibleCoderAlternatives(registry, match, activeArchitectures, limit = 3) {
+  const target = match.release
+  const targetTokens = similarityTokens(target)
+  const targetTypes = new Set(target.types)
+  return registry.libraries.flatMap(library => {
+    if (library.id === match.library.id) return []
+    const release = library.versions.find(candidate => releaseIsCompatible(candidate, activeArchitectures))
+    if (!release) return []
+
+    const sharedTypes = release.types.filter(type => targetTypes.has(type))
+    const sharedTokens = [...similarityTokens(release)].filter(token => targetTokens.has(token))
+    const sameCategory = Boolean(target.category && release.category === target.category)
+    const score = (sameCategory ? 8 : 0) + sharedTypes.length * 4 + Math.min(sharedTokens.length, 5)
+    if (score === 0) return []
+    return [{
+      libraryRef: library.id,
+      name: release.name,
+      version: release.version,
+      sentence: release.sentence,
+      category: release.category,
+      architectures: release.architectures,
+      types: release.types,
+      similarityReasons: [
+        ...(sameCategory ? [`category:${release.category}`] : []),
+        ...sharedTypes.map(type => `type:${type}`),
+        ...sharedTokens.slice(0, 3).map(token => `keyword:${token}`),
+      ],
+      score,
+    }]
+  }).sort((left, right) => (
+    right.score - left.score || left.name.localeCompare(right.name, 'en')
+  )).slice(0, limit).map(item => {
+    const library = { ...item }
+    Reflect.deleteProperty(library, 'score')
+    return library
+  })
 }
 
 export async function searchCoderIndexLibraries({
@@ -852,14 +926,29 @@ export async function searchCoderIndexLibraries({
   ])
   const activeArchitectures = activeArduinoArchitectures(sdkRoots)
   const result = searchCoderLibraryRegistry(registry, { query, category, type, offset, limit })
+  const libraries = result.libraries.map(library => toCoderIndexClientLibrary(
+    library,
+    installed.get(library.name.toLocaleLowerCase('en')),
+    activeArchitectures,
+  ))
+  const normalizedQuery = String(query ?? '').normalize('NFKC').trim().toLocaleLowerCase('en')
+  const exactMatch = result.libraries.find(library => (
+    library.name.normalize('NFKC').toLocaleLowerCase('en') === normalizedQuery
+  ))
+  const exactClientLibrary = exactMatch
+    ? libraries.find(library => library.id === exactMatch.id)
+    : null
+  const matchedRelease = exactMatch
+    ? findCoderLibraryRelease(registry, exactMatch.id, exactClientLibrary?.version)
+    : null
   return {
     ...result,
     tier: 'preferred',
-    libraries: result.libraries.map(library => toCoderIndexClientLibrary(
-      library,
-      installed.get(library.name.toLocaleLowerCase('en')),
-      activeArchitectures,
-    )),
+    libraries,
+    activeArchitectures: [...activeArchitectures].sort((left, right) => left.localeCompare(right, 'en')),
+    compatibleAlternatives: matchedRelease && exactClientLibrary?.compatible === false
+      ? compatibleCoderAlternatives(registry, matchedRelease, activeArchitectures)
+      : [],
     categories: registry.categories,
     types: registry.types,
     updatedAt: registry.updatedAt,
@@ -868,7 +957,14 @@ export async function searchCoderIndexLibraries({
   }
 }
 
-function coderInstallResult(registry, match, installed, activeArchitectures, alreadyInstalled) {
+function coderInstallResult(
+  registry,
+  match,
+  installed,
+  activeArchitectures,
+  alreadyInstalled,
+  compatibilityOverride,
+) {
   const library = toCoderIndexClientLibrary(
     match.library,
     installed,
@@ -885,6 +981,10 @@ function coderInstallResult(registry, match, installed, activeArchitectures, alr
     sourceDirectory,
     libraryRoots: [sourceDirectory],
     indexUrl: registry.indexUrl,
+    compatibilityOverride,
+    ...(compatibilityOverride
+      ? { compatibilityWarning: 'Installed despite an incompatible active Coder architecture' }
+      : {}),
   }
 }
 
@@ -896,6 +996,7 @@ export async function installCoderIndexLibrary({
   indexUrl,
   fetchImpl,
   signal,
+  allowIncompatible = false,
 }) {
   const projectRoot = await resolveWorkspaceRoot(workspaceRoot)
   const appDataRoot = await resolveAppDataRoot(appDataPath)
@@ -915,13 +1016,19 @@ export async function installCoderIndexLibrary({
 
   const sdkRoots = await resolveSdkRoots(projectRoot, appDataRoot)
   const activeArchitectures = activeArduinoArchitectures(sdkRoots)
-  if (!releaseIsCompatible(match.release, activeArchitectures)) {
+  const isCompatible = releaseIsCompatible(match.release, activeArchitectures)
+  const alternatives = isCompatible
+    ? []
+    : compatibleCoderAlternatives(registry, match, activeArchitectures)
+  const compatibility = compatibilityDetails(match.release, activeArchitectures, alternatives)
+  if (!compatibility.compatible && !allowIncompatible) {
     throw new ComponentLibraryError(
       'CODER_LIBRARY_INCOMPATIBLE',
       `${match.library.name} ${match.release.version} is not compatible with the active Coder architecture`,
-      { architectures: match.release.architectures },
+      compatibility,
     )
   }
+  const compatibilityOverride = !compatibility.compatible
 
   const librariesRoot = path.join(projectRoot, 'sketch', 'libraries')
   await mkdir(librariesRoot, { recursive: true })
@@ -987,6 +1094,7 @@ export async function installCoderIndexLibrary({
           { folderName, version: match.release.version, receipt: existingReceipt },
           activeArchitectures,
           true,
+          compatibilityOverride,
         )
       }
       throw new ComponentLibraryError(
@@ -1001,6 +1109,7 @@ export async function installCoderIndexLibrary({
       { folderName, version: match.release.version, receipt },
       activeArchitectures,
       false,
+      compatibilityOverride,
     )
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })

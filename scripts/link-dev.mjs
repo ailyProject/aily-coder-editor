@@ -222,6 +222,9 @@ async function createCatalogEntry() {
   return {
     id: catalogId,
     role: 'dependency',
+    only: typeof packageJson.only === 'string' && packageJson.only.trim()
+      ? packageJson.only.trim().toLowerCase()
+      : 'all',
     titleKey: subapp.titleKey,
     namespace: subapp.namespace,
     app: { ...subapp.app },
