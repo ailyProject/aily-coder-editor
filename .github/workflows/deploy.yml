@@ -356,3 +356,51 @@ jobs:
             --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
             --content-type "application/json" \
             --only-show-errors
+
+      - name: Upload subapp index to RustFS
+        env:
+          RUSTFS_ENDPOINT: ${{ secrets.RUSTFS_ENDPOINT }}
+          RUSTFS_ACCESS_KEY_ID: ${{ secrets.RUSTFS_ACCESS_KEY_ID }}
+          RUSTFS_SECRET_ACCESS_KEY: ${{ secrets.RUSTFS_SECRET_ACCESS_KEY }}
+          RUSTFS_BUCKET: ${{ secrets.RUSTFS_BUCKET }}
+          RUSTFS_TARGET: ${{ secrets.RUSTFS_TARGET }}
+        run: |
+          if [ -z "$RUSTFS_ENDPOINT" ] || [ -z "$RUSTFS_ACCESS_KEY_ID" ] || [ -z "$RUSTFS_SECRET_ACCESS_KEY" ] || [ -z "$RUSTFS_BUCKET" ]; then
+            echo "RustFS secrets not set, skipping."
+            exit 0
+          fi
+
+          retry_with_backoff() {
+            local max_attempts="$1"
+            local sleep_seconds="$2"
+            shift 2
+            local attempt=1
+
+            until "$@"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "Command failed after ${max_attempts} attempts: $*"
+                return 1
+              fi
+              echo "Attempt ${attempt}/${max_attempts} failed. Retrying in ${sleep_seconds}s: $*"
+              sleep "$sleep_seconds"
+              attempt=$((attempt + 1))
+              sleep_seconds=$((sleep_seconds * 2))
+            done
+          }
+
+          export AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_ACCESS_KEY"
+          export AWS_DEFAULT_REGION="us-east-1"
+
+          PREFIX="$RUSTFS_TARGET"
+          PREFIX="${PREFIX#/}"
+          PREFIX="${PREFIX%/}"
+          if [ -n "$PREFIX" ]; then
+            PREFIX="${PREFIX}/"
+          fi
+
+          retry_with_backoff 3 3 aws --endpoint-url "$RUSTFS_ENDPOINT" s3 cp \
+            dist/subapp-index.json \
+            "s3://${RUSTFS_BUCKET}/${PREFIX}subapp-index.json" \
+            --content-type "application/json" \
+            --no-progress
