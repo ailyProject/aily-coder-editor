@@ -17,10 +17,17 @@ import {
   DEEPSEEK_FIM_END,
   DEEPSEEK_FIM_HOLE,
   fetchLmStudioFimInlineCompletion,
-  sanitizeInlineCompletionOutput,
   type InlineCompletionRequestPolicy
 } from './aiInlineCompletionTransport'
 import { isFileInlineCompletionDocument } from './aiInlineCompletionScope'
+import { buildInlineCompletionContext } from './aiInlineCompletionContext'
+import {
+  completionDebounceMs,
+  extendSelectedCompletion,
+  InlineCompletionTriggerTracker,
+  prepareInlineCompletion,
+  shouldRequestInlineCompletion
+} from './aiInlineCompletionPolicy'
 
 const inlineCompletionDocumentSelector: vscode.DocumentSelector = [{ scheme: 'file' }]
 const DEFAULT_STOP_SEQUENCES = ['\n\n', '```']
@@ -96,8 +103,8 @@ function parseCloudRequestPolicy(): {
 
 function parsePromptCharCaps(): { beforeMax: number; afterMax: number } {
   return {
-    beforeMax: parseBoundedInteger('VITE_AI_INLINE_MAX_BEFORE_CHARS', 96_000, 4096, 131_072),
-    afterMax: parseBoundedInteger('VITE_AI_INLINE_MAX_AFTER_CHARS', 32_000, 1024, 65_536)
+    beforeMax: parseBoundedInteger('VITE_AI_INLINE_MAX_BEFORE_CHARS', 12_000, 1024, 131_072),
+    afterMax: parseBoundedInteger('VITE_AI_INLINE_MAX_AFTER_CHARS', 4000, 512, 65_536)
   }
 }
 
@@ -136,25 +143,8 @@ function parseLocalInference(): {
   }
 }
 
-function splitPrefixSuffix(document: vscode.TextDocument, position: vscode.Position): {
-  prefix: string
-  suffix: string
-} {
-  const full = document.getText()
-  const offset = document.offsetAt(position)
-  const { beforeMax, afterMax } = parsePromptCharCaps()
-  return {
-    prefix: full.slice(Math.max(0, offset - beforeMax), offset),
-    suffix: full.slice(offset, offset + afterMax)
-  }
-}
-
 function localFimPrompt(prefix: string, suffix: string): string {
   return `${DEEPSEEK_FIM_BEGIN}${prefix}${DEEPSEEK_FIM_HOLE}${suffix}${DEEPSEEK_FIM_END}`
-}
-
-function mergeInsertExtendingSelected(text: string, selectedText: string): string {
-  return selectedText.length === 0 || text.startsWith(selectedText) ? text : selectedText + text
 }
 
 function workspaceRelativePath(api: typeof vscode, document: vscode.TextDocument): string | undefined {
@@ -242,8 +232,19 @@ void getApi().then(api => {
   const metadata = new WeakMap<vscode.InlineCompletionItem, CompletionMetadata>()
   const shown = new WeakSet<vscode.InlineCompletionItem>()
   const terminal = new WeakSet<vscode.InlineCompletionItem>()
+  const triggers = new InlineCompletionTriggerTracker()
   let latestEpoch = 0
   let localAbort: AbortController | undefined
+
+  api.workspace.onDidChangeTextDocument(event => {
+    if (event.contentChanges.length === 0) return
+    const suppress = event.reason != null || event.contentChanges.length > 1 ||
+      event.contentChanges.some(change =>
+        (change.text.length === 0 && change.rangeLength > 0) || change.text.length > 128
+      )
+    triggers.changed(event.document.uri.toString(), event.document.version, suppress)
+  })
+  api.workspace.onDidCloseTextDocument(document => triggers.close(document.uri.toString()))
 
   const completionProvider: vscode.InlineCompletionItemProvider = {
     async provideInlineCompletionItems(document, position, context, token) {
@@ -254,24 +255,55 @@ void getApi().then(api => {
       const version = document.version
       const selected = context.selectedCompletionInfo
       const completionTriggerKind = triggerKind(api, context)
+      const documentKey = document.uri.toString()
+      const offset = document.offsetAt(position)
+      const fullText = document.getText()
+      const before = fullText.slice(0, offset)
+      const after = fullText.slice(offset)
+      const editor = api.window.activeTextEditor
+      if (
+        editor == null || editor.document !== document || !editor.selection.isEmpty ||
+        editor.selections.length !== 1 || !editor.selection.active.isEqual(position) ||
+        !triggers.allow(documentKey, version, offset, completionTriggerKind) ||
+        !shouldRequestInlineCompletion(before, after, completionTriggerKind)
+      ) return []
+      // The suggest widget's default item is often alphabetical, not user intent.
+      // Predict against the real buffer, then enforce its replacement contract on the result.
+      if (selected != null && (
+        !selected.range.isSingleLine || !selected.range.contains(position) ||
+        !selected.range.end.isEqual(position) || selected.text.includes('\n')
+      )) return []
       const cancellation = cancellationSignal(token)
 
       try {
         await waitForDebounce(
-          completionTriggerKind === 'invoke' ? 0 : parseProviderDebounceDelayMs(),
+          completionTriggerKind === 'invoke' ? 0 : completionDebounceMs(before, parseProviderDebounceDelayMs()),
           cancellation.signal
         )
         if (token.isCancellationRequested || epoch !== latestEpoch || document.version !== version) {
           return []
         }
 
-        const { prefix, suffix } = splitPrefixSuffix(document, position)
+        const relativePath = workspaceRelativePath(api, document)
+        const folder = api.workspace.getWorkspaceFolder(document.uri)?.uri.toString()
+        const { prefix, suffix, context: relatedContext } = buildInlineCompletionContext({
+          active: { uri: documentKey, languageId: document.languageId, relativePath, text: fullText, offset },
+          documents: folder == null ? [] : api.workspace.textDocuments
+            .filter(other => other !== document && isFileInlineCompletionDocument(other) &&
+              api.workspace.getWorkspaceFolder(other.uri)?.uri.toString() === folder && other.getText().length <= 300_000)
+            .slice(-20)
+            .reverse()
+            .map(other => ({ uri: other.uri.toString(), languageId: other.languageId,
+              relativePath: workspaceRelativePath(api, other), text: other.getText() })),
+          ...parsePromptCharCaps()
+        })
         let result: CloudCompletionResult | undefined
         let insertText: string
         if (cloudClient != null) {
-          const relativePath = workspaceRelativePath(api, document)
           result = await cloudClient.complete(
             {
+              documentKey,
+              documentPrefix: before,
               opportunityId: validOpportunityId(context.requestUuid),
               triggerKind: completionTriggerKind,
               document: {
@@ -282,7 +314,8 @@ void getApi().then(api => {
               position: { line: position.line, character: position.character },
               prefix,
               suffix,
-              ...(selected != null ? { selectedCompletionInfo: { text: selected.text } } : {})
+              context: relatedContext,
+              ...(selected != null ? { selectedCompletionKey: JSON.stringify([selected.range.start, selected.text]) } : {})
             },
             cancellation.signal
           )
@@ -293,8 +326,9 @@ void getApi().then(api => {
             return []
           }
           localAbort?.abort()
-          localAbort = new AbortController()
-          const onCancellation = () => localAbort?.abort()
+          const requestAbort = new AbortController()
+          localAbort = requestAbort
+          const onCancellation = () => requestAbort.abort()
           cancellation.signal.addEventListener('abort', onCancellation, { once: true })
           try {
             insertText = await fetchLmStudioFimInlineCompletion({
@@ -302,7 +336,7 @@ void getApi().then(api => {
               apiBaseUrl,
               apiKey: readViteEnv('VITE_AI_INLINE_COMPLETION_KEY'),
               model: readViteEnv('VITE_AI_INLINE_COMPLETION_MODEL'),
-              signal: localAbort.signal,
+              signal: requestAbort.signal,
               ...parseLocalInference(),
               ...parseLocalRequestPolicy()
             })
@@ -315,18 +349,20 @@ void getApi().then(api => {
           token.isCancellationRequested ||
           epoch !== latestEpoch ||
           document.version !== version ||
-          !insertText
+          !insertText || api.window.activeTextEditor !== editor ||
+          !editor.selection.isEmpty || !editor.selection.active.isEqual(position)
         ) {
           return []
         }
-        insertText = sanitizeInlineCompletionOutput(insertText)
-        if (!insertText) {
-          return []
-        }
+        insertText = prepareInlineCompletion({ raw: insertText, prefix, suffix, trigger: completionTriggerKind })
 
         const range = selected?.range ?? new api.Range(position, position)
         if (selected != null) {
-          insertText = mergeInsertExtendingSelected(insertText, selected.text)
+          insertText = extendSelectedCompletion(insertText, fullText.slice(document.offsetAt(selected.range.start), offset), selected.text)
+        }
+        if (!insertText) {
+          if (result != null) cloudClient?.discardCompletion(result.completionId)
+          return []
         }
         const item = new api.InlineCompletionItem(insertText, range)
         item.filterText = insertText

@@ -57,6 +57,12 @@ export interface CloudCompletionResult {
 }
 
 export interface CloudCompletionInput {
+  /** Local document identity for reuse isolation; never forwarded to the host. */
+  documentKey?: string
+  /** Full local prefix for reuse/rejection anchors when the wire prefix is a sliding window. */
+  documentPrefix?: string
+  /** Local selected-suggestion identity, including its replacement range. */
+  selectedCompletionKey?: string
   opportunityId?: string
   triggerKind: CloudCompletionTriggerKind
   document: CloudCompletionRequest['document']
@@ -439,8 +445,10 @@ export class ParentCodeCompletionTransport implements CloudCompletionTransport {
 }
 
 type CacheEntry = CloudCompletionResult & {
+  scope: string
   prefix: string
   suffix: string
+  expiresAt: number
 }
 
 class CopilotStyleCompletionCache {
@@ -448,12 +456,16 @@ class CopilotStyleCompletionCache {
 
   constructor(private readonly capacity = 100) {}
 
-  find(prefix: string, suffix: string): CloudCompletionResult | undefined {
+  find(scope: string, prefix: string, suffix: string, now: number, allowEmpty: boolean): CloudCompletionResult | undefined {
+    this.entries = this.entries.filter(entry => entry.expiresAt > now)
     const index = this.entries.findIndex(entry => {
-      if (entry.suffix !== suffix || !prefix.startsWith(entry.prefix)) {
+      if (entry.scope !== scope || entry.suffix !== suffix || !prefix.startsWith(entry.prefix)) {
         return false
       }
       const remainingPrefix = prefix.slice(entry.prefix.length)
+      if (entry.text === '') {
+        return allowEmpty && remainingPrefix === ''
+      }
       return entry.text.startsWith(remainingPrefix) && entry.text.length > remainingPrefix.length
     })
     if (index < 0) {
@@ -473,11 +485,11 @@ class CopilotStyleCompletionCache {
     }
   }
 
-  append(prefix: string, suffix: string, result: CloudCompletionResult): void {
+  append(entry: CacheEntry): void {
     this.entries = this.entries.filter(
-      entry => !(entry.prefix === prefix && entry.suffix === suffix && entry.completionId === result.completionId)
+      cached => !(cached.scope === entry.scope && cached.prefix === entry.prefix && cached.suffix === entry.suffix)
     )
-    this.entries.unshift({ prefix, suffix, ...result })
+    this.entries.unshift(entry)
     if (this.entries.length > this.capacity) {
       this.entries.length = this.capacity
     }
@@ -489,6 +501,7 @@ class CopilotStyleCompletionCache {
 }
 
 type InFlightCompletion = {
+  scope: string
   prefix: string
   suffix: string
   partialText?: string
@@ -526,15 +539,32 @@ function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
 }
 
 function completionCandidate(
+  scope: string,
   prefix: string,
   suffix: string,
   request: InFlightCompletion
 ): boolean {
-  if (request.suffix !== suffix || !prefix.startsWith(request.prefix)) {
+  if (request.scope !== scope || request.suffix !== suffix || !prefix.startsWith(request.prefix)) {
     return false
   }
   const remainingPrefix = prefix.slice(request.prefix.length)
   return request.partialText == null || request.partialText.startsWith(remainingPrefix)
+}
+
+function completionScope(input: CloudCompletionInput): string {
+  return JSON.stringify([
+    input.documentKey ?? '',
+    input.document.languageId,
+    input.document.relativePath ?? '',
+    input.selectedCompletionKey ?? '',
+    input.selectedCompletionInfo?.text ?? '',
+    (input.context ?? []).map(snippet => [
+      snippet.kind,
+      snippet.languageId,
+      snippet.relativePath ?? '',
+      snippet.text
+    ])
+  ])
 }
 
 export class CloudInlineCompletionClient {
@@ -543,6 +573,11 @@ export class CloudInlineCompletionClient {
   private readonly now: () => number
   private readonly minRequestIntervalMs: number
   private readonly rateLimitCooldownMs: number
+  private readonly cacheTtlMs: number
+  private readonly emptyResultTtlMs: number
+  private readonly rejectionTtlMs: number
+  private readonly recentCompletions = new Map<string, CacheEntry>()
+  private rejectedCompletions: CacheEntry[] = []
   private requestTail: Promise<void> = Promise.resolve()
   private nextRequestAt = 0
   private blockedUntil = 0
@@ -555,29 +590,52 @@ export class CloudInlineCompletionClient {
       now?: () => number
       minRequestIntervalMs?: number
       rateLimitCooldownMs?: number
+      cacheTtlMs?: number
+      emptyResultTtlMs?: number
+      rejectionTtlMs?: number
     } = {}
   ) {
     this.now = options.now ?? Date.now
     this.minRequestIntervalMs = Math.max(0, options.minRequestIntervalMs ?? 500)
     this.rateLimitCooldownMs = Math.max(1_000, options.rateLimitCooldownMs ?? 30_000)
+    this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 30_000)
+    this.emptyResultTtlMs = Math.max(0, options.emptyResultTtlMs ?? 1_500)
+    this.rejectionTtlMs = Math.max(0, options.rejectionTtlMs ?? 30_000)
   }
 
   async complete(input: CloudCompletionInput, signal?: AbortSignal): Promise<CloudCompletionResult> {
-    const cached = this.cache.find(input.prefix, input.suffix)
+    if (signal?.aborted) {
+      throw abortError(signal)
+    }
+    const scope = completionScope(input)
+    const documentPrefix = input.documentPrefix ?? input.prefix
+    this.rejectedCompletions = this.rejectedCompletions.filter(entry => entry.expiresAt > this.now())
+    if (input.triggerKind === 'automatic') {
+      const rejected = this.rejectedCompletions.find(entry =>
+        entry.scope === scope && entry.prefix === documentPrefix && entry.suffix === input.suffix
+      )
+      if (rejected != null) {
+        return { text: '', completionId: rejected.completionId, opportunityId: rejected.opportunityId }
+      }
+    }
+    const cached = this.cache.find(scope, documentPrefix, input.suffix, this.now(), input.triggerKind === 'automatic')
     if (cached != null) {
-      return cached
+      return this.prepareResult(input, scope, cached)
     }
 
     const candidate = [...this.inFlight.values()].find(
       request =>
         !request.controller.signal.aborted &&
-        completionCandidate(input.prefix, input.suffix, request)
+        completionCandidate(scope, documentPrefix, input.suffix, request)
     )
     if (candidate != null) {
       const result = await this.consume(candidate, signal)
-      const remainingPrefix = input.prefix.slice(candidate.prefix.length)
+      const remainingPrefix = documentPrefix.slice(candidate.prefix.length)
       if (result.text.startsWith(remainingPrefix) && result.text.length > remainingPrefix.length) {
-        return { ...result, text: result.text.slice(remainingPrefix.length) }
+        return this.prepareResult(input, scope, { ...result, text: result.text.slice(remainingPrefix.length) })
+      }
+      if (remainingPrefix === '' && result.text === '') {
+        return this.prepareResult(input, scope, result)
       }
     }
 
@@ -592,7 +650,7 @@ export class CloudInlineCompletionClient {
     }
 
     for (const request of this.inFlight.values()) {
-      if (!request.started && !completionCandidate(input.prefix, input.suffix, request)) {
+      if (!request.started && !completionCandidate(scope, documentPrefix, input.suffix, request)) {
         request.controller.abort()
       }
     }
@@ -618,7 +676,8 @@ export class CloudInlineCompletionClient {
       }
     }
     const inFlight: InFlightCompletion = {
-      prefix: input.prefix,
+      scope,
+      prefix: documentPrefix,
       suffix: input.suffix,
       activeConsumers: 0,
       started: false,
@@ -627,7 +686,13 @@ export class CloudInlineCompletionClient {
     }
     const promise = this.scheduleRequest(request, inFlight)
       .then(result => {
-        this.cache.append(input.prefix, input.suffix, result)
+        this.cache.append({
+          scope,
+          prefix: documentPrefix,
+          suffix: input.suffix,
+          ...result,
+          expiresAt: this.now() + (result.text === '' ? this.emptyResultTtlMs : this.cacheTtlMs)
+        })
         return result
       })
       .finally(() => {
@@ -636,7 +701,7 @@ export class CloudInlineCompletionClient {
     inFlight.promise = promise
     this.inFlight.set(opportunityId, inFlight)
 
-    return this.consume(inFlight, signal)
+    return this.prepareResult(input, scope, await this.consume(inFlight, signal))
   }
 
   feedback(
@@ -651,8 +716,54 @@ export class CloudInlineCompletionClient {
       opportunityId
     })
     if (event === 'accepted' || event === 'rejected' || event === 'ignored' || event === 'superseded') {
+      const recent = this.recentCompletions.get(completionId)
+      if ((event === 'rejected' || event === 'ignored') && recent != null && recent.text !== '') {
+        this.rejectedCompletions = this.rejectedCompletions.filter(entry =>
+          entry.expiresAt > this.now() && entry.completionId !== completionId
+        )
+        this.rejectedCompletions.unshift({ ...recent, expiresAt: this.now() + this.rejectionTtlMs })
+        this.rejectedCompletions.length = Math.min(this.rejectedCompletions.length, 100)
+      }
       this.cache.deleteCompletion(completionId)
+      this.recentCompletions.delete(completionId)
     }
+  }
+
+  /** Drop a filtered candidate without treating it as an explicit user rejection. */
+  discardCompletion(completionId: string): void {
+    this.cache.deleteCompletion(completionId)
+  }
+
+  private prepareResult(input: CloudCompletionInput, scope: string, result: CloudCompletionResult): CloudCompletionResult {
+    const documentPrefix = input.documentPrefix ?? input.prefix
+    if (input.triggerKind === 'automatic' && this.rejectedCompletions.some(entry => {
+      if (entry.expiresAt <= this.now() || entry.scope !== scope || entry.suffix !== input.suffix || !documentPrefix.startsWith(entry.prefix)) {
+        return false
+      }
+      const typed = documentPrefix.slice(entry.prefix.length)
+      return entry.text.startsWith(typed) && entry.text.slice(typed.length) === result.text
+    })) {
+      return { ...result, text: '' }
+    }
+    if (result.text !== '') {
+      for (const [completionId, entry] of this.recentCompletions) {
+        if (entry.expiresAt <= this.now()) {
+          this.recentCompletions.delete(completionId)
+        }
+      }
+      this.recentCompletions.delete(result.completionId)
+      this.recentCompletions.set(result.completionId, {
+        ...result, scope, prefix: documentPrefix, suffix: input.suffix,
+        expiresAt: this.now() + Math.max(this.cacheTtlMs, this.rejectionTtlMs)
+      })
+      if (this.recentCompletions.size > 100) {
+        const oldest = this.recentCompletions.keys().next().value
+        if (oldest != null) {
+          this.recentCompletions.delete(oldest)
+        }
+      }
+    }
+    return result
   }
 
   dispose(): void {

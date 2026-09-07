@@ -191,7 +191,9 @@ npm start
 
 ### 可选：行间 AI 补全
 
-复制 `.env.example` 为 `.env`，配置 `VITE_AI_INLINE_*`。默认使用 `auto` provider：LM Studio/OpenAI 兼容服务走 DeepSeek FIM `POST /v1/completions`，`open.bigmodel.cn` 走智谱 `POST /chat/completions`。两条请求链都有超时、最小请求间隔和 429 冷却；此为**编辑器内辅助能力**，与 Aily Blockly 主 AI 工具链无关；未配置 URL 时使用本地 mock。智谱密钥当前仅用于前端联调，生产版需迁移到独立服务器。
+Electron iframe 默认使用 `cloud`，通过宿主认证桥接请求补全；独立页面配置本地 URL 后使用 `lmstudio-fim`，否则关闭。可复制 `.env.example` 配置 `VITE_AI_INLINE_*`。云端模型与凭证由宿主/服务端管理。
+
+自动补全结合光标前后代码与已打开的相关源码片段预测下一段代码；过滤重复语句和低价值输出，拒绝后短时抑制，并保持与 IntelliSense 候选的兼容性。具体策略、默认预算及验证场景见 [行内补全当前实现](docs/aily-code-inlineAi-current.md)。
 
 ---
 
