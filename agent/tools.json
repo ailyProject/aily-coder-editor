@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "coder_library_search",
-      "description": "Search the region-specific Aily Coder library catalog for the active project. The catalog is loaded only from libraries-coder-index.json under the main application's selected region resource. Results expose compatibility, activeArchitectures, compatibleAlternatives for a single incompatible match, installed, installedVersion, and managed. Treat alternatives as metadata-ranked candidates and verify their APIs before recommendation. Copy libraryRef and version exactly for installation; for removal use installedVersion and proceed only when installed=true and managed=true. Ignore legacy @aily-project/lib-* root dependencies and node_modules copies even when present; do not use Blockly library package names or sources.",
+      "description": "Search Aily libraries using the shared Blockly libraries.json and libraries-index.json from the main application. Results return exact blockly:@aily-project/lib-* libraryRef, packageName, version, compatibility, activeArchitectures, compatibleAlternatives, installedVersion, installed and managed. An npm package alone is not ready for Coder: source must exist under sketch/libraries. Copy returned refs and versions; for removal require installed=true and managed=true and use installedVersion. Existing managed ZIP libraries remain discoverable for removal.",
       "rpc": {
         "method": "coder.library.search"
       },
@@ -53,7 +53,7 @@
           "forceRefresh": {
             "type": "boolean",
             "default": false,
-            "description": "Refresh libraries-coder-index.json from the resource configured for the selected region."
+            "description": "Refresh the shared Blockly library catalogs from the selected regional resource."
           }
         },
         "additionalProperties": false
@@ -61,7 +61,7 @@
     },
     {
       "name": "coder_library_install",
-      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true. Use that override only when the user explicitly requested this named library and confirmed after being told the supported/current architectures and compatible alternatives; if that confirmation UI times out, is skipped, or is unavailable, the original explicit install request remains authoritative and the override may be used, but the final response must disclose the incompatibility and alternatives. Never override compatibility for an Agent-selected library. The Coder Runtime downloads the ZIP URL from libraries-coder-index.json, verifies its declared size and SHA-256 checksum, safely extracts it into sketch/libraries, and returns the exact sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not use npm, Blockly library archives, or guessed paths.",
+      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true. Use that override only when the user explicitly requested this named library and confirmed after being told the supported/current architectures and compatible alternatives; if that confirmation UI times out, is skipped, or is unavailable, the original explicit install request remains authoritative and the override may be used, but the final response must disclose the incompatibility and alternatives. Never override compatibility for an Agent-selected library. The Coder Runtime uses the shared Blockly npm package and registry configuration, retains the root package.json dependency and node_modules package, and safely extracts its src.7z into sketch/libraries. Require ready=true, packageJsonLinked=true and non-empty libraryRoots; inspect returned packageDirectory, sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not invoke npm or extract archives manually.",
       "rpc": {
         "method": "coder.library.install"
       },
@@ -113,7 +113,7 @@
     },
     {
       "name": "coder_library_remove",
-      "description": "Remove one exact Aily Coder catalog library previously installed under sketch/libraries by coder_library_install. First search for the library and proceed only when installed=true and managed=true, then pass its exact libraryRef and installedVersion. Removal is resolved from the project-local managed receipt, so the current online index does not need to contain that installed version. Never remove a local, copied, malformed, or differently sourced library, and never change root package.json or node_modules.",
+      "description": "Remove one exact installed Aily library using its project-local managed receipt. First search and require installed=true and managed=true; copy libraryRef and installedVersion. Shared Blockly packages are uninstalled from root npm dependencies and their unchanged managed sketch/libraries roots are removed. Removal does not require an online catalog. Preserve local, copied, modified, malformed or differently sourced libraries. Existing managed ZIP libraries remain removable by their original refs.",
       "rpc": {
         "method": "coder.library.remove"
       },

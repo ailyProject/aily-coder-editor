@@ -19,7 +19,7 @@ import {
   removeCoderLibrary,
   scanComponentLibraries,
   searchArduinoComponentLibraries,
-  searchCoderLibraries,
+  searchCoderIndexLibraries,
 } from './componentLibraryService.js'
 import {
   parseCoderLibraryIndex,
@@ -398,7 +398,7 @@ test('rejects Coder index archives that can escape the staging directory', () =>
   }), /contains no valid libraries/)
 })
 
-test('searches the regional Coder index and installs its ZIP under sketch/libraries', async t => {
+test('supports the legacy regional Coder index and installs its ZIP under sketch/libraries', async t => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-index-library-'))
   t.after(() => rm(tempRoot, { recursive: true, force: true }))
   const workspaceRoot = path.join(tempRoot, 'project')
@@ -451,7 +451,7 @@ test('searches the regional Coder index and installs its ZIP under sketch/librar
     boardDependencies: { '@aily-project/sdk-test': '1.0.0' },
   }))
 
-  const search = await searchCoderLibraries({
+  const search = await searchCoderIndexLibraries({
     workspaceRoot,
     appDataPath,
     indexUrl,
@@ -498,7 +498,7 @@ test('searches the regional Coder index and installs its ZIP under sketch/librar
       appDataPath,
       indexUrl,
       fetchImpl,
-      libraryRef: 'blockly:@aily-project/lib-aily-test',
+      libraryRef: 'blockly:@aily-project/../lib-aily-test',
       version: '1.2.3',
     }),
     error => error?.code === 'CODER_LIBRARY_REF_INVALID',
@@ -580,7 +580,7 @@ test('requires an explicit override for an incompatible Coder library and sugges
     boardDependencies: { '@aily-project/sdk-test': '1.0.0' },
   }))
 
-  const search = await searchCoderLibraries({
+  const search = await searchCoderIndexLibraries({
     workspaceRoot,
     appDataPath,
     indexUrl,

@@ -1,7 +1,10 @@
 import { constants as fsConstants } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   access,
   copyFile,
+  cp,
   lstat,
   mkdtemp,
   mkdir,
@@ -10,6 +13,7 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
@@ -32,6 +36,11 @@ import {
 
 const SAFE_LIBRARY_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u
 const COMPONENT_LIBRARY_RECEIPT = '.aily-component-library.json'
+const BLOCKLY_LIBRARY_RECEIPT = '.aily-blockly-library.json'
+const BLOCKLY_LIBRARY_PACKAGE = /^@aily-project\/lib-[A-Za-z0-9][A-Za-z0-9._-]*$/u
+const MAX_ARCHIVE_ENTRIES = 20_000
+const MAX_EXTRACTED_BYTES = 256 * 1024 * 1024
+const workspaceMutationLocks = new Map()
 
 export class ComponentLibraryError extends Error {
   constructor(code, message, details) {
@@ -1133,36 +1142,15 @@ export async function removeCoderIndexLibrary({
   })
 }
 
-export async function searchCoderLibraries({
-  workspaceRoot,
-  appDataPath,
-  query,
-  category,
-  type,
-  offset,
-  limit,
-  forceRefresh,
-  indexUrl,
-  fetchImpl,
-  signal,
-}) {
-  return searchCoderIndexLibraries({
-    workspaceRoot,
-    appDataPath,
-    query,
-    category,
-    type,
-    offset,
-    limit,
-    forceRefresh,
-    indexUrl,
-    fetchImpl,
-    signal,
-  })
+export async function searchCoderLibraries(options) {
+  return searchBlocklyLibraryPackages(options)
 }
 
 function parseCoderLibraryRef(libraryRef) {
   const value = String(libraryRef ?? '').trim()
+  if (value.startsWith('blockly:') && isSafeBlocklyLibraryPackageName(value.slice(8))) {
+    return { packageName: value.slice(8) }
+  }
   if (/^coder:[a-f0-9]{24}$/u.test(value)) {
     return { libraryId: value }
   }
@@ -1177,6 +1165,7 @@ export async function installCoderLibrary(options) {
   if (!String(options.version ?? '').trim()) {
     throw new ComponentLibraryError('CODER_LIBRARY_VERSION_REQUIRED', 'Aily Coder libraries require an exact version')
   }
+  if (ref.packageName) return installBlocklyLibraryPackage({ ...options, packageName: ref.packageName })
   return installCoderIndexLibrary({
     ...options,
     libraryId: ref.libraryId,
@@ -1188,8 +1177,811 @@ export async function removeCoderLibrary(options) {
   if (!String(options.version ?? '').trim()) {
     throw new ComponentLibraryError('CODER_LIBRARY_VERSION_REQUIRED', 'Aily Coder libraries require an exact version')
   }
+  if (ref.packageName) return removeBlocklyLibraryPackage({ ...options, packageName: ref.packageName })
   return removeCoderIndexLibrary({
     ...options,
     libraryId: ref.libraryId,
+  })
+}
+
+export function isSafeBlocklyLibraryPackageName(value) {
+  return BLOCKLY_LIBRARY_PACKAGE.test(String(value ?? ''))
+}
+
+function directDependencySpec(manifest, packageName) {
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+    const value = manifest?.[field]?.[packageName]
+    if (typeof value === 'string' && value.trim()) {
+      return { field, value: value.trim() }
+    }
+  }
+  return null
+}
+
+function npmExecutable() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm'
+}
+
+async function ailyNpmEnvironment(appDataPath) {
+  const env = { ...process.env }
+  const appNpmrcPath = path.join(appDataPath || defaultAilyAppDataPath(), '.npmrc')
+  if (!String(env.NPM_CONFIG_USERCONFIG ?? '').trim() && await pathExists(appNpmrcPath)) {
+    env.NPM_CONFIG_USERCONFIG = appNpmrcPath
+  }
+  if (!String(env.AILY_NPM_REGISTRY ?? '').trim() && await pathExists(appNpmrcPath)) {
+    const npmrc = await readFile(appNpmrcPath, 'utf8').catch(() => '')
+    const scopedRegistry = npmrc.match(/^@aily-project:registry\s*=\s*(\S+)\s*$/imu)?.[1]
+    if (scopedRegistry) env.AILY_NPM_REGISTRY = scopedRegistry
+  }
+  const config = await readJson(path.join(appDataPath || defaultAilyAppDataPath(), 'config.json'), 'config').catch(() => null)
+  const registry = config?.regions?.[config?.region]?.npm_registry || env.AILY_NPM_REGISTRY
+  if (registry) {
+    env.AILY_NPM_REGISTRY = registry
+    env.npm_config_registry = registry
+  }
+  return env
+}
+
+function sevenZipExecutable(explicitPath) {
+  const configured = String(explicitPath ?? process.env.AILY_7ZA_PATH ?? '').trim()
+  if (configured) return configured
+  return process.platform === 'win32' ? '7za.exe' : '7zz'
+}
+
+function runProcess(command, args, { cwd, signal, env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      signal,
+      shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd'),
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+    const append = (current, chunk) => {
+      const next = current + String(chunk)
+      return next.length > 2_000_000 ? next.slice(-2_000_000) : next
+    }
+    child.stdout?.on('data', chunk => { stdout = append(stdout, chunk) })
+    child.stderr?.on('data', chunk => { stderr = append(stderr, chunk) })
+    child.once('error', reject)
+    child.once('close', code => {
+      if (code === 0) {
+        resolve({ stdout, stderr })
+        return
+      }
+      reject(new ComponentLibraryError(
+        'BLOCKLY_LIBRARY_COMMAND_FAILED',
+        `${path.basename(command)} exited with code ${code}: ${(stderr || stdout).trim() || 'no output'}`,
+        { command: path.basename(command), exitCode: code },
+      ))
+    })
+  })
+}
+
+async function runNpmLibraryCommand(projectRoot, args, { signal, runNpmCommand, appDataPath } = {}) {
+  if (runNpmCommand) {
+    return runNpmCommand({ projectRoot, args, signal })
+  }
+  return runProcess(npmExecutable(), args, {
+    cwd: projectRoot,
+    signal,
+    env: await ailyNpmEnvironment(appDataPath),
+  })
+}
+
+async function withWorkspaceMutationLock(workspaceRoot, task) {
+  const key = path.resolve(workspaceRoot)
+  const previous = workspaceMutationLocks.get(key) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(task)
+  workspaceMutationLocks.set(key, current)
+  try {
+    return await current
+  } finally {
+    if (workspaceMutationLocks.get(key) === current) {
+      workspaceMutationLocks.delete(key)
+    }
+  }
+}
+
+function parseSevenZipEntries(output) {
+  return String(output ?? '')
+    .split(/\r?\n\s*\r?\n/u)
+    .map(recordText => Object.fromEntries(
+      recordText.split(/\r?\n/u).flatMap(line => {
+        const separator = line.indexOf(' = ')
+        return separator > 0 ? [[line.slice(0, separator), line.slice(separator + 3)]] : []
+      }),
+    ))
+    .filter(record => typeof record.Path === 'string')
+}
+
+function validateArchiveEntry(record) {
+  const raw = String(record.Path ?? '')
+  const normalized = raw.replace(/\\/gu, '/')
+  const segments = normalized.split('/')
+  if (
+    !normalized
+    || normalized.length > 1024
+    || normalized.startsWith('/')
+    || normalized.includes(':')
+    || [...normalized].some(character => character.charCodeAt(0) < 32)
+    || segments.some(segment => !segment || segment === '.' || segment === '..')
+  ) {
+    throw new ComponentLibraryError(
+      'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE',
+      `src.7z contains an unsafe path: ${raw || '(empty)'}`,
+    )
+  }
+  if (String(record.Encrypted ?? '') === '+') {
+    throw new ComponentLibraryError(
+      'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE',
+      `src.7z contains an encrypted entry: ${raw}`,
+    )
+  }
+  if (record['Symbolic Link'] || record['Hard Link'] || /(^|\s)l[rwx-]{9}|\bL\b/u.test(String(record.Attributes ?? ''))) {
+    throw new ComponentLibraryError(
+      'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE',
+      `src.7z contains a symbolic link: ${raw}`,
+    )
+  }
+}
+
+async function extractBlocklyLibraryArchive(archivePath, destination, options = {}) {
+  const executable = sevenZipExecutable(options.sevenZipPath)
+  const listing = await runProcess(executable, ['l', '-slt', '-ba', archivePath], {
+    signal: options.signal,
+  })
+  const entries = parseSevenZipEntries(listing.stdout)
+  if (entries.length === 0 || entries.length > MAX_ARCHIVE_ENTRIES) {
+    throw new ComponentLibraryError(
+      'BLOCKLY_LIBRARY_ARCHIVE_INVALID',
+      `src.7z must contain between 1 and ${MAX_ARCHIVE_ENTRIES} entries`,
+    )
+  }
+  entries.forEach(validateArchiveEntry)
+  if (entries.reduce((total, entry) => total + Number(entry.Size || 0), 0) > MAX_EXTRACTED_BYTES) {
+    throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z expands beyond 256 MiB')
+  }
+  await mkdir(destination, { recursive: true })
+  await runProcess(executable, ['x', '-y', `-o${destination}`, archivePath], {
+    signal: options.signal,
+  })
+}
+
+async function validateExtractedTree(root) {
+  let entries = 0
+  let totalBytes = 0
+  async function visit(current) {
+    const currentStat = await lstat(current)
+    if (currentStat.isSymbolicLink()) {
+      throw new ComponentLibraryError(
+        'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE',
+        'src.7z extracted a symbolic link',
+      )
+    }
+    entries += 1
+    if (entries > MAX_ARCHIVE_ENTRIES) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z contains too many entries')
+    }
+    if (currentStat.isFile()) {
+      totalBytes += currentStat.size
+      if (totalBytes > MAX_EXTRACTED_BYTES) {
+        throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z expands beyond 256 MiB')
+      }
+      return
+    }
+    if (!currentStat.isDirectory()) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_UNSAFE', 'src.7z contains an unsupported entry')
+    }
+    for (const entry of await readdir(current)) {
+      await visit(path.join(current, entry))
+    }
+  }
+  await visit(root)
+}
+
+function fallbackLibraryRootName(packageManifest) {
+  const packageRoot = String(packageManifest?.name ?? '').split('/').at(-1)
+  if (isSafeComponentLibraryDirectoryName(packageRoot)) return packageRoot
+  for (const value of [packageManifest?.nickname, packageManifest?.displayName]) {
+    const candidate = String(value ?? '').trim().replace(/\s+/gu, '_')
+    if (isSafeComponentLibraryDirectoryName(candidate)) return candidate
+  }
+  const candidate = String(packageManifest?.name ?? '')
+    .replace(/^@aily-project\/lib-/u, '')
+    .replace(/[^A-Za-z0-9_.-]+/gu, '_')
+  if (isSafeComponentLibraryDirectoryName(candidate)) return candidate
+  throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'Cannot derive a safe Coder library directory name')
+}
+
+async function resolveBlocklyArchiveRoots(extractionRoot, packageManifest) {
+  const outerEntries = await readdir(extractionRoot)
+  const sourceRoot = outerEntries.length === 1 && outerEntries[0] === 'src'
+    ? path.join(extractionRoot, 'src') : extractionRoot
+  const sourceStat = await lstat(sourceRoot).catch(() => null)
+  if (!sourceStat?.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new ComponentLibraryError(
+      'BLOCKLY_LIBRARY_ARCHIVE_INVALID',
+      'src.7z must contain a top-level src directory',
+    )
+  }
+  await validateExtractedTree(sourceRoot)
+  const entries = await readdir(sourceRoot, { withFileTypes: true })
+  if (entries.length === 0) {
+    throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z contains an empty src directory')
+  }
+  const directFiles = entries.filter(entry => !entry.isDirectory())
+  if (directFiles.length > 0) {
+    return [{
+      folderName: fallbackLibraryRootName(packageManifest),
+      relativePath: 'src',
+      sourcePath: sourceRoot,
+    }]
+  }
+  return entries.map(entry => {
+    if (!isSafeComponentLibraryDirectoryName(entry.name)) {
+      throw new ComponentLibraryError(
+        'BLOCKLY_LIBRARY_ARCHIVE_INVALID',
+        `src.7z contains an invalid library root: ${entry.name}`,
+      )
+    }
+    return {
+      folderName: entry.name,
+      relativePath: path.posix.join('src', entry.name),
+      sourcePath: path.join(sourceRoot, entry.name),
+    }
+  })
+}
+
+async function fingerprintLibraryTree(root, ignoredNames = new Set()) {
+  const rootRealPath = await realpath(root)
+  const activeDirectories = new Set()
+  const hash = createHash('sha256')
+
+  async function visit(currentPath, relativePath) {
+    const realPath = await realpath(currentPath)
+    if (!isPathInside(rootRealPath, realPath)) {
+      throw new ComponentLibraryError(
+        'BLOCKLY_LIBRARY_PROVENANCE_CONFLICT',
+        `Library source link escapes its root: ${currentPath}`,
+      )
+    }
+    const currentStat = await stat(currentPath)
+    const normalizedPath = relativePath.split(path.sep).join('/')
+    if (currentStat.isDirectory()) {
+      if (activeDirectories.has(realPath)) {
+        throw new ComponentLibraryError(
+          'BLOCKLY_LIBRARY_PROVENANCE_CONFLICT',
+          `Library source contains a directory link cycle: ${currentPath}`,
+        )
+      }
+      hash.update(`directory\0${normalizedPath}\0`)
+      activeDirectories.add(realPath)
+      const entries = (await readdir(currentPath))
+        .filter(entry => !ignoredNames.has(entry))
+        .sort((left, right) => left.localeCompare(right))
+      for (const entry of entries) {
+        await visit(path.join(currentPath, entry), path.join(relativePath, entry))
+      }
+      activeDirectories.delete(realPath)
+      return
+    }
+    if (currentStat.isFile()) {
+      const content = await readFile(currentPath)
+      hash.update(`file\0${normalizedPath}\0${content.length}\0`)
+      hash.update(content)
+      hash.update('\0')
+      return
+    }
+    hash.update(`other\0${normalizedPath}\0`)
+  }
+
+  await visit(root, '')
+  return `sha256:${hash.digest('hex')}`
+}
+
+function normalizeCatalogArray(payload) {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.libraries)) return payload.libraries
+  return []
+}
+
+async function readOptionalCatalog(filePath) {
+  try {
+    return normalizeCatalogArray(JSON.parse(await readFile(filePath, 'utf8')))
+  } catch {
+    return []
+  }
+}
+
+function toBlocklyPackageName(value) {
+  const raw = String(value ?? '').trim()
+  const packageName = raw.startsWith('@aily-project/') ? raw : `@aily-project/${raw}`
+  return isSafeBlocklyLibraryPackageName(packageName) ? packageName : ''
+}
+
+function catalogMatchesWordBoundary(text, query) {
+  const delimiters = ' \t\r\n-_/@:.,;()[]{},。！？；：、【】《》（）'
+  let index = 0
+  while ((index = text.indexOf(query, index)) !== -1) {
+    const beforeMatches = index === 0 || delimiters.includes(text[index - 1])
+    const afterIndex = index + query.length
+    const afterMatches = afterIndex === text.length || delimiters.includes(text[afterIndex])
+    if (beforeMatches && afterMatches) return true
+    index += 1
+  }
+  return false
+}
+
+function catalogTextScore(value, token, weights, exactOnly = false) {
+  const scoreOne = item => {
+    const text = String(item ?? '').toLocaleLowerCase('en')
+    if (text === token) return weights[0]
+    if (exactOnly) return 0
+    if (weights[1] > 0 && catalogMatchesWordBoundary(text, token)) return weights[1]
+    if (weights[2] > 0 && text.includes(token)) return weights[2]
+    return 0
+  }
+  return Array.isArray(value)
+    ? value.reduce((total, item) => total + scoreOne(item), 0)
+    : scoreOne(value)
+}
+
+function scoreCatalogItem(item, tokens, fields) {
+  let totalScore = 0
+  const matchedFields = []
+  const matchedQueries = []
+  for (const token of tokens) {
+    let queryScore = 0
+    for (const field of fields) {
+      const fieldScore = catalogTextScore(
+        field.value(item),
+        token,
+        field.weights,
+        field.exactOnly === true,
+      )
+      if (fieldScore > 0) {
+        queryScore += fieldScore
+        if (!matchedFields.includes(field.name)) matchedFields.push(field.name)
+      }
+    }
+    if (queryScore > 0) {
+      totalScore += queryScore
+      matchedQueries.push(token)
+    }
+  }
+  if (tokens.length > 1 && matchedQueries.length > 1) {
+    totalScore *= matchedQueries.length === tokens.length
+      ? 1.5
+      : 1 + 0.2 * (matchedQueries.length - 1)
+  }
+  return { totalScore, matchedFields, matchedQueries }
+}
+
+const BLOCKLY_INDEX_LIBRARY_FIELDS = [
+  { name: 'keywords', value: item => item?.keywords, weights: [20, 15, 10] },
+  { name: 'tags', value: item => item?.tags, weights: [18, 12, 8] },
+  { name: 'displayName', value: item => item?.displayName, weights: [15, 10, 7] },
+  { name: 'name', value: item => item?.name, weights: [15, 10, 6] },
+  { name: 'hardwareType', value: item => item?.hardwareType, weights: [15, 12, 12] },
+  { name: 'description', value: item => item?.description, weights: [5, 5, 3] },
+  { name: 'category', value: item => item?.category, weights: [8, 0, 0] },
+  { name: 'communication', value: item => item?.communication, weights: [8, 0, 0], exactOnly: true },
+  { name: 'supportedCores', value: item => item?.supportedCores, weights: [6, 6, 6] },
+  { name: 'compatibleHardware', value: item => item?.compatibleHardware, weights: [6, 6, 6] },
+]
+
+const BLOCKLY_LEGACY_LIBRARY_FIELDS = [
+  { name: 'keywords', value: item => item?.keywords, weights: [20, 15, 10] },
+  { name: 'nickname', value: item => item?.nickname, weights: [18, 12, 8] },
+  { name: 'description', value: item => item?.description, weights: [9, 9, 5] },
+  { name: 'core', value: item => item?.compatibility?.core, weights: [10, 5, 5] },
+  { name: 'author', value: item => item?.author, weights: [6, 3, 3] },
+  { name: 'name', value: item => item?.name, weights: [8, 8, 0] },
+]
+
+async function sharedBlocklyCatalog(appDataRoot, { forceRefresh, fetchImpl = globalThis.fetch, signal } = {}) {
+  const names = ['libraries-index.json', 'libraries.json']
+  const cached = await Promise.all(names.map(name => readOptionalCatalog(path.join(appDataRoot, name))))
+  if (!forceRefresh && cached[1].length) return cached
+  const config = await readJson(path.join(appDataRoot, 'config.json'), 'config').catch(() => null)
+  const region = config?.region || process.env.AILY_REGION || 'cn'
+  const resource = config?.regions?.[region]?.resource
+    || (region === 'cn' ? 'https://blockly.yiyu.pro' : 'https://rs1.aily.pro')
+  return Promise.all(names.map(async (name, index) => {
+    try {
+      const response = await fetchImpl(`${resource.replace(/\/+$/u, '')}/${name}`, {
+        signal: globalThis.AbortSignal.any([signal, globalThis.AbortSignal.timeout(30_000)].filter(Boolean)),
+      })
+      if (!response.ok) throw new Error(`Blockly catalog download failed (${response.status})`)
+      const catalog = normalizeCatalogArray(await response.json())
+      if (!catalog.length) throw new Error(`Invalid Blockly catalog: ${name}`)
+      const temporary = await mkdtemp(path.join(appDataRoot, '.aily-library-catalog-'))
+      try {
+        const staged = path.join(temporary, name)
+        await writeFile(staged, JSON.stringify(index === 0 ? { libraries: catalog } : catalog))
+        await rename(staged, path.join(appDataRoot, name))
+      } finally {
+        await rm(temporary, { recursive: true, force: true })
+      }
+      return catalog
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (cached[index].length || index === 0) return cached[index]
+      throw error
+    }
+  }))
+}
+
+async function managedBlocklyRoots(projectRoot, packageName) {
+  const root = path.join(projectRoot, 'sketch', 'libraries')
+  // Read paths only within the persistent project, including for status/removal.
+  if (await pathExists(root) && await realpath(root) !== root) {
+    throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', 'sketch/libraries must not be a symbolic link')
+  }
+  const roots = []
+  for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory() || !isSafeComponentLibraryDirectoryName(entry.name)) continue
+    const directory = path.join(root, entry.name)
+    const receiptFile = path.join(directory, BLOCKLY_LIBRARY_RECEIPT)
+    const receiptStat = await lstat(receiptFile).catch(() => null)
+    if (!receiptStat?.isFile() || receiptStat.isSymbolicLink()) continue
+    const receipt = await readJson(receiptFile, 'library receipt').catch(() => null)
+    if (receipt?.source !== 'blockly-library' || !isSafeBlocklyLibraryPackageName(receipt.packageName)
+      || (packageName && receipt.packageName !== packageName)) continue
+    if (receipt.libraryRoot !== entry.name || !Array.isArray(receipt.libraryRoots)
+      || !receipt.libraryRoots.includes(entry.name) || !receipt.version || !receipt.fingerprint) {
+      if (!packageName) continue
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', `Invalid library receipt: ${entry.name}`)
+    }
+    roots.push({ folderName: entry.name, directory, receipt })
+  }
+  return roots
+}
+
+function completeBlocklyRoots(roots, version, allRoots = roots) {
+  const names = roots.map(root => root.folderName).sort()
+  return names.length > 0 && roots.every(root => root.receipt.version === version
+    && JSON.stringify([...root.receipt.libraryRoots].sort()) === JSON.stringify(names)
+    && (root.receipt.dependencyLibraries ?? []).every(dependency => {
+      const dependencyRoots = allRoots.filter(item => item.receipt.packageName === dependency.packageName)
+      return dependencyRoots.length > 0 && dependencyRoots.every(item => item.receipt.version === dependency.version)
+        && JSON.stringify(dependencyRoots.map(item => item.folderName).sort()) === JSON.stringify([...dependency.libraryRoots].sort())
+    }))
+}
+
+async function assertUnmodifiedBlocklyRoots(roots) {
+  for (const root of roots) {
+    const fingerprint = await fingerprintLibraryTree(root.directory, new Set([BLOCKLY_LIBRARY_RECEIPT]))
+    if (fingerprint !== root.receipt.fingerprint) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT',
+        `sketch/libraries/${root.folderName} has local changes; preserve them before replacing or removing the library`)
+    }
+  }
+}
+
+export async function searchBlocklyLibraryPackages(options) {
+  const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  const appDataRoot = await resolveAppDataRoot(options.appDataPath)
+  const allRoots = await managedBlocklyRoots(projectRoot)
+  const legacyInstalled = await listInstalledComponentLibraries(path.join(projectRoot, 'sketch', 'libraries'))
+  const [[index, legacy], sdkRoots, projectManifest] = await Promise.all([
+    sharedBlocklyCatalog(appDataRoot, options).catch(error => {
+      options.signal?.throwIfAborted()
+      if (allRoots.length || [...legacyInstalled.values()].some(item => item.receipt?.source === 'aily-coder-index')) return [[], []]
+      throw error
+    }),
+    resolveSdkRoots(projectRoot, appDataRoot).catch(() => []),
+    readJson(path.join(projectRoot, 'package.json'), 'package.json'),
+  ])
+  const activeArchitectures = activeArduinoArchitectures(sdkRoots)
+  const boardPackage = findBoardPackageName(projectManifest)
+  const board = boardPackage
+    ? await readJson(path.join(packagePath(projectRoot, boardPackage), 'board.json'), 'board.json').catch(() => null) : null
+  // Blockly compatibility.core contains platform IDs and sometimes full board IDs.
+  // Preserve their specificity instead of reducing every entry to an architecture.
+  for (const value of [board?.core, board?.type, projectManifest.fqbn]) {
+    if (typeof value !== 'string' || !value.includes(':')) continue
+    const normalized = value.toLocaleLowerCase('en')
+    activeArchitectures.add(normalized)
+    activeArchitectures.add(normalized.split(':').slice(0, 2).join(':'))
+  }
+  const catalog = [...legacy]
+  const known = new Set(catalog.map(item => toBlocklyPackageName(item.name)))
+  for (const root of allRoots) {
+    if (known.has(root.receipt.packageName)) continue
+    known.add(root.receipt.packageName)
+    catalog.push({ name: root.receipt.packageName, nickname: root.receipt.name || root.folderName, version: root.receipt.version })
+  }
+  const indexed = new Map(index.map(item => [toBlocklyPackageName(item.name), item]))
+  const tokens = String(options.query ?? '').normalize('NFKC').trim().toLocaleLowerCase('en').split(/[\s,，]+/u).filter(Boolean)
+  const libraries = []
+  for (const item of catalog) {
+    const packageName = toBlocklyPackageName(item.name)
+    if (!packageName || !item.version) continue
+    const metadata = indexed.get(packageName) ?? {}
+    const scored = scoreCatalogItem({ ...item, ...metadata }, tokens,
+      [...BLOCKLY_INDEX_LIBRARY_FIELDS, ...BLOCKLY_LEGACY_LIBRARY_FIELDS])
+    const exactPackage = tokens.length === 1 && [packageName.toLocaleLowerCase('en'), `blockly:${packageName}`.toLocaleLowerCase('en')].includes(tokens[0])
+    if (exactPackage) scored.totalScore += 1000
+    const architectures = metadata.supportedCores ?? item.compatibility?.core ?? []
+    const compatibility = compatibilityDetails({ architectures }, activeArchitectures)
+    const roots = allRoots.filter(root => root.receipt.packageName === packageName)
+    const installedVersion = roots[0]?.receipt.version ?? ''
+    const installed = completeBlocklyRoots(roots, installedVersion, allRoots)
+    const description = String(item.description ?? metadata.description ?? '')
+    libraries.push({
+      id: `blockly:${packageName}`, libraryRef: `blockly:${packageName}`, packageName,
+      source: 'aily', tier: 'preferred', name: item.nickname || metadata.displayName || packageName,
+      version: String(item.version), versions: [...new Set([installedVersion, String(item.version)].filter(Boolean))],
+      description, sentence: description, paragraph: '', author: typeof item.author === 'string' ? item.author : item.author?.name || '',
+      category: metadata.category || '', url: item.url || '', architectures, types: [],
+      compatible: compatibility.compatible, compatibility,
+      installed, installedVersion: installed ? installedVersion : '', managed: installed,
+      folderName: roots[0]?.folderName ?? '',
+      libraryRoots: roots.map(root => path.posix.join('sketch', 'libraries', root.folderName)),
+      score: scored.totalScore,
+    })
+  }
+  // Existing ZIP installations remain discoverable/removable after the source switch, even offline.
+  for (const [name, installed] of legacyInstalled) {
+    const receipt = installed.receipt
+    if (receipt?.source !== 'aily-coder-index' || receipt.version !== installed.version
+      || receipt.name?.toLocaleLowerCase('en') !== name || !/^coder:[a-f0-9]{24}$/u.test(receipt.libraryId)) continue
+    if (tokens.length && !tokens.some(token => name.includes(token))) continue
+    libraries.push({ id: receipt.libraryId, libraryRef: receipt.libraryId, source: 'aily', tier: 'preferred',
+      name: receipt.name, version: installed.version, versions: [installed.version], installedVersion: installed.version,
+      installed: true, managed: true, folderName: installed.folderName, architectures: [], score: 1 })
+  }
+  libraries.sort((a, b) => Number(b.installed) - Number(a.installed) || b.score - a.score || a.name.localeCompare(b.name))
+  const offset = Math.max(0, Number(options.offset) || 0)
+  const limit = Math.min(50, Math.max(1, Number(options.limit) || 25))
+  const exact = libraries.find(item => [item.name, item.packageName, item.libraryRef].some(value => value?.toLocaleLowerCase('en') === String(options.query ?? '').trim().toLocaleLowerCase('en')))
+  const compatibleAlternatives = exact?.compatible === false
+    ? libraries.filter(item => item.compatible && item.id !== exact.id && item.category === exact.category).slice(0, 3) : []
+  const matched = tokens.length ? libraries.filter(item => item.score > 0) : libraries
+  return { tier: 'preferred', libraries: matched.slice(offset, offset + limit), total: matched.length,
+    offset, limit, activeArchitectures: [...activeArchitectures], compatibleAlternatives, categories: [], types: [] }
+}
+
+async function ensureProjectDirectory(projectRoot, segments) {
+  let directory = projectRoot
+  for (const segment of segments) {
+    directory = path.join(directory, segment)
+    await mkdir(directory).catch(error => { if (error.code !== 'EEXIST') throw error })
+    const info = await lstat(directory)
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `Library path must be a real directory: ${directory}`)
+    }
+  }
+  return directory
+}
+
+async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
+  await ensureProjectDirectory(projectRoot, ['node_modules', '@aily-project'])
+  const packageRoot = packagePath(projectRoot, packageName)
+  const temporaryRoot = await mkdtemp(path.join(projectRoot, '.aily-library-transaction-'))
+  const snapshots = await Promise.all(['package.json', 'package-lock.json', 'npm-shrinkwrap.json', path.join('node_modules', '.package-lock.json')]
+    .map(async name => ({ name, content: await readFile(path.join(projectRoot, name)).catch(error => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    }) })))
+  const previous = await lstat(packageRoot).catch(() => null)
+  try {
+    if (previous?.isSymbolicLink()) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', 'A linked library package must be unlinked before installation')
+    }
+    if (previous) await cp(packageRoot, path.join(temporaryRoot, 'package'), { recursive: true })
+    try {
+      return await task(packageRoot)
+    } catch (error) {
+      await rm(packageRoot, { recursive: true, force: true })
+      if (previous) await rename(path.join(temporaryRoot, 'package'), packageRoot)
+      for (const snapshot of snapshots) {
+        const target = path.join(projectRoot, snapshot.name)
+        if (snapshot.content === null) await rm(target, { force: true })
+        else await writeFile(target, snapshot.content)
+      }
+      throw error
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+}
+
+function blocklyInstallResult(packageName, version, roots, compatibility, alreadyInstalled) {
+  return { id: `blockly:${packageName}`, libraryRef: `blockly:${packageName}`, source: 'aily', packageName,
+    version, installedVersion: version, installed: true, managed: true, ready: true, alreadyInstalled,
+    packageJsonLinked: true, packageDirectory: path.posix.join('node_modules', packageName), archive: 'src.7z',
+    sourceDirectory: roots.length === 1 ? path.posix.join('sketch', 'libraries', roots[0].folderName) : 'sketch/libraries',
+    libraryRoots: roots.map(root => path.posix.join('sketch', 'libraries', root.folderName)),
+    folderName: roots[0].folderName, compatible: compatibility.compatible, compatibility,
+    compatibilityOverride: !compatibility.compatible,
+    ...(!compatibility.compatible ? { compatibilityWarning: 'Installed despite an incompatible active Coder architecture' } : {}) }
+}
+
+/** Follow npm's nearest package resolution; Coder cannot compile from npm paths. */
+async function collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest) {
+  const packages = new Map()
+  async function visit(directory, manifest, required) {
+    const known = packages.get(manifest.name)
+    if (known) {
+      if (known.manifest.version !== manifest.version) {
+        throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `Multiple versions of ${manifest.name} cannot share one Coder library directory`)
+      }
+      return
+    }
+    if (packages.size >= 100) throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', 'Too many Aily library dependencies')
+    const archivePath = path.join(directory, 'src.7z')
+    const hasArchive = await pathExists(archivePath)
+    if (required && !hasArchive) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_MISSING', `${manifest.name} does not contain src.7z`)
+    }
+    packages.set(manifest.name, { directory, manifest, archivePath, hasArchive })
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      if (!isSafeBlocklyLibraryPackageName(name)) continue
+      let parent = directory, resolved
+      while (isPathInside(projectRoot, parent)) {
+        const candidate = packagePath(parent, name)
+        const dependency = await readJson(path.join(candidate, 'package.json'), 'library dependency').catch(() => null)
+        if (dependency?.name === name) {
+          const realDirectory = await realpath(candidate)
+          if (!isPathInside(projectRoot, realDirectory)) {
+            throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `Library dependency escapes the project: ${name}`)
+          }
+          resolved = { directory: realDirectory, manifest: dependency }
+          break
+        }
+        if (parent === projectRoot) break
+        parent = path.dirname(parent)
+      }
+      if (!resolved) throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', `Aily library dependency is not installed: ${name}`)
+      await visit(resolved.directory, resolved.manifest, false)
+    }
+  }
+  await visit(packageRoot, packageManifest, true)
+  return [...packages.values()].filter(item => item.hasArchive)
+}
+
+export async function installBlocklyLibraryPackage(options) {
+  const { packageName, version, signal } = options
+  if (!isSafeBlocklyLibraryPackageName(packageName) || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u.test(version)) {
+    throw new ComponentLibraryError('CODER_LIBRARY_REF_INVALID', 'Use the exact package and version from coder_library_search')
+  }
+  const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  return withWorkspaceMutationLock(projectRoot, async () => {
+    const appDataPath = await resolveAppDataRoot(options.appDataPath)
+    const search = await searchBlocklyLibraryPackages({ ...options, query: packageName, appDataPath })
+    const library = search.libraries.find(item => item.packageName === packageName && item.versions.includes(version))
+    if (!library) throw new ComponentLibraryError('CODER_LIBRARY_NOT_FOUND', 'Aily library version was not found in the shared Blockly catalog')
+    if (!library.compatible && !options.allowIncompatible) {
+      throw new ComponentLibraryError('CODER_LIBRARY_INCOMPATIBLE', `${library.name} is not compatible with the active Coder architecture`,
+        { ...library.compatibility, compatibleAlternatives: search.compatibleAlternatives })
+    }
+    const librariesRoot = await ensureProjectDirectory(projectRoot, ['sketch', 'libraries'])
+    const allPreviousRoots = await managedBlocklyRoots(projectRoot)
+    const previousRoots = allPreviousRoots.filter(root => root.receipt.packageName === packageName)
+    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
+    if (completeBlocklyRoots(previousRoots, version, allPreviousRoots) && installedPackage?.name === packageName
+      && installedPackage.version === version && directDependencySpec(manifest, packageName)) {
+      const dependencies = previousRoots[0].receipt.dependencyLibraries ?? []
+      const resultRoots = [...previousRoots, ...allPreviousRoots.filter(root => dependencies.some(item => item.packageName === root.receipt.packageName))]
+      return blocklyInstallResult(packageName, version, resultRoots, library.compatibility, true)
+    }
+    await assertUnmodifiedBlocklyRoots(previousRoots)
+    return withBlocklyPackageTransaction(projectRoot, packageName, async packageRoot => {
+      await runNpmLibraryCommand(projectRoot, ['install', `${packageName}@${version}`, '--save', '--save-exact',
+        '--ignore-scripts', '--no-audit', '--no-fund'], { ...options, appDataPath })
+      const packageManifest = await readJson(path.join(packageRoot, 'package.json'), 'library package')
+      const linked = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+      if (packageManifest.name !== packageName || packageManifest.version !== version || !directDependencySpec(linked, packageName)) {
+        throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', 'Installed package identity/version or root dependency does not match the request')
+      }
+      const sourcePackages = await collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest)
+      const staging = await mkdtemp(path.join(librariesRoot, '.aily-src-install-'))
+      const moved = [], backups = []
+      try {
+        const roots = []
+        for (const [index, sourcePackage] of sourcePackages.entries()) {
+          const destination = path.join(staging, `extracted-${index}`)
+          const { archivePath, manifest: sourceManifest } = sourcePackage
+          if (options.extractArchive) await options.extractArchive({ archivePath, destination, signal })
+          else await extractBlocklyLibraryArchive(archivePath, destination, options)
+          const packageRoots = await resolveBlocklyArchiveRoots(destination, sourceManifest)
+          roots.push(...packageRoots.map(root => ({ ...root, packageName: sourceManifest.name, version: sourceManifest.version })))
+        }
+        if (new Set(roots.map(root => root.folderName)).size !== roots.length) {
+          throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', 'Aily packages contain conflicting source directory names')
+        }
+        const dependencyLibraries = sourcePackages.filter(item => item.manifest.name !== packageName).map(item => ({
+          packageName: item.manifest.name, version: item.manifest.version,
+          libraryRoots: roots.filter(root => root.packageName === item.manifest.name).map(root => root.folderName),
+        }))
+        for (const root of roots) {
+          const target = path.join(librariesRoot, root.folderName)
+          const fingerprint = await fingerprintLibraryTree(root.sourcePath)
+          if (root.packageName !== packageName) {
+            const existing = allPreviousRoots.find(item => item.folderName === root.folderName)
+            if (existing?.receipt.packageName === root.packageName && existing.receipt.version === root.version
+              && existing.receipt.fingerprint === fingerprint) {
+              await assertUnmodifiedBlocklyRoots([existing])
+              root.reuse = true
+              continue
+            }
+          }
+          if (await lstat(target).catch(() => null) && !previousRoots.some(previous => previous.folderName === root.folderName)) {
+            throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `sketch/libraries/${root.folderName} already exists and is not this managed Aily library`)
+          }
+          if (await pathExists(path.join(root.sourcePath, BLOCKLY_LIBRARY_RECEIPT))) {
+            throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z contains reserved library provenance metadata')
+          }
+          await writeFile(path.join(root.sourcePath, BLOCKLY_LIBRARY_RECEIPT), JSON.stringify({
+            source: 'blockly-library', packageName: root.packageName, name: root.packageName === packageName ? library.name : root.folderName,
+            version: root.version, libraryRoot: root.folderName,
+            libraryRoots: roots.filter(item => item.packageName === root.packageName).map(item => item.folderName), fingerprint,
+            ...(root.packageName === packageName ? { dependencyLibraries } : {}),
+          }, null, 2))
+        }
+        signal?.throwIfAborted()
+        for (const root of previousRoots) {
+          const backup = path.join(staging, `backup-${root.folderName}`)
+          await rename(root.directory, backup)
+          backups.push({ original: root.directory, backup })
+        }
+        for (const root of roots) {
+          if (root.reuse) continue
+          const target = path.join(librariesRoot, root.folderName)
+          await rename(root.sourcePath, target)
+          moved.push(target)
+        }
+        return blocklyInstallResult(packageName, version, roots, library.compatibility, false)
+      } catch (error) {
+        for (const target of moved) await rm(target, { recursive: true, force: true })
+        for (const backup of backups) await rename(backup.backup, backup.original)
+        throw error
+      } finally {
+        await rm(staging, { recursive: true, force: true })
+      }
+    })
+  })
+}
+
+export async function removeBlocklyLibraryPackage(options) {
+  const { packageName, version } = options
+  const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  return withWorkspaceMutationLock(projectRoot, async () => {
+    const allRoots = await managedBlocklyRoots(projectRoot)
+    const roots = allRoots.filter(root => root.receipt.packageName === packageName)
+    if (allRoots.some(root => root.receipt.packageName !== packageName
+      && root.receipt.dependencyLibraries?.some(dependency => dependency.packageName === packageName))) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_IN_USE', `${packageName} is required by another installed Aily library`)
+    }
+    // A parent can still be removed if one of its dependency sources was lost.
+    if (!completeBlocklyRoots(roots.map(root => ({ ...root, receipt: { ...root.receipt, dependencyLibraries: [] } })), version)) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', 'Removal requires the exact installed version and all managed source roots')
+    }
+    await assertUnmodifiedBlocklyRoots(roots)
+    const staging = await mkdtemp(path.join(projectRoot, 'sketch', 'libraries', '.aily-remove-'))
+    const moved = []
+    try {
+      await withBlocklyPackageTransaction(projectRoot, packageName, async () => {
+        for (const root of roots) {
+          const backup = path.join(staging, root.folderName)
+          await rename(root.directory, backup)
+          moved.push({ original: root.directory, backup })
+        }
+        await runNpmLibraryCommand(projectRoot, ['uninstall', packageName, '--ignore-scripts', '--no-audit', '--no-fund'], options)
+      })
+      return { id: `blockly:${packageName}`, libraryRef: `blockly:${packageName}`, source: 'aily', packageName, version,
+        removed: true, installed: false, managed: false, installedVersion: '', libraryRoots: roots.map(root => root.folderName) }
+    } catch (error) {
+      for (const backup of moved) await rename(backup.backup, backup.original)
+      throw error
+    } finally {
+      await rm(staging, { recursive: true, force: true })
+    }
   })
 }

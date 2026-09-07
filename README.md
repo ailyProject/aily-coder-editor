@@ -140,6 +140,16 @@ npm run test:package-runtime
 npm pack
 ```
 
+本地开发时执行 `./@build.dev.sh`，会完整构建并将 npm 包与离线索引写入主软件
+`child/aily-coder-editor.tgz`、`child/aily-coder-editor.json`。默认主软件目录为
+`../../OutSource/aily--blockly`，也可用 `./@build.dev.sh /path/to/aily--blockly`
+或环境变量 `AILY_HOST_ROOT` 指定。
+
+独立 Aily Coder 启动时，若全局子应用目录缺少可运行的编辑器，会优先离线安装该包到
+`npm-global/app/node_modules/@aily-project/subapp-aily-coder-editor`；已安装版本和开发软链接
+不会被该兜底包覆盖。普通 Blockly 的安装流程保持原样。打包独立 Coder 前也需运行此脚本，
+发行配置会将这两个文件带入应用资源的 `child/` 目录。
+
 本地模拟生产安装时，请让 npm 安装生成的 tgz，不要把源码目录或开发态
 `node_modules` 复制进子应用目录：
 

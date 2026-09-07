@@ -14,7 +14,7 @@ const context = {
   developmentMode: 'coder',
 }
 
-test('declares Coder ZIP install and remove as external workspace mutations', async () => {
+test('declares Coder library install and remove as external workspace mutations', async () => {
   const manifest = JSON.parse(
     await readFile(new URL('../agent/tools.json', import.meta.url), 'utf8'),
   )
@@ -40,14 +40,14 @@ test('rejects a Coder library call outside Coder mode', async () => {
   await assert.rejects(
     router.execute({
       method: 'coder.library.install',
-      params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
+      params: { libraryRef: 'blockly:@aily-project/lib-demo', version: '1.0.0' },
       context: { ...context, developmentMode: 'blockly' },
     }),
     error => error instanceof CoderAgentRpcError && error.code === 'CODER_MODE_REQUIRED',
   )
 })
 
-test('routes regional Coder searches and mutations by exact library reference', async () => {
+test('routes shared Aily searches and mutations by exact library reference', async () => {
   const calls = []
   const operation = name => async input => {
     calls.push({ name, input })
@@ -56,7 +56,7 @@ test('routes regional Coder searches and mutations by exact library reference', 
   const router = createCoderAgentRpcRouter({
     search: async () => ({
       tier: 'preferred',
-      libraries: [{ libraryRef: 'coder:0123456789abcdef01234567', sourcePath: '/private/index' }],
+      libraries: [{ libraryRef: 'blockly:@aily-project/lib-demo', sourcePath: '/private/index' }],
     }),
     install: operation('install'),
     remove: operation('remove'),
@@ -69,12 +69,12 @@ test('routes regional Coder searches and mutations by exact library reference', 
   })
   const install = await router.execute({
     method: 'coder.library.install',
-    params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
+    params: { libraryRef: 'blockly:@aily-project/lib-demo', version: '1.0.0' },
     context,
   })
   const remove = await router.execute({
     method: 'coder.library.remove',
-    params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
+    params: { libraryRef: 'blockly:@aily-project/lib-demo', version: '1.0.0' },
     context,
   })
 
@@ -82,7 +82,7 @@ test('routes regional Coder searches and mutations by exact library reference', 
   assert.equal(search.libraries[0].sourcePath, undefined)
   assert.deepEqual(calls.map(call => call.name), ['install', 'remove'])
   assert.equal(calls[0].input.workspaceRoot, context.workspaceRoot)
-  assert.equal(calls[0].input.libraryRef, 'coder:0123456789abcdef01234567')
+  assert.equal(calls[0].input.libraryRef, 'blockly:@aily-project/lib-demo')
   assert.equal(calls[0].input.version, '1.0.0')
   assert.equal(calls[0].input.allowIncompatible, false)
   assert.equal(install.library.sourcePath, undefined)
@@ -101,7 +101,7 @@ test('forwards an explicit incompatible-library override only when true', async 
   const result = await router.execute({
     method: 'coder.library.install',
     params: {
-      libraryRef: 'coder:0123456789abcdef01234567',
+      libraryRef: 'blockly:@aily-project/lib-demo',
       version: '1.0.0',
       allowIncompatible: true,
     },
@@ -117,7 +117,7 @@ test('requires the authenticated generic host Agent context', async () => {
   await assert.rejects(
     router.execute({
       method: 'coder.library.install',
-      params: { libraryRef: 'coder:0123456789abcdef01234567', version: '1.0.0' },
+      params: { libraryRef: 'blockly:@aily-project/lib-demo', version: '1.0.0' },
       context: { ...context, actorId: 'model-supplied' },
     }),
     error => error instanceof CoderAgentRpcError && error.code === 'SUBAPP_AGENT_CONTEXT_REQUIRED',
