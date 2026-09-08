@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "coder_library_search",
-      "description": "Search Aily libraries using the shared Blockly libraries.json and libraries-index.json from the main application. Results return exact blockly:@aily-project/lib-* libraryRef, packageName, version, compatibility, activeArchitectures, compatibleAlternatives, installedVersion, installed and managed. An npm package alone is not ready for Coder: source must exist under sketch/libraries. Copy returned refs and versions; for removal require installed=true and managed=true and use installedVersion. Existing managed ZIP libraries remain discoverable for removal.",
+      "description": "Search Coder libraries. source=registry selects Arduino official packages from the regional libraries-coder-index.json, returning coder:@aily-project-coder/lib-* refs. source=aily (default) searches Aily libraries using the shared Blockly libraries.json and libraries-index.json from the main application. Results return exact blockly:@aily-project/lib-* libraryRef, packageName, version, compatibility, activeArchitectures, compatibleAlternatives, installedVersion, installed and managed. An npm package alone is not ready for Coder: source must exist under sketch/libraries. Copy returned refs and versions; for removal require installed=true and managed=true and use installedVersion. Existing managed ZIP libraries remain discoverable for removal.",
       "rpc": {
         "method": "coder.library.search"
       },
@@ -53,7 +53,16 @@
           "forceRefresh": {
             "type": "boolean",
             "default": false,
-            "description": "Refresh the shared Blockly library catalogs from the selected regional resource."
+            "description": "Refresh the selected library catalog from the current regional resource."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "aily",
+              "registry"
+            ],
+            "default": "aily",
+            "description": "aily: shared Blockly/Aily packages. registry: Arduino official npm packages from the regional libraries-coder-index.json."
           }
         },
         "additionalProperties": false
@@ -61,7 +70,7 @@
     },
     {
       "name": "coder_library_install",
-      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true. Use that override only when the user explicitly requested this named library and confirmed after being told the supported/current architectures and compatible alternatives; if that confirmation UI times out, is skipped, or is unavailable, the original explicit install request remains authoritative and the override may be used, but the final response must disclose the incompatibility and alternatives. Never override compatibility for an Agent-selected library. The Coder Runtime uses the shared Blockly npm package and registry configuration, retains the root package.json dependency and node_modules package, and safely extracts its src.7z into sketch/libraries. Require ready=true, packageJsonLinked=true and non-empty libraryRoots; inspect returned packageDirectory, sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not invoke npm or extract archives manually.",
+      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true. Use that override only when the user explicitly requested this named library and confirmed after being told the supported/current architectures and compatible alternatives; if that confirmation UI times out, is skipped, or is unavailable, the original explicit install request remains authoritative and the override may be used, but the final response must disclose the incompatibility and alternatives. Never override compatibility for an Agent-selected library. The Coder Runtime uses the same npm installation and src.7z materialization for Aily and official @aily-project-coder packages, with each scope using the main application regional registry configuration, retains the root package.json dependency and node_modules package, and safely extracts its src.7z into sketch/libraries. Require ready=true, packageJsonLinked=true and non-empty libraryRoots; inspect returned packageDirectory, sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not invoke npm or extract archives manually.",
       "rpc": {
         "method": "coder.library.install"
       },
@@ -113,7 +122,7 @@
     },
     {
       "name": "coder_library_remove",
-      "description": "Remove one exact installed Aily library using its project-local managed receipt. First search and require installed=true and managed=true; copy libraryRef and installedVersion. Shared Blockly packages are uninstalled from root npm dependencies and their unchanged managed sketch/libraries roots are removed. Removal does not require an online catalog. Preserve local, copied, modified, malformed or differently sourced libraries. Existing managed ZIP libraries remain removable by their original refs.",
+      "description": "Remove one exact installed Aily or Arduino official library using its project-local managed receipt. First search and require installed=true and managed=true; copy libraryRef and installedVersion. Both package scopes are uninstalled from root npm dependencies and their unchanged managed sketch/libraries roots are removed. Removal does not require an online catalog. Preserve local, copied, modified, malformed or differently sourced libraries. Existing managed ZIP libraries remain removable by their original refs.",
       "rpc": {
         "method": "coder.library.remove"
       },

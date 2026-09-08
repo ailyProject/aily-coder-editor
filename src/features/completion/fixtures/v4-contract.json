@@ -1,0 +1,91 @@
+{
+  "request": {
+    "protocolVersion": 2,
+    "requestId": "11111111-1111-4111-8111-111111111111",
+    "opportunityId": "11111111-1111-4111-8111-111111111111",
+    "workspaceSessionId": "workspace-session-test",
+    "client": {
+      "name": "aily-coder-editor",
+      "version": "0.1.6",
+      "sessionId": "session-test"
+    },
+    "mode": "next-edit",
+    "trigger": "manual",
+    "active": {
+      "fileId": "main",
+      "snapshotId": "snapshot-1",
+      "position": {
+        "line": 100,
+        "character": 0
+      }
+    },
+    "documents": [
+      {
+        "fileId": "main",
+        "snapshotId": "snapshot-1",
+        "relativePath": "src/main.cpp",
+        "languageId": "cpp",
+        "version": 1,
+        "permission": "edit",
+        "windows": [
+          {
+            "windowId": "main-window",
+            "range": {
+              "start": {
+                "line": 100,
+                "character": 0
+              },
+              "end": {
+                "line": 101,
+                "character": 0
+              }
+            },
+            "text": "const char* label = \"😀\";\r\n",
+            "purpose": "completion"
+          },
+          {
+            "windowId": "import-window",
+            "range": {
+              "start": {
+                "line": 0,
+                "character": 0
+              },
+              "end": {
+                "line": 0,
+                "character": 0
+              }
+            },
+            "text": "",
+            "purpose": "import",
+            "allowedNewText": [
+              "#include <Arduino.h>\r\n"
+            ]
+          }
+        ]
+      }
+    ],
+    "recentEdits": [],
+    "diagnostics": [],
+    "options": {
+      "crossFile": false,
+      "autoImports": true,
+      "partialInsertAccept": false,
+      "maxCandidates": 1
+    }
+  },
+  "model": {
+    "suggestions": [
+      {
+        "windowId": "main-window",
+        "newText": "const char* label = \"ready 😀\";\r\n",
+        "additionalEdits": [
+          {
+            "windowId": "import-window",
+            "newText": "#include <Arduino.h>\r\n"
+          }
+        ]
+      }
+    ]
+  },
+  "completionId": "sug_0123456789abcdef0123456789abcdef"
+}

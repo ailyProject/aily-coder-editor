@@ -7,6 +7,7 @@ import { useEmbedHostLocalFolder, useHtmlFileSystemProvider } from './setup.comm
 import './features/intellisense' // !!
 import './features/monacoStdioLspClient'
 import './features/aiInlineCompletion'
+import './features/completion/completionFeature'
 import './features/aiEditDiff'
 import './aiEditDiffBridge'
 import './features/gitScm'

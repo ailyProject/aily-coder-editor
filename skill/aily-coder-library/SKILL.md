@@ -1,11 +1,11 @@
 ---
 name: aily-coder-library
-description: Use in Aily Coder mode when searching, installing, updating, or removing libraries from the shared Aily/Blockly library catalog.
+description: Use in Aily Coder mode when searching, installing, updating, or removing libraries from the regional Aily and Arduino official library catalogs.
 ---
 
 # Aily Coder Libraries
 
-Use `coder_library_search` for Aily libraries. It shares Blockly `libraries.json` and `libraries-index.json` and the main application's regional npm registry configuration. Install exact `blockly:@aily-project/lib-*` refs through `coder_library_install`: it retains the root dependency and npm package, then extracts `src.7z` into `sketch/libraries/`. The active workspace is injected by the Agent.
+Use `coder_library_search` for Aily libraries. It shares Blockly `libraries.json` and `libraries-index.json` and the main application's regional npm registry configuration. Install exact `blockly:@aily-project/lib-*` refs through `coder_library_install`: it retains the root dependency and npm package, then extracts `src.7z` into `sketch/libraries/`. For Arduino official libraries, use the same search tool with `source="registry"`: the regional `libraries-coder-index.json` returns `coder:@aily-project-coder/lib-*` refs. Install and remove these refs through the same tools and npm/`src.7z` workflow; `npm_registry_coder` selects the regional official package registry. The active workspace is injected by the Agent.
 
 ## Choose a library
 

@@ -1,0 +1,9 @@
+.aily-next-edit-gutter::before { content: '➜'; color: var(--vscode-editorInfo-foreground, #5aa9fa); font-size: 15px; }
+.aily-next-edit-original { background: var(--vscode-diffEditor-removedTextBackground, #a33a3a33); }
+.aily-next-edit-preview { overflow: auto; box-sizing: border-box; border: 1px solid var(--vscode-editorInfo-foreground, #5aa9fa); background: var(--vscode-editor-background, #1e1e1e); color: var(--vscode-editor-foreground, #ddd); font: 12px var(--monaco-monospace-font, monospace); }
+.aily-next-edit-header { display: flex; align-items: center; gap: 12px; padding: 4px 10px; position: sticky; top: 0; background: var(--vscode-editorWidget-background, #242424); }
+.aily-next-edit-header span { flex: 1; }
+.aily-next-edit-header button { border: 0; padding: 3px 8px; color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); cursor: pointer; }
+.aily-next-edit-preview pre { margin: 0; padding: 4px 10px; white-space: pre; }
+.aily-next-edit-deleted { background: var(--vscode-diffEditor-removedTextBackground, #a33a3a33); }
+.aily-next-edit-added { background: var(--vscode-diffEditor-insertedTextBackground, #3a9a3a33); }

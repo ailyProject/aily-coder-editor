@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { installCoderLibrary, removeCoderLibrary, searchCoderLibraries } from './componentLibraryService.js'
+import { installCoderLibrary, materializeCoderProjectLibraries, removeCoderLibrary, searchCoderLibraries } from './componentLibraryService.js'
 import { createCoderAgentRpcRouter } from './agentRpcRouter.js'
 
 const packageName = '@aily-project/lib-demo'
@@ -83,6 +83,71 @@ test('an npm-only package is not installed until Coder materializes its sources'
   assert.equal((await installCoderLibrary(f.options)).ready, true)
 })
 
+test('template dependencies materialize offline through host RPC without changing npm dependencies', async t => {
+  const f = await fixture(t)
+  await f.options.runNpmCommand({ args: ['install', `${packageName}@1.0.0`] })
+  const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'))
+  manifest.dependencies[packageName] = '^1.0.0'
+  const noSourceName = '@aily-project/lib-blocks-only'
+  manifest.dependencies[noSourceName] = '~2.0.0'
+  await writeFile(f.manifestPath, JSON.stringify(manifest))
+  const noSourceRoot = path.join(f.workspaceRoot, 'node_modules', noSourceName)
+  await mkdir(noSourceRoot, { recursive: true })
+  await writeFile(path.join(noSourceRoot, 'package.json'), JSON.stringify({ name: noSourceName, version: '2.0.0' }))
+  const lockPath = path.join(f.workspaceRoot, 'package-lock.json')
+  await writeFile(lockPath, 'existing lockfile')
+  await rm(path.join(f.appDataPath, 'libraries.json'))
+  const before = await readFile(f.manifestPath, 'utf8')
+  f.commands.length = 0
+  const router = createCoderAgentRpcRouter({ materialize: input => materializeCoderProjectLibraries({ ...f.options, ...input }) })
+  const result = await router.execute({ method: 'coder.library.materialize', params: { workspaceRoot: '/ignored' },
+    context: { actor: 'agent', actorId: 'subapp-agent-host', developmentMode: 'coder', workspaceRoot: f.workspaceRoot } })
+  assert.equal(result.ready, true)
+  assert.deepEqual(result.libraryRoots, ['sketch/libraries/Demo', 'sketch/libraries/Support'])
+  assert.equal(result.libraries.length, 1)
+  assert.equal(await readFile(path.join(f.workspaceRoot, 'sketch/libraries/Demo/Demo.h'), 'utf8'), '#pragma once\n')
+  assert.equal(await readFile(f.manifestPath, 'utf8'), before)
+  assert.equal(await readFile(lockPath, 'utf8'), 'existing lockfile')
+  assert.deepEqual(f.commands, [])
+  // A second dependency check must preserve edited sources, without re-extracting.
+  await writeFile(path.join(f.workspaceRoot, 'sketch/libraries/Demo/Demo.h'), 'local edit')
+  const again = await materializeCoderProjectLibraries({ ...f.options, extractArchive: () => { throw new Error('unexpected extraction') } })
+  assert.equal(again.libraries[0].alreadyInstalled, true)
+  assert.equal(await readFile(path.join(f.workspaceRoot, 'sketch/libraries/Demo/Demo.h'), 'utf8'), 'local edit')
+})
+
+test('template packages without src.7z still materialize nested source dependencies', async t => {
+  const f = await fixture(t)
+  await f.options.runNpmCommand({ args: ['install', `${packageName}@1.0.0`] })
+  await rm(path.join(f.packageRoot, 'src.7z'))
+  const dependencyName = '@aily-project/lib-nested'
+  const dependencyRoot = path.join(f.packageRoot, 'node_modules', dependencyName)
+  await mkdir(dependencyRoot, { recursive: true })
+  await writeFile(path.join(f.packageRoot, 'package.json'), JSON.stringify({ name: packageName, version: '1.0.0', dependencies: { [dependencyName]: '^2.0.0' } }))
+  await writeFile(path.join(dependencyRoot, 'package.json'), JSON.stringify({ name: dependencyName, version: '2.0.0' }))
+  await writeFile(path.join(dependencyRoot, 'src.7z'), 'nested archive')
+  const result = await materializeCoderProjectLibraries(f.options)
+  assert.equal(result.ready, true)
+  assert.equal(result.libraries[0].packageName, dependencyName)
+  const receipt = JSON.parse(await readFile(path.join(f.workspaceRoot, 'sketch/libraries/Demo/.aily-blockly-library.json'), 'utf8'))
+  assert.equal(receipt.packageName, dependencyName)
+})
+
+test('automatic extraction preserves local conflicts and can retry after an archive failure', async t => {
+  const f = await fixture(t)
+  await f.options.runNpmCommand({ args: ['install', `${packageName}@1.0.0`] })
+  const local = path.join(f.workspaceRoot, 'sketch/libraries/Support')
+  await mkdir(local, { recursive: true })
+  await writeFile(path.join(local, 'Local.h'), 'local code')
+  await assert.rejects(materializeCoderProjectLibraries(f.options), { code: 'BLOCKLY_LIBRARY_PATH_CONFLICT' })
+  assert.equal(await readFile(path.join(local, 'Local.h'), 'utf8'), 'local code')
+  assert.deepEqual(await readdir(path.dirname(local)), ['Support'])
+  await rm(local, { recursive: true })
+  await assert.rejects(materializeCoderProjectLibraries({ ...f.options, extractArchive: () => { throw new Error('archive failed') } }), /archive failed/u)
+  assert.deepEqual(await readdir(path.dirname(local)), [])
+  assert.equal((await materializeCoderProjectLibraries(f.options)).ready, true)
+})
+
 test('a short package name in the search index resolves the exact scoped install identity', async t => {
   const f = await fixture(t)
   await writeFile(path.join(f.appDataPath, 'libraries-index.json'), JSON.stringify({ libraries: [{ name: 'lib-demo', displayName: 'Demo' }] }))
@@ -117,8 +182,14 @@ test('managed libraries remain searchable and removable after the shared catalog
   assert.equal((await removeCoderLibrary(f.options)).removed, true)
 })
 
-test('normalizes archives without a src wrapper and flat src archives', async t => {
-  for (const layout of ['Library/Header.h', 'src/Header.h']) {
+test('normalizes consecutive src wrappers while preserving each library internal src', async t => {
+  for (const [layout, expected] of [
+    ['Library/Header.h', 'Library/Header.h'],
+    ['src/Header.h', 'lib-demo/Header.h'],
+    ['src/src/bq27220/Header.h', 'bq27220/Header.h'],
+    ['src/src/src/bq27220/src/Header.h', 'bq27220/src/Header.h'],
+    ['src/src/src/Header.h', 'lib-demo/Header.h'],
+  ]) {
     await t.test(layout, async t => {
       const f = await fixture(t)
       const installed = await installCoderLibrary({ ...f.options, extractArchive: async ({ destination }) => {
@@ -126,11 +197,78 @@ test('normalizes archives without a src wrapper and flat src archives', async t 
         await mkdir(path.dirname(file), { recursive: true })
         await writeFile(file, '#pragma once\n')
       } })
-      const expected = layout.startsWith('src/') ? 'lib-demo' : 'Library'
-      assert.equal(installed.sourceDirectory, `sketch/libraries/${expected}`)
-      assert.equal(await readFile(path.join(f.workspaceRoot, installed.sourceDirectory, 'Header.h'), 'utf8'), '#pragma once\n')
+      assert.equal(installed.sourceDirectory, `sketch/libraries/${expected.split('/')[0]}`)
+      assert.equal(await readFile(path.join(f.workspaceRoot, 'sketch/libraries', expected), 'utf8'), '#pragma once\n')
     })
   }
+})
+
+test('automatic dependency installation flattens multiple libraries below the last src wrapper', async t => {
+  const f = await fixture(t)
+  await f.options.runNpmCommand({ args: ['install', `${packageName}@1.0.0`] })
+  f.commands.length = 0
+  const result = await materializeCoderProjectLibraries({ ...f.options, extractArchive: async ({ destination }) => {
+    for (const name of ['bq27220', 'Support']) {
+      const directory = path.join(destination, 'src/src/src', name)
+      await mkdir(directory, { recursive: true })
+      await writeFile(path.join(directory, 'Header.h'), '#pragma once\n')
+    }
+  } })
+  assert.deepEqual([...result.libraryRoots].sort(), ['sketch/libraries/Support', 'sketch/libraries/bq27220'])
+  assert.deepEqual(f.commands, [])
+  await assert.rejects(readFile(path.join(f.workspaceRoot, 'sketch/libraries/src')), { code: 'ENOENT' })
+})
+
+async function legacySourceWrapperFixture(t) {
+  const f = await fixture(t)
+  const extractArchive = async ({ destination }) => {
+    const directory = path.join(destination, 'src/LegacyWrapper/bq27220')
+    await mkdir(directory, { recursive: true })
+    await writeFile(path.join(directory, 'Header.h'), '#pragma once\n')
+  }
+  await installCoderLibrary({ ...f.options, extractArchive })
+  const root = path.join(f.workspaceRoot, 'sketch/libraries/src')
+  await rename(path.join(f.workspaceRoot, 'sketch/libraries/LegacyWrapper'), root)
+  const receiptPath = path.join(root, '.aily-blockly-library.json')
+  const receipt = JSON.parse(await readFile(receiptPath, 'utf8'))
+  delete receipt.sourceLayoutVersion
+  receipt.libraryRoot = 'src'
+  receipt.libraryRoots = ['src']
+  await writeFile(receiptPath, JSON.stringify(receipt))
+  f.options.extractArchive = async ({ destination }) => {
+    const directory = path.join(destination, 'src/src/bq27220')
+    await mkdir(directory, { recursive: true })
+    await writeFile(path.join(directory, 'Header.h'), '#pragma once\n')
+  }
+  return { ...f, root }
+}
+
+test('repairs old managed src roots at the same version and then remains idempotent', async t => {
+  const f = await legacySourceWrapperFixture(t)
+  const manifest = await readFile(f.manifestPath, 'utf8')
+  const result = await materializeCoderProjectLibraries(f.options)
+  assert.deepEqual(result.libraryRoots, ['sketch/libraries/bq27220'])
+  assert.equal(result.libraries[0].alreadyInstalled, false)
+  await assert.rejects(readdir(f.root), { code: 'ENOENT' })
+  assert.equal(await readFile(path.join(f.workspaceRoot, 'sketch/libraries/bq27220/Header.h'), 'utf8'), '#pragma once\n')
+  assert.equal(await readFile(f.manifestPath, 'utf8'), manifest)
+  const again = await materializeCoderProjectLibraries({ ...f.options, extractArchive: () => { throw new Error('unexpected extraction') } })
+  assert.equal(again.libraries[0].alreadyInstalled, true)
+})
+
+test('old src layout repair preserves local edits and conflicting target libraries', async t => {
+  const f = await legacySourceWrapperFixture(t)
+  const header = path.join(f.root, 'bq27220/Header.h')
+  await writeFile(header, 'user edit')
+  await assert.rejects(materializeCoderProjectLibraries(f.options), { code: 'BLOCKLY_LIBRARY_PROVENANCE_CONFLICT' })
+  assert.equal(await readFile(header, 'utf8'), 'user edit')
+  await writeFile(header, '#pragma once\n')
+  const target = path.join(f.workspaceRoot, 'sketch/libraries/bq27220')
+  await mkdir(target)
+  await writeFile(path.join(target, 'Local.h'), 'user library')
+  await assert.rejects(materializeCoderProjectLibraries(f.options), { code: 'BLOCKLY_LIBRARY_PATH_CONFLICT' })
+  assert.equal(await readFile(header, 'utf8'), '#pragma once\n')
+  assert.equal(await readFile(path.join(target, 'Local.h'), 'utf8'), 'user library')
 })
 
 test('source conflicts and archive failures restore package metadata and preserve local files', async t => {
@@ -249,6 +387,21 @@ test('materializes npm library dependencies, shares matching sources, and protec
   const installed = await installCoderLibrary(options)
   assert.deepEqual(installed.libraryRoots, ['sketch/libraries/Demo', 'sketch/libraries/Shared'])
   assert.equal((await searchCoderLibraries({ ...options, query: 'Shared' })).libraries[0].installed, true)
+  // A parent installed by the old layout must also repair its dependency's wrapper root.
+  const sources = path.join(f.workspaceRoot, 'sketch/libraries')
+  await rename(path.join(sources, 'Shared'), path.join(sources, 'src'))
+  const sharedReceiptPath = path.join(sources, 'src/.aily-blockly-library.json')
+  const sharedReceipt = JSON.parse(await readFile(sharedReceiptPath, 'utf8'))
+  delete sharedReceipt.sourceLayoutVersion
+  sharedReceipt.libraryRoot = 'src'
+  sharedReceipt.libraryRoots = ['src']
+  await writeFile(sharedReceiptPath, JSON.stringify(sharedReceipt))
+  const parentReceiptPath = path.join(sources, 'Demo/.aily-blockly-library.json')
+  const parentReceipt = JSON.parse(await readFile(parentReceiptPath, 'utf8'))
+  parentReceipt.dependencyLibraries[0].libraryRoots = ['src']
+  await writeFile(parentReceiptPath, JSON.stringify(parentReceipt))
+  assert.deepEqual((await materializeCoderProjectLibraries(options)).libraryRoots, ['sketch/libraries/Demo', 'sketch/libraries/Shared'])
+  assert.deepEqual(await readdir(sources), ['Demo', 'Shared'])
   await installCoderLibrary({ ...options, libraryRef: `blockly:${second}` })
   assert.deepEqual(await readdir(path.join(f.workspaceRoot, 'sketch/libraries')), ['Demo', 'Second', 'Shared'])
   await removeCoderLibrary(options)

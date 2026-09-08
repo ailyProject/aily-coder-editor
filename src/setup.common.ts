@@ -90,6 +90,7 @@ import {
 import { installHostEmbedContextListener } from './hostEmbedContext.js'
 import { setCoderUseEmbedHostNativeFsBridge } from './coderEmbedEnv.js'
 import 'vscode/localExtensionHost'
+import { completionTelemetryService } from './features/completion/completionTelemetryService'
 
 /** Explorer 默认：Aily View 在上且展开、Folders 在下且折叠（仅无本地缓存时 fallback 生效） */
 const explorerViewsStateFallback = {
@@ -550,6 +551,7 @@ export const envOptions: EnvironmentOverride = {
 }
 
 export const commonServices: IEditorOverrideServices = {
+  ...completionTelemetryService,
   // ...getAuthenticationServiceOverride(),
   // ...getLogServiceOverride(),
   ...getExtensionServiceOverride({

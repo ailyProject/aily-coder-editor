@@ -1,3 +1,5 @@
+import { completionRuntime } from './completion/completionRuntime'
+import { isCompletionSource } from './completion/completionState'
 import type * as vscode from 'vscode'
 import {
   ExtensionHostKind,
@@ -46,7 +48,7 @@ function parseProvider(raw: string | null | undefined): InlineCompletionProvider
   return undefined
 }
 
-function resolveProvider(): InlineCompletionProvider {
+export function resolveProvider(): InlineCompletionProvider {
   const params = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null
   const configured =
     parseProvider(params?.get('aiInlineProvider')) ??
@@ -248,9 +250,11 @@ void getApi().then(api => {
 
   const completionProvider: vscode.InlineCompletionItemProvider = {
     async provideInlineCompletionItems(document, position, context, token) {
-      if (token.isCancellationRequested || !isFileInlineCompletionDocument(document)) {
+      if (token.isCancellationRequested || !isFileInlineCompletionDocument(document) || !isCompletionSource(document.uri.toString())) {
         return []
       }
+      const v4 = await completionRuntime?.provide(document, position, context, token)
+      if (v4 !== undefined) return v4
       const epoch = ++latestEpoch
       const version = document.version
       const selected = context.selectedCompletionInfo
@@ -394,6 +398,7 @@ void getApi().then(api => {
     },
 
     handleDidShowCompletionItem(item) {
+      if (completionRuntime?.shown(item)) return
       const value = metadata.get(item)
       if (cloudClient == null || value == null || shown.has(item)) {
         return
@@ -403,6 +408,7 @@ void getApi().then(api => {
     },
 
     handleDidPartiallyAcceptCompletionItem(item, info) {
+      if (completionRuntime?.partial(item, typeof info === 'number' ? info : info.acceptedLength)) return
       const value = metadata.get(item)
       if (cloudClient == null || value == null) {
         return
@@ -417,6 +423,7 @@ void getApi().then(api => {
     },
 
     handleEndOfLifetime(item, reason) {
+      if (completionRuntime?.ended(item, reason)) return
       const value = metadata.get(item)
       if (cloudClient == null || value == null || terminal.has(item)) {
         return

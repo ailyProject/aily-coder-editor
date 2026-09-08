@@ -1,0 +1,132 @@
+"""Exercise the built Coder UI using real keyboard/DOM actions against fixture_server.py."""
+import json
+import argparse
+from pathlib import Path
+from playwright.sync_api import sync_playwright, expect
+
+parser = argparse.ArgumentParser(); parser.add_argument('--cdp'); args = parser.parse_args()
+output = Path('/tmp/aily-v4-evidence' + ('-electron' if args.cdp else '')); output.mkdir(exist_ok=True)
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(args.cdp) if args.cdp else p.chromium.launch(executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless=True)
+    page = browser.contexts[0].pages[0] if args.cdp else browser.new_page()
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.goto('http://127.0.0.1:8019/')
+    page.wait_for_load_state('networkidle')
+    frame = page.frame_locator('iframe[title="Aily Coder v4 verification"]')
+    expect(frame.locator('.monaco-workbench')).to_be_visible(timeout=15000)
+    page.screenshot(path=str(output / '01-workbench.png'))
+    checks = []
+    # Reconnaissance above confirms the Workbench quick access entry.
+    frame.locator('.monaco-workbench').click(position={'x': 800, 'y': 450})
+    quick = frame.locator('.quick-input-widget input')
+    root = page.evaluate('window.fixtureRoot')
+    Path(root, 'main.cpp').write_text('int main() {\n  \n}\n')
+    Path(root, 'rename.cpp').write_text('int oldName = 1;\n' + '// spacer\n' * 20 + 'int value = oldName;\n')
+    Path(root, 'delete.cpp').write_text('int unused = 1;\nint main() { return 0; }\n')
+    Path(root, 'multiline.cpp').write_text('int main() {\n  \n}\n')
+    baseline = page.request.get('http://127.0.0.1:8019/fixture/state').json()
+    def access(text):
+        page.keyboard.press('Meta+p'); expect(quick).to_be_visible(); quick.fill(text)
+        page.wait_for_timeout(350); page.keyboard.press('Enter'); expect(quick).not_to_be_visible()
+    def command(text): access('>' + text)
+    def scenario(value): page.request.post('http://127.0.0.1:8019/fixture/scenario', data={'scenario': value})
+    def disk(name):
+        page.keyboard.press('Meta+s'); page.wait_for_timeout(250)
+        return Path(root, name).read_text()
+    def check(name, condition):
+        assert condition, name
+        checks.append(name); print('PASS', name, flush=True)
+    scenario('completion'); access(root + '/main.cpp')
+    expect(frame.locator('.monaco-editor .view-lines')).to_be_visible(timeout=10000)
+    access(':2:3'); page.keyboard.type(' ')
+    expect(frame.locator('.ghost-text-decoration').first).to_be_visible(timeout=10000)
+    page.screenshot(path=str(output / '02-completion.png'))
+    page.keyboard.press('Tab')
+    check('typing ghost -> native Tab -> saved disk', 'return 0;' in disk('main.cpp'))
+    page.keyboard.press('Meta+z')
+    check('one undo removes accepted completion', 'return' not in disk('main.cpp'))
+    scenario('empty'); page.keyboard.press('Escape')
+    command('Aily: 暂停自动补全 5 分钟')
+    expect(frame.get_by_text('Aily 补全已暂停', exact=False)).to_be_visible()
+    before = page.request.get('http://127.0.0.1:8019/fixture/state').json()['providerCalls']
+    page.keyboard.type(' '); page.wait_for_timeout(1700)
+    check('snooze blocks network inference', page.request.get('http://127.0.0.1:8019/fixture/state').json()['providerCalls'] == before)
+    command('Aily: 恢复自动补全')
+    # A distant candidate comes from edit history + a real same-file lexical window.
+    scenario('rename'); access(root + '/rename.cpp'); access(':1:5')
+    page.keyboard.down('Shift')
+    for _ in range(7): page.keyboard.press('ArrowRight')
+    page.keyboard.up('Shift'); page.keyboard.insert_text('newName')
+    page.keyboard.press('Escape')
+    command('Aily: 预测下一处编辑')
+    expect(frame.locator('.aily-next-edit-preview')).to_be_attached(timeout=10000)
+    original = disk('rename.cpp')
+    page.keyboard.press('Tab')
+    check('first Tab navigates without applying', disk('rename.cpp') == original)
+    expect(frame.locator('.aily-next-edit-preview')).to_be_visible()
+    page.screenshot(path=str(output / '03-distant-edit.png'))
+    page.keyboard.press('Tab')
+    check('second Tab applies distant edit', 'int value = newName;' in disk('rename.cpp'))
+    page.keyboard.press('Meta+z')
+    check('one undo restores distant edit only', disk('rename.cpp') == original)
+    # Whole-window deletion uses an empty replacement segment and remains undoable.
+    scenario('delete'); access(root + '/delete.cpp'); access(':1:1')
+    command('Aily: 预测下一处编辑')
+    expect(frame.locator('.aily-next-edit-preview')).to_be_visible(timeout=10000)
+    page.screenshot(path=str(output / '04-deletion.png'))
+    page.keyboard.press('Tab')
+    check('deletion applies', 'unused' not in disk('delete.cpp'))
+    page.keyboard.press('Meta+z')
+    check('one undo restores deletion', 'int unused = 1;' in disk('delete.cpp'))
+    # Changing the source invalidates the shown edit; Tab cannot apply stale source.
+    command('Aily: 预测下一处编辑')
+    expect(frame.locator('.aily-next-edit-preview')).to_be_visible(timeout=10000)
+    page.keyboard.type(' ')
+    expect(frame.locator('.aily-next-edit-preview')).not_to_be_attached()
+    check('source edit invalidates preview', 'unused' in disk('delete.cpp'))
+    scenario('completion'); access(root + '/main.cpp'); access(':2:3')
+    command('Aily: 比较补全候选')
+    page.wait_for_timeout(1200)
+    page.screenshot(path=str(output / '05-alternatives.png'))
+    candidates = next(f for f in page.frames if f.get_by_role('button', name='接受候选 2', exact=True).count())
+    candidates.get_by_role('button', name='接受候选 2', exact=True).click()
+    page.wait_for_timeout(350)
+    check('candidate panel applies the selected text to its original file', 'return 1;' in disk('main.cpp'))
+    page.keyboard.press('Meta+z')
+    check('panel acceptance is one undo', 'return' not in disk('main.cpp'))
+    # Partial acceptance uses the native model transaction and emits cumulative feedback.
+    access(':2:3'); page.keyboard.type(' ')
+    expect(frame.locator('.ghost-text-decoration').first).to_be_visible(timeout=10000)
+    page.keyboard.press('Meta+ArrowRight')
+    partially = disk('main.cpp')
+    check('native partial word acceptance changes only a prefix', 'return' in partially and 'return 0;' not in partially)
+    expect(frame.locator('.ghost-text-decoration').first).to_be_visible(timeout=10000)
+    page.keyboard.press('Tab')
+    check('remaining completion stays acceptable after a partial word', 'return 0;' in disk('main.cpp'))
+    scenario('multiline'); access(root + '/multiline.cpp'); access(':2:3'); page.keyboard.type(' ')
+    expect(frame.locator('.ghost-text-decoration').first).to_be_visible(timeout=10000)
+    page.keyboard.press('Control+Meta+ArrowRight')
+    partially = disk('multiline.cpp')
+    check('accept next line inserts only the first line', 'int result = 0;' in partially and 'return result;' not in partially)
+    page.wait_for_timeout(1500)
+    expect(frame.locator('.ghost-text-decoration').first).to_be_visible(timeout=10000)
+    page.keyboard.press('Tab')
+    check('remaining multiline completion is accepted', 'return result;' in disk('multiline.cpp'))
+    page.evaluate('window.fixtureSignOut()')
+    expect(frame.get_by_text('Aily 补全不可用', exact=False)).to_be_visible(timeout=10000)
+    check('account invalidation clears suggestions', frame.locator('.ghost-text-decoration').count() == 0)
+    stats = page.request.get('http://127.0.0.1:8019/fixture/state').json()
+    stats['requests'] = stats['requests'][len(baseline['requests']):]
+    stats['feedback'] = stats['feedback'][len(baseline['feedback']):]
+    check('alternative mode requests three candidates', any(item['mode'] == 'alternatives' and item['options']['maxCandidates'] == 3 for item in stats['requests']))
+    check('native feedback reaches actual server', any(item['event'] == 'accepted' for item in stats['feedback']))
+    check('navigation and apply feedback are distinct', all(any(item['event'] == event for item in stats['feedback']) for event in ['jumped', 'applied']))
+    meaningful = [error for error in errors if "lock() must be called from a primary top-level" not in error]
+    check('no completion runtime errors', not meaningful)
+    (output / 'browser-result.json').write_text(json.dumps({'checks': checks, 'errors': errors, 'providerCalls': stats['providerCalls'],
+        'feedbackEvents': [item['event'] for item in stats['feedback']], 'workspace': root,
+        'runtime': 'isolated Electron shell' if args.cdp else 'ChromeHeadless',
+        'boundary': 'real built editor + real bridge + real backend/provider HTTP adapter; fixture auth/Redis/model'}, ensure_ascii=False, indent=2))
+    browser.close()

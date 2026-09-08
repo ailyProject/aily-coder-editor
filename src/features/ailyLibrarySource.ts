@@ -36,6 +36,8 @@ export function classifyWorkspaceLibrarySource(input: {
   readonly packageJson?: string
 }): LibraryTreeSource {
   if (sourceFrom(input.ailyReceipt) === 'blockly-library') {
+    const packageName = parseJsonObject(input.ailyReceipt)?.packageName
+    if (typeof packageName === 'string' && packageName.startsWith('@aily-project-coder/lib-')) return 'arduino'
     return 'aily'
   }
 

@@ -17,6 +17,10 @@ test('managed Aily and Arduino provenance wins over the Aily Chat package marker
     packageJson
   }), 'aily')
   assert.equal(classifyWorkspaceLibrarySource({
+    ailyReceipt: JSON.stringify({ source: 'blockly-library', packageName: '@aily-project-coder/lib-demo' }),
+    packageJson
+  }), 'arduino')
+  assert.equal(classifyWorkspaceLibrarySource({
     arduinoReceipt: JSON.stringify({ source: 'aily-coder-index' }),
     packageJson
   }), 'aily')

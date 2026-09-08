@@ -252,16 +252,6 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
     await gzipAsync(JSON.stringify(indexPayload)),
   )
 
-  const unmanagedSearch = await searchArduinoComponentLibraries({
-    workspaceRoot,
-    appDataPath,
-    query: 'Servo',
-  })
-  assert.equal(unmanagedSearch.libraries[0].installed, true)
-  assert.equal(unmanagedSearch.libraries[0].version, '1.3.0')
-  assert.equal(unmanagedSearch.libraries[0].installedVersion, '1.2.0')
-  assert.equal(unmanagedSearch.libraries[0].managed, false)
-
   const ignored = await removeArduinoComponentLibrary({
     workspaceRoot,
     libraryId,
@@ -279,11 +269,10 @@ test('removes only an exact Coder-managed Arduino registry library version', asy
     }),
   )
   const managedSearch = await searchArduinoComponentLibraries({
-    workspaceRoot,
-    appDataPath,
-    query: 'Servo',
+    workspaceRoot, appDataPath, query: 'Servo', fetchImpl: async () => { throw new Error('offline') },
   })
   assert.equal(managedSearch.libraries[0].managed, true)
+  assert.equal(managedSearch.libraries[0].installedVersion, '1.2.0')
 
   const removed = await removeArduinoComponentLibrary({
     workspaceRoot,
