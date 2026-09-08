@@ -1,7 +1,19 @@
 import { CommandsRegistry } from '@codingame/monaco-vscode-api/vscode/vs/platform/commands/common/commands'
+import { KeyCode, KeyMod } from '@codingame/monaco-vscode-api/vscode/vs/base/common/keyCodes'
+import { KeybindingsRegistry, KeybindingWeight } from '@codingame/monaco-vscode-api/vscode/vs/platform/keybinding/common/keybindingsRegistry'
 
 /** 全局 Quick Pick / Command Palette（Ctrl/Cmd+Shift+P）对应命令 id */
-const SHOW_COMMANDS = 'workbench.action.showCommands'
+export const SHOW_COMMANDS = 'workbench.action.showCommands'
+
+/** Remove default bindings before initialization so the empty-editor watermark omits this command. */
+export function removeEmbedCommandPaletteKeybindings(): void {
+  KeybindingsRegistry.registerKeybindingRule({
+    id: `-${SHOW_COMMANDS}`,
+    weight: KeybindingWeight.WorkbenchContrib,
+    primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyP,
+    secondary: [KeyCode.F1]
+  })
+}
 
 /** 防止热重载或重复 initialize 时多次 register */
 let embedCommandPaletteBlockInstalled = false

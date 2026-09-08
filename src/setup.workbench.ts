@@ -41,6 +41,7 @@ import {
   useEmbedHostLocalFolder
 } from './setup.common'
 import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
+import { installEmbedEditorContextMenus } from './embedEditorContextMenus'
 import { installEmbedLayoutSync } from './embedLayoutSync'
 import { installEmbedWorkbenchStyles } from './embedWorkbenchStyles'
 import { installEmbedSidebarTopBar } from './embedSidebarTopBar'
@@ -100,6 +101,7 @@ installAilyViewInlineRenameHost()
 // document.body.append(buttons)
 
 // Override services
+installEmbedEditorContextMenus()
 await initializeMonacoService(
   {
     ...commonServices,

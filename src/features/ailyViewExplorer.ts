@@ -24,6 +24,7 @@ import {
 } from './ailyComponentLibraryView.js'
 import { libraryStrings } from './ailyComponentLibraryI18n.js'
 import { initialHostLanguage, workbenchUiStrings } from './ailyWorkbenchI18n.js'
+import { ailyViewCommandStrings } from './ailyViewCommandI18n.js'
 import {
   startVirtualTreeInlineRename,
   validateRenameEntryName
@@ -218,7 +219,9 @@ function withHostBoardDescription(node: ProjectTreeNode): ProjectTreeNode {
 // 工程视图节点蓝图：只保留用户源码、工程配置与项目库三个入口。
 // Aily View 的直属节点默认展开；更深层的真实目录仍由用户按需展开。
 // User View 直接映射磁盘目录；Library 合并本地库与已安装 Aily 库的虚拟映射；Config 收纳根 package.json 工程配置。
-const initialAilyViewCopy = workbenchUiStrings(initialHostLanguage()).ailyView
+const initialAilyViewLanguage = getHostEmbedContext()?.meta?.lang || initialHostLanguage()
+const initialAilyViewCopy = workbenchUiStrings(initialAilyViewLanguage).ailyView
+const initialAilyViewCommands = ailyViewCommandStrings(initialAilyViewLanguage)
 
 const ailyViewBlueprint: readonly ProjectTreeNode[] = [
   {
@@ -929,7 +932,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     if (!element.isDirectory) {
       item.command = {
         command: COMMANDS.open,
-        title: 'Open',
+        title: initialAilyViewCommands.open,
         arguments: [element]
       }
     }
@@ -1007,13 +1010,13 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     ) {
       item.command = {
         command: COMMANDS.open,
-        title: 'Open',
+        title: initialAilyViewCommands.open,
         arguments: [element]
       }
     } else if (isBoardListNode(node)) {
       item.command = {
         command: COMMANDS.openBoardProperty,
-        title: 'Open Board Types',
+        title: initialAilyViewCommands.openBoardProperty,
         arguments: [element]
       }
     } else if (
@@ -1023,7 +1026,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     ) {
       item.command = {
         command: COMMANDS.showNodeInfo,
-        title: 'Show Node Info',
+        title: initialAilyViewCommands.showNodeInfo,
         arguments: [element]
       }
     }
@@ -1169,41 +1172,41 @@ const { getApi } = registerExtension(
         ]
       },
       commands: [
-        { command: COMMANDS.open, title: 'Open' },
-        { command: COMMANDS.openFolder, title: 'Open Folder' },
-        { command: COMMANDS.revealInFilesView, title: 'Reveal in Files View' },
-        { command: COMMANDS.copyRelativePath, title: 'Copy Relative Path' },
-        { command: COMMANDS.setAsMainEntry, title: 'Set as Main Entry' },
-        { command: COMMANDS.rename, title: 'Rename' },
-        { command: COMMANDS.newFile, title: 'New File' },
-        { command: COMMANDS.newFolder, title: 'New Folder' },
-        { command: COMMANDS.openVisualConfig, title: 'Open Visual Config' },
-        { command: COMMANDS.openAsJson, title: 'Open as JSON' },
-        { command: COMMANDS.validateConfig, title: 'Validate Config' },
-        { command: COMMANDS.regenerateLockFile, title: 'Regenerate Lock File' },
-        { command: COMMANDS.openSettings, title: 'Open Settings' },
-        { command: COMMANDS.changeValue, title: 'Change Value' },
-        { command: COMMANDS.revealBackingConfig, title: 'Reveal Backing Config' },
-        { command: COMMANDS.addDependency, title: 'Add Dependency' },
-        { command: COMMANDS.refreshPackages, title: 'Refresh Packages' },
-        { command: COMMANDS.openDependencyPanel, title: 'Open Dependency Panel' },
+        { command: COMMANDS.open, title: initialAilyViewCommands.open },
+        { command: COMMANDS.openFolder, title: initialAilyViewCommands.openFolder },
+        { command: COMMANDS.revealInFilesView, title: initialAilyViewCommands.revealInFilesView },
+        { command: COMMANDS.copyRelativePath, title: initialAilyViewCommands.copyRelativePath },
+        { command: COMMANDS.setAsMainEntry, title: initialAilyViewCommands.setAsMainEntry },
+        { command: COMMANDS.rename, title: initialAilyViewCommands.rename },
+        { command: COMMANDS.newFile, title: initialAilyViewCommands.newFile },
+        { command: COMMANDS.newFolder, title: initialAilyViewCommands.newFolder },
+        { command: COMMANDS.openVisualConfig, title: initialAilyViewCommands.openVisualConfig },
+        { command: COMMANDS.openAsJson, title: initialAilyViewCommands.openAsJson },
+        { command: COMMANDS.validateConfig, title: initialAilyViewCommands.validateConfig },
+        { command: COMMANDS.regenerateLockFile, title: initialAilyViewCommands.regenerateLockFile },
+        { command: COMMANDS.openSettings, title: initialAilyViewCommands.openSettings },
+        { command: COMMANDS.changeValue, title: initialAilyViewCommands.changeValue },
+        { command: COMMANDS.revealBackingConfig, title: initialAilyViewCommands.revealBackingConfig },
+        { command: COMMANDS.addDependency, title: initialAilyViewCommands.addDependency },
+        { command: COMMANDS.refreshPackages, title: initialAilyViewCommands.refreshPackages },
+        { command: COMMANDS.openDependencyPanel, title: initialAilyViewCommands.openDependencyPanel },
         {
           command: COMMANDS.toggleLibraryPanel,
           title: initialLibraryCopy.toggle,
           icon: '$(layout-sidebar-right)'
         },
-        { command: COMMANDS.retryResolve, title: 'Retry Resolve' },
-        { command: COMMANDS.showResolutionLog, title: 'Show Resolution Log' },
-        { command: COMMANDS.openLockFile, title: 'Open Lock File' },
-        { command: COMMANDS.buildDebug, title: 'Build Debug' },
-        { command: COMMANDS.buildRelease, title: 'Build Release' },
-        { command: COMMANDS.buildSimulator, title: 'Build Simulator' },
-        { command: COMMANDS.clean, title: 'Clean' },
-        { command: COMMANDS.revealGeneratedSources, title: 'Reveal Generated Sources' },
-        { command: COMMANDS.revealBridgeFiles, title: 'Reveal Bridge Files' },
-        { command: COMMANDS.openCompileCommands, title: 'Open Compile Commands' },
-        { command: COMMANDS.openBoardProperty, title: 'Open Board Types' },
-        { command: COMMANDS.showNodeInfo, title: 'Show Node Info' }
+        { command: COMMANDS.retryResolve, title: initialAilyViewCommands.retryResolve },
+        { command: COMMANDS.showResolutionLog, title: initialAilyViewCommands.showResolutionLog },
+        { command: COMMANDS.openLockFile, title: initialAilyViewCommands.openLockFile },
+        { command: COMMANDS.buildDebug, title: initialAilyViewCommands.buildDebug },
+        { command: COMMANDS.buildRelease, title: initialAilyViewCommands.buildRelease },
+        { command: COMMANDS.buildSimulator, title: initialAilyViewCommands.buildSimulator },
+        { command: COMMANDS.clean, title: initialAilyViewCommands.clean },
+        { command: COMMANDS.revealGeneratedSources, title: initialAilyViewCommands.revealGeneratedSources },
+        { command: COMMANDS.revealBridgeFiles, title: initialAilyViewCommands.revealBridgeFiles },
+        { command: COMMANDS.openCompileCommands, title: initialAilyViewCommands.openCompileCommands },
+        { command: COMMANDS.openBoardProperty, title: initialAilyViewCommands.openBoardProperty },
+        { command: COMMANDS.showNodeInfo, title: initialAilyViewCommands.showNodeInfo }
       ],
       menus: {
         'view/item/context': [
