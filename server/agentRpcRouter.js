@@ -1,6 +1,7 @@
 import path from 'node:path'
 import {
   installCoderLibrary,
+  localizeCoderLibrary,
   materializeCoderProjectLibraries,
   removeCoderLibrary,
   searchCoderLibraries,
@@ -9,6 +10,7 @@ import {
 const METHODS = new Set([
   'coder.library.search',
   'coder.library.install',
+  'coder.library.localize',
   'coder.library.remove',
   'coder.library.materialize',
 ])
@@ -73,6 +75,13 @@ function mutationParams(params) {
   }
 }
 
+function localizationParams(params) {
+  return {
+    ...mutationParams(params),
+    libraryRoot: nonEmptyText(params.libraryRoot).slice(0, 512),
+  }
+}
+
 function searchParams(params) {
   if (params.source !== undefined && !['aily', 'registry'].includes(params.source)) {
     throw new CoderAgentRpcError('SUBAPP_TOOL_INPUT_INVALID', 'source must be aily or registry')
@@ -123,6 +132,7 @@ export function serializeCoderAgentRpcError(error) {
 export function createCoderAgentRpcRouter(operations = {}) {
   const search = operations.search ?? searchCoderLibraries
   const install = operations.install ?? installCoderLibrary
+  const localize = operations.localize ?? localizeCoderLibrary
   const remove = operations.remove ?? removeCoderLibrary
   const materialize = operations.materialize ?? materializeCoderProjectLibraries
 
@@ -164,6 +174,11 @@ export function createCoderAgentRpcRouter(operations = {}) {
         }
         if (method === 'coder.library.install') {
           const library = await install({ workspaceRoot, ...mutationParams(params), signal })
+          signal?.throwIfAborted()
+          return { ok: true, library: publicLibrary(library) }
+        }
+        if (method === 'coder.library.localize') {
+          const library = await localize({ workspaceRoot, ...localizationParams(params), signal })
           signal?.throwIfAborted()
           return { ok: true, library: publicLibrary(library) }
         }

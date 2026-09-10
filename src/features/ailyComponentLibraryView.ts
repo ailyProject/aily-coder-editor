@@ -11,6 +11,10 @@ import {
   onHostEmbedContextChanged,
 } from '../hostEmbedContext.js'
 import {
+  reportHostLibraryOperationFeedback,
+  type HostLibraryOperationFeedbackState,
+} from '../hostOperationFeedback.js'
+import {
   normalizeLibraryLanguage,
 } from './ailyComponentLibraryModel.js'
 import {
@@ -385,16 +389,29 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     const root = workspaceRoot(this.vscodeApi)
     const library = this.#libraries.find(item => item.id === libraryId && item.source === source)
     if (!root || !library || library.installed || this.#installing.has(libraryId) || this.#removing.has(libraryId)) return
+    let allowIncompatible = false
+    if (library.compatible === false) {
+      allowIncompatible = await this.#confirmIncompatibleInstall(library, library.compatibility)
+      if (!allowIncompatible) return
+    }
     this.#installing.add(libraryId)
     this.#notice = null
     this.#sendState()
+    this.#reportOperationFeedback('loading', library, 'install', version)
     try {
       let response: ApiResponse
       try {
-        response = await callApi('install', { workspaceRoot: root, libraryId, source, version })
+        response = await callApi('install', {
+          workspaceRoot: root,
+          libraryId,
+          source,
+          version,
+          ...(allowIncompatible ? { allowIncompatible: true } : {}),
+        })
       } catch (error) {
         if (
-          !(error instanceof ComponentLibraryApiError)
+          allowIncompatible
+          || !(error instanceof ComponentLibraryApiError)
           || !['CODER_LIBRARY_INCOMPATIBLE', 'ARDUINO_LIBRARY_INCOMPATIBLE'].includes(error.errorCode)
         ) throw error
 
@@ -412,17 +429,15 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
         ? { ...item, ...response.library, source, installed: true, installedVersion: response.library?.installedVersion ?? version }
         : item
       this.#libraries = this.#libraries.map(update)
-      this.#notice = { text: this.#copy().added(library.name || library.folderName, source) }
+      this.#reportOperationFeedback('success', library, 'install', version)
     } catch (error) {
-      this.#notice = {
-        text: this.#copy().failed(
-          'install',
-          source,
-          error instanceof Error ? error.message : String(error)
-        ),
-        error: true
-      }
-      void Promise.resolve(this.vscodeApi.window.showErrorMessage(this.#notice.text)).catch(() => undefined)
+      this.#reportOperationFeedback(
+        'error',
+        library,
+        'install',
+        version,
+        error instanceof Error ? error.message : String(error),
+      )
     } finally {
       this.#installing.delete(libraryId)
       this.#sendState()
@@ -463,24 +478,56 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     this.#removing.add(libraryId)
     this.#notice = null
     this.#sendState()
+    this.#reportOperationFeedback('loading', library, 'uninstall', installedVersion)
     try {
       await callApi('remove', { workspaceRoot: root, libraryId, source, version: installedVersion })
       this.#libraries = this.#libraries.map(item => item.id === libraryId
         ? { ...item, installed: false, installedVersion: '', managed: false, folderName: '' }
         : item)
-      this.#notice = { text: this.#copy().removed(library.name || library.folderName, source) }
+      this.#reportOperationFeedback('success', library, 'uninstall', installedVersion)
     } catch (error) {
-      this.#notice = {
-        text: this.#copy().failed(
-          'remove',
-          source,
-          error instanceof Error ? error.message : String(error)
-        ),
-        error: true
-      }
+      this.#reportOperationFeedback(
+        'error',
+        library,
+        'uninstall',
+        installedVersion,
+        error instanceof Error ? error.message : String(error),
+      )
     } finally {
       this.#removing.delete(libraryId)
       this.#sendState()
+    }
+  }
+
+  #reportOperationFeedback(
+    state: HostLibraryOperationFeedbackState,
+    library: LibraryEntry,
+    action: 'install' | 'uninstall',
+    version: string,
+    error = '',
+  ): void {
+    const copy = this.#copy()
+    const libraryName = library.name || library.folderName
+    const packageName = library.packageName?.trim()
+      || (library.id.startsWith('blockly:') || library.id.startsWith('coder:')
+        ? library.id.slice(library.id.indexOf(':') + 1).trim()
+        : '')
+    const command = packageName
+      ? action === 'install'
+        ? `npm install ${packageName}@${version} --save --save-exact --ignore-scripts --no-audit --no-fund`
+        : `npm uninstall ${packageName} --ignore-scripts --no-audit --no-fund`
+      : `POST /api/component-libraries/${action === 'install' ? 'install' : 'remove'} ${library.id}@${version}`
+    if (reportHostLibraryOperationFeedback({ state, action, libraryName, command, error })) return
+
+    const message = state === 'error'
+      ? copy.failed(action === 'install' ? 'install' : 'remove', library.source, error)
+      : state === 'success'
+        ? action === 'install' ? copy.added(libraryName, library.source) : copy.removed(libraryName, library.source)
+        : ''
+    if (state === 'success') {
+      void Promise.resolve(this.vscodeApi.window.showInformationMessage(message)).catch(() => undefined)
+    } else if (state === 'error') {
+      void Promise.resolve(this.vscodeApi.window.showErrorMessage(message)).catch(() => undefined)
     }
   }
 }

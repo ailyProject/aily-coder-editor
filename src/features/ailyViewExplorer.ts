@@ -38,11 +38,16 @@ import {
 import {
   AILY_LIBRARY_RECEIPT_FILE,
   ARDUINO_LIBRARY_RECEIPT_FILE,
+  CODER_LOCAL_LIBRARY_RECEIPT_FILE,
   classifyWorkspaceLibrarySource,
   iconForLibraryTreeSource,
   LOCAL_LIBRARY_PACKAGE_FILE,
   type LibraryTreeSource
 } from './ailyLibrarySource.js'
+import {
+  listAilyLibraryProjections,
+  type ProjectDirectoryEntry
+} from './ailyLibraryProjection.js'
 
 // Aily View 节点模型
 // 字段语义与 docs/aily-code工程视图与信息架构设计.md §4 完全一致
@@ -685,6 +690,25 @@ function isFsDirectory(
   return fileType === dir || Number(fileType) === Number(dir)
 }
 
+async function readProjectDirectoryEntries(
+  vscodeApi: typeof vscode,
+  relPath: string
+): Promise<ProjectDirectoryEntry[]> {
+  const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
+  if (root == null) return []
+  try {
+    const entries = await vscodeApi.workspace.fs.readDirectory(
+      vscodeApi.Uri.joinPath(root, ...relPath.split('/').filter(Boolean))
+    )
+    return entries.map(([name, fileType]) => ({
+      name,
+      isDirectory: isFsDirectory(vscodeApi, fileType)
+    }))
+  } catch {
+    return []
+  }
+}
+
 async function readOptionalProjectTextFile(
   vscodeApi: typeof vscode,
   relPath: string
@@ -708,12 +732,13 @@ async function classifyProjectLibraryDirectory(
   vscodeApi: typeof vscode,
   libraryRelPath: string
 ): Promise<LibraryTreeSource> {
-  const [ailyReceipt, arduinoReceipt, packageJson] = await Promise.all([
+  const [ailyReceipt, arduinoReceipt, packageJson, localReceipt] = await Promise.all([
     readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${AILY_LIBRARY_RECEIPT_FILE}`),
     readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${ARDUINO_LIBRARY_RECEIPT_FILE}`),
-    readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${LOCAL_LIBRARY_PACKAGE_FILE}`)
+    readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${LOCAL_LIBRARY_PACKAGE_FILE}`),
+    readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${CODER_LOCAL_LIBRARY_RECEIPT_FILE}`)
   ])
-  return classifyWorkspaceLibrarySource({ ailyReceipt, arduinoReceipt, packageJson })
+  return classifyWorkspaceLibrarySource({ ailyReceipt, arduinoReceipt, packageJson, localReceipt })
 }
 
 /** 列出目录真实子项；node_modules 与 Library 的直接子目录用库图标。 */
@@ -783,6 +808,22 @@ function sortFsTreeElements(items: FsTreeElement[]): FsTreeElement[] {
     return labelOrder === 0 ? left.relPath.localeCompare(right.relPath) : labelOrder
   })
   return items
+}
+
+async function listInstalledLibraryChildren(
+  vscodeApi: typeof vscode
+): Promise<FsTreeElement[]> {
+  const projections = await listAilyLibraryProjections(
+    relPath => readProjectDirectoryEntries(vscodeApi, relPath)
+  )
+  return projections.map(projection => ({
+    kind: 'fs',
+    relPath: projection.relPath,
+    label: projection.label,
+    isDirectory: true,
+    isTopLevelPackage: true,
+    librarySource: projection.source
+  }))
 }
 
 class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElement> {
@@ -1054,11 +1095,17 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       return listFsDirectoryChildren(this.#vscode, SRC_REL)
     }
 
-    // Library：直接镜像 sketch/libraries。目录来源由安装回执区分。
+    // Library：本地源码优先；其余节点映射 npm 包最终 src 下的库根。
     if (node.id === 'library') {
-      const items = sortFsTreeElements(
-        await listFsDirectoryChildren(this.#vscode, COMPONENTS_REL)
-      )
+      const [localItems, installedItems] = await Promise.all([
+        listFsDirectoryChildren(this.#vscode, COMPONENTS_REL),
+        listInstalledLibraryChildren(this.#vscode)
+      ])
+      const localNames = new Set(localItems.map(item => item.label))
+      const items = sortFsTreeElements([
+        ...localItems,
+        ...installedItems.filter(item => !localNames.has(item.label))
+      ])
       if (items.length === 0) {
         return [wrap(COMPONENT_LIBRARIES_EMPTY)]
       }
@@ -1960,7 +2007,7 @@ void getApi().then((vscode) => {
     }
   })
 
-  /** node_modules 变更时刷新已安装包与 Library 中的 Aily 库映射。 */
+  /** node_modules 变更时刷新已安装包与 Library 中的 Aily/Arduino 库映射。 */
   let nodeModulesWatcher: vscode.FileSystemWatcher | undefined
   const setupNodeModulesWatcher = (): void => {
     nodeModulesWatcher?.dispose()

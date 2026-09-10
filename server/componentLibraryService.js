@@ -36,6 +36,7 @@ import { CODER_LIBRARY_PACKAGE, loadCoderPackageCatalog } from './coderPackageCa
 const SAFE_LIBRARY_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u
 const COMPONENT_LIBRARY_RECEIPT = '.aily-component-library.json'
 const BLOCKLY_LIBRARY_RECEIPT = '.aily-blockly-library.json'
+const CODER_LOCAL_LIBRARY_RECEIPT = '.aily-coder-local-library.json'
 const BLOCKLY_LIBRARY_SOURCE_LAYOUT_VERSION = 2
 const BLOCKLY_LIBRARY_PACKAGE = /^@aily-project\/lib-[A-Za-z0-9][A-Za-z0-9._-]*$/u
 const MAX_ARCHIVE_ENTRIES = 20_000
@@ -1247,17 +1248,21 @@ function fallbackLibraryRootName(packageManifest) {
   throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'Cannot derive a safe Coder library directory name')
 }
 
-async function resolveBlocklyArchiveRoots(extractionRoot, packageManifest) {
+async function resolveBlocklyArchiveRoots(extractionRoot, packageManifest, relativeBase = 'src') {
   await validateExtractedTree(extractionRoot)
   let sourceRoot = extractionRoot
-  let entries = await readdir(sourceRoot, { withFileTypes: true })
+  let sourceRelativePath = relativeBase
+  let entries = (await readdir(sourceRoot, { withFileTypes: true }))
+    .filter(entry => !entry.name.startsWith('.'))
   // Packages may wrap library roots in src/src/...; stop before each library's own src.
   while (entries.length === 1 && entries[0].name === 'src') {
     if (!entries[0].isDirectory()) {
       throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src must be a directory')
     }
     sourceRoot = path.join(sourceRoot, 'src')
-    entries = await readdir(sourceRoot, { withFileTypes: true })
+    sourceRelativePath = path.posix.join(sourceRelativePath, 'src')
+    entries = (await readdir(sourceRoot, { withFileTypes: true }))
+      .filter(entry => !entry.name.startsWith('.'))
   }
   if (entries.length === 0) {
     throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z contains an empty src directory')
@@ -1266,7 +1271,7 @@ async function resolveBlocklyArchiveRoots(extractionRoot, packageManifest) {
   if (directFiles.length > 0) {
     return [{
       folderName: fallbackLibraryRootName(packageManifest),
-      relativePath: 'src',
+      relativePath: sourceRelativePath,
       sourcePath: sourceRoot,
     }]
   }
@@ -1279,7 +1284,7 @@ async function resolveBlocklyArchiveRoots(extractionRoot, packageManifest) {
     }
     return {
       folderName: entry.name,
-      relativePath: path.posix.join('src', entry.name),
+      relativePath: path.posix.join(sourceRelativePath, entry.name),
       sourcePath: path.join(sourceRoot, entry.name),
     }
   })
@@ -1518,15 +1523,35 @@ async function assertUnmodifiedBlocklyRoots(roots) {
   }
 }
 
+async function inspectPackageInstallation(projectRoot, projectManifest, packageName) {
+  const dependency = directDependencySpec(projectManifest, packageName)
+  if (!dependency) return { managed: false, ready: false, version: '', roots: [] }
+  const directory = packagePath(projectRoot, packageName)
+  const installed = await readJson(path.join(directory, 'package.json'), 'library package').catch(() => null)
+  if (installed?.name !== packageName || !installed.version) {
+    return { managed: false, ready: false, version: '', roots: [] }
+  }
+  const sourcePackages = await collectBlocklySourcePackages(projectRoot, directory, installed, false).catch(() => [])
+  const roots = []
+  for (const sourcePackage of sourcePackages) {
+    if (!await pathExists(sourcePackage.sourceDirectory)) continue
+    const resolved = await packageLocalRoots(projectRoot, sourcePackage, {}, false).catch(() => ({ roots: [] }))
+    roots.push(...resolved.roots)
+  }
+  return { managed: true, ready: roots.length > 0, version: installed.version, roots }
+}
+
 export async function searchBlocklyLibraryPackages(options) {
   const official = options.source === 'registry'
   const matchesSource = name => (official ? CODER_LIBRARY_PACKAGE : BLOCKLY_LIBRARY_PACKAGE).test(name)
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
   const appDataRoot = await resolveAppDataRoot(options.appDataPath)
+  const projectManifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+  const declaredPackages = { ...projectManifest.dependencies, ...projectManifest.devDependencies, ...projectManifest.optionalDependencies }
   const allRoots = await managedBlocklyRoots(projectRoot)
   const legacyInstalled = await listInstalledComponentLibraries(path.join(projectRoot, 'sketch', 'libraries'))
   let catalogState = {}
-  const [[index, legacy], sdkRoots, projectManifest] = await Promise.all([
+  const [[index, legacy], sdkRoots] = await Promise.all([
     (official
       ? loadCoderPackageCatalog(appDataRoot, options).then(result => {
         catalogState = { indexUrl: result.indexUrl, stale: result.stale }
@@ -1534,7 +1559,8 @@ export async function searchBlocklyLibraryPackages(options) {
       })
       : sharedBlocklyCatalog(appDataRoot, options)).catch(error => {
       options.signal?.throwIfAborted()
-      if (allRoots.some(root => matchesSource(root.receipt.packageName)) || [...legacyInstalled.values()]
+      if (Object.keys(declaredPackages).some(matchesSource)
+        || allRoots.some(root => matchesSource(root.receipt.packageName)) || [...legacyInstalled.values()]
         .some(item => item.receipt?.source === (official ? 'arduino-library-manager' : 'aily-coder-index'))) {
         catalogState = { stale: true }
         return [[], []]
@@ -1542,7 +1568,6 @@ export async function searchBlocklyLibraryPackages(options) {
       throw error
     }),
     resolveSdkRoots(projectRoot, appDataRoot).catch(() => []),
-    readJson(path.join(projectRoot, 'package.json'), 'package.json'),
   ])
   const activeArchitectures = activeArduinoArchitectures(sdkRoots)
   const boardPackage = findBoardPackageName(projectManifest)
@@ -1564,6 +1589,13 @@ export async function searchBlocklyLibraryPackages(options) {
     known.add(root.receipt.packageName)
     catalog.push({ name: root.receipt.packageName, nickname: root.receipt.name || root.folderName, version: root.receipt.version })
   }
+  for (const packageName of Object.keys(declaredPackages).filter(matchesSource)) {
+    if (known.has(packageName)) continue
+    const installed = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
+    if (installed?.name !== packageName || !installed.version) continue
+    known.add(packageName)
+    catalog.push({ name: packageName, nickname: installed.nickname || packageName, version: installed.version })
+  }
   const indexed = new Map(index.map(item => [toBlocklyPackageName(item.name), item]))
   const tokens = String(options.query ?? '').normalize('NFKC').trim().toLocaleLowerCase('en').split(/[\s,，]+/u).filter(Boolean)
   const libraries = []
@@ -1578,9 +1610,10 @@ export async function searchBlocklyLibraryPackages(options) {
     if (exactPackage) scored.totalScore += 1000
     const architectures = metadata.supportedCores ?? item.architectures ?? item.compatibility?.core ?? []
     const compatibility = compatibilityDetails({ architectures }, activeArchitectures)
-    const roots = allRoots.filter(root => root.receipt.packageName === packageName)
-    const installedVersion = roots[0]?.receipt.version ?? ''
-    const installed = completeBlocklyRoots(roots, installedVersion, allRoots)
+    const packageState = await inspectPackageInstallation(projectRoot, projectManifest, packageName)
+    const roots = packageState.roots
+    const installedVersion = packageState.version
+    const installed = packageState.managed
     const description = String(item.description ?? metadata.description ?? '')
     libraries.push({
       ...identity, packageName,
@@ -1592,9 +1625,11 @@ export async function searchBlocklyLibraryPackages(options) {
       architectures, types: item.types ?? [], license: item.license || '',
       dependencies: item.dependencies ?? {}, providesIncludes: item.providesIncludes ?? [],
       compatible: compatibility.compatible, compatibility,
-      installed, installedVersion: installed ? installedVersion : '', managed: installed,
+      installed, ready: packageState.ready, installedVersion, managed: packageState.managed,
       folderName: roots[0]?.folderName ?? '',
-      libraryRoots: roots.map(root => path.posix.join('sketch', 'libraries', root.folderName)),
+      sourceDirectory: packageSourceDirectory(projectRoot, packageName, roots),
+      libraryRoots: roots.map(root => relativeProjectPath(projectRoot, root.sourcePath)),
+      localRoots: await localizedLibraryRoots(projectRoot, packageName),
       score: scored.totalScore,
     })
   }
@@ -1669,19 +1704,34 @@ async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
   }
 }
 
-function blocklyInstallResult(packageName, version, roots, compatibility, alreadyInstalled) {
+function relativeProjectPath(projectRoot, target) {
+  return path.relative(projectRoot, target).split(path.sep).join('/')
+}
+
+function packageSourceDirectory(projectRoot, packageName, roots) {
+  const ownRoots = roots.filter(root => root.packageName === packageName)
+  if (ownRoots.length === 1) return relativeProjectPath(projectRoot, ownRoots[0].sourcePath)
+  if (ownRoots.length > 1) return path.posix.join('node_modules', packageName, 'src')
+  if (roots.length === 1) return relativeProjectPath(projectRoot, roots[0].sourcePath)
+  return ''
+}
+
+function blocklyInstallResult(projectRoot, packageName, version, roots, compatibility, alreadyInstalled) {
+  const libraryRoots = roots.map(root => relativeProjectPath(projectRoot, root.sourcePath))
+  const packageRoots = roots.filter(root => root.packageName === packageName)
+  const packageDirectory = path.posix.join('node_modules', packageName)
   return { ...packageLibraryIdentity(packageName), packageName,
-    version, installedVersion: version, installed: true, managed: true, ready: true, alreadyInstalled,
-    packageJsonLinked: true, packageDirectory: path.posix.join('node_modules', packageName), archive: 'src.7z',
-    sourceDirectory: roots.length === 1 ? path.posix.join('sketch', 'libraries', roots[0].folderName) : 'sketch/libraries',
-    libraryRoots: roots.map(root => path.posix.join('sketch', 'libraries', root.folderName)),
-    folderName: roots[0].folderName, compatible: compatibility.compatible, compatibility,
+    version, installedVersion: version, installed: true, managed: true, ready: libraryRoots.length > 0, alreadyInstalled,
+    packageJsonLinked: true, packageDirectory, archive: 'src.7z', sourceLayout: 'package-local',
+    sourceDirectory: packageSourceDirectory(projectRoot, packageName, roots),
+    libraryRoots, folderName: packageRoots[0]?.folderName ?? roots[0]?.folderName ?? '',
+    localizable: true, compatible: compatibility.compatible, compatibility,
     compatibilityOverride: !compatibility.compatible,
     ...(!compatibility.compatible ? { compatibilityWarning: 'Installed despite an incompatible active Coder architecture' } : {}) }
 }
 
-/** Follow npm's nearest package resolution; Coder cannot compile from npm paths. */
-async function collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest, requireArchive = true) {
+/** Follow npm's nearest package resolution for both Aily and official Coder packages. */
+async function collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest, requireSource = true) {
   const packages = new Map()
   async function visit(directory, manifest, required) {
     const known = packages.get(manifest.name)
@@ -1693,11 +1743,17 @@ async function collectBlocklySourcePackages(projectRoot, packageRoot, packageMan
     }
     if (packages.size >= 100) throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', 'Too many Aily library dependencies')
     const archivePath = path.join(directory, 'src.7z')
+    const sourceDirectory = path.join(directory, 'src')
     const hasArchive = await pathExists(archivePath)
-    if (required && !hasArchive) {
-      throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_MISSING', `${manifest.name} does not contain src.7z`)
+    const sourceStat = await lstat(sourceDirectory).catch(() => null)
+    if (sourceStat && (!sourceStat.isDirectory() || sourceStat.isSymbolicLink())) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `${manifest.name} src must be a real directory`)
     }
-    packages.set(manifest.name, { directory, manifest, archivePath, hasArchive })
+    const hasSource = Boolean(sourceStat)
+    if (required && !hasArchive && !hasSource) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_MISSING', `${manifest.name} does not contain src or src.7z`)
+    }
+    packages.set(manifest.name, { directory, manifest, archivePath, sourceDirectory, hasArchive, hasSource })
     for (const name of Object.keys(manifest.dependencies ?? {})) {
       if (!isSafeBlocklyLibraryPackageName(name)) continue
       let parent = directory, resolved
@@ -1719,93 +1775,71 @@ async function collectBlocklySourcePackages(projectRoot, packageRoot, packageMan
       await visit(resolved.directory, resolved.manifest, false)
     }
   }
-  await visit(packageRoot, packageManifest, requireArchive)
-  return [...packages.values()].filter(item => item.hasArchive)
+  await visit(packageRoot, packageManifest, requireSource)
+  return [...packages.values()].filter(item => item.hasArchive || item.hasSource)
 }
 
-/** Shared source installation for explicit library installs and template dependencies. */
-async function materializeBlocklyLibraryPackage(projectRoot, packageRoot, packageManifest, library, options) {
-  const { name: packageName, version } = packageManifest
-  const { signal } = options
-  const librariesRoot = await ensureProjectDirectory(projectRoot, ['sketch', 'libraries'])
-  const allPreviousRoots = await managedBlocklyRoots(projectRoot)
-  let previousRoots = allPreviousRoots.filter(root => root.receipt.packageName === packageName)
-  if (completeBlocklyRoots(previousRoots, version, allPreviousRoots, true)) {
-    const dependencies = previousRoots[0].receipt.dependencyLibraries ?? []
-    const resultRoots = [...previousRoots, ...allPreviousRoots.filter(root => dependencies.some(item => item.packageName === root.receipt.packageName))]
-    return blocklyInstallResult(packageName, version, resultRoots, library.compatibility, true)
-  }
-  const sourcePackages = await collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest)
-  // Repair old managed wrapper roots, including dependencies, in the same source transaction.
-  const legacyPackages = new Set(allPreviousRoots.filter(root => hasLegacyBlocklySourceWrapper(root)
-    && sourcePackages.some(item => item.manifest.name === root.receipt.packageName)).map(root => root.receipt.packageName))
-  previousRoots = allPreviousRoots.filter(root => root.receipt.packageName === packageName || legacyPackages.has(root.receipt.packageName))
-  await assertUnmodifiedBlocklyRoots(previousRoots)
-  const staging = await mkdtemp(path.join(librariesRoot, '.aily-src-install-'))
-  const moved = [], backups = []
+/** Extract one package archive beside src.7z, atomically creating package-root/src. */
+async function preparePackageLocalSource(sourcePackage, options) {
+  const { archivePath, sourceDirectory, hasArchive } = sourcePackage
+  if (await pathExists(sourceDirectory)) return false
+  if (!hasArchive) return false
+  const staging = await mkdtemp(path.join(sourcePackage.directory, '.aily-src-extract-'))
   try {
-    const roots = []
-    for (const [index, sourcePackage] of sourcePackages.entries()) {
-      const destination = path.join(staging, `extracted-${index}`)
-      const { archivePath, manifest: sourceManifest } = sourcePackage
-      if (options.extractArchive) await options.extractArchive({ archivePath, destination, signal })
-      else await extractBlocklyLibraryArchive(archivePath, destination, options)
-      const packageRoots = await resolveBlocklyArchiveRoots(destination, sourceManifest)
-      roots.push(...packageRoots.map(root => ({ ...root, packageName: sourceManifest.name, version: sourceManifest.version })))
+    if (options.extractArchive) await options.extractArchive({ archivePath, destination: staging, signal: options.signal })
+    else await extractBlocklyLibraryArchive(archivePath, staging, options)
+    await validateExtractedTree(staging)
+    const entries = (await readdir(staging, { withFileTypes: true }))
+      .filter(entry => !entry.name.startsWith('.'))
+    if (entries.length === 0) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z contains no source files')
     }
-    if (new Set(roots.map(root => root.folderName)).size !== roots.length) {
-      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', 'Aily packages contain conflicting source directory names')
-    }
-    const dependencyLibraries = sourcePackages.filter(item => item.manifest.name !== packageName).map(item => ({
-      packageName: item.manifest.name, version: item.manifest.version,
-      libraryRoots: roots.filter(root => root.packageName === item.manifest.name).map(root => root.folderName),
-    }))
-    for (const root of roots) {
-      const target = path.join(librariesRoot, root.folderName)
-      const fingerprint = await fingerprintLibraryTree(root.sourcePath)
-      if (root.packageName !== packageName && !legacyPackages.has(root.packageName)) {
-        const existing = allPreviousRoots.find(item => item.folderName === root.folderName)
-        if (existing?.receipt.packageName === root.packageName && existing.receipt.version === root.version
-          && existing.receipt.fingerprint === fingerprint) {
-          await assertUnmodifiedBlocklyRoots([existing])
-          root.reuse = true
-          continue
-        }
-      }
-      if (await lstat(target).catch(() => null) && !previousRoots.some(previous => previous.folderName === root.folderName)) {
-        throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `sketch/libraries/${root.folderName} already exists and is not this managed Aily library`)
-      }
-      if (await pathExists(path.join(root.sourcePath, BLOCKLY_LIBRARY_RECEIPT))) {
-        throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_INVALID', 'src.7z contains reserved library provenance metadata')
-      }
-      await writeFile(path.join(root.sourcePath, BLOCKLY_LIBRARY_RECEIPT), JSON.stringify({
-        source: 'blockly-library', packageName: root.packageName, name: root.packageName === packageName ? library.name : root.folderName,
-        sourceLayoutVersion: BLOCKLY_LIBRARY_SOURCE_LAYOUT_VERSION,
-        version: root.version, libraryRoot: root.folderName,
-        libraryRoots: roots.filter(item => item.packageName === root.packageName).map(item => item.folderName), fingerprint,
-        ...(root.packageName === packageName ? { dependencyLibraries } : {}),
-      }, null, 2))
-    }
-    signal?.throwIfAborted()
-    for (const root of previousRoots) {
-      const backup = path.join(staging, `backup-${root.folderName}`)
-      await rename(root.directory, backup)
-      backups.push({ original: root.directory, backup })
-    }
-    for (const root of roots) {
-      if (root.reuse) continue
-      const target = path.join(librariesRoot, root.folderName)
-      await rename(root.sourcePath, target)
-      moved.push(target)
-    }
-    return blocklyInstallResult(packageName, version, roots, library.compatibility, false)
-  } catch (error) {
-    for (const target of moved) await rm(target, { recursive: true, force: true })
-    for (const backup of backups) await rename(backup.backup, backup.original)
-    throw error
+    const nestedSource = entries.length === 1 && entries[0].name === 'src' && entries[0].isDirectory()
+      ? path.join(staging, 'src')
+      : staging
+    options.signal?.throwIfAborted()
+    await rename(nestedSource, sourceDirectory)
+    return true
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
+}
+
+async function packageLocalRoots(projectRoot, sourcePackage, options, prepare) {
+  const extracted = prepare ? await preparePackageLocalSource(sourcePackage, options) : false
+  if (!await pathExists(sourcePackage.sourceDirectory)) return { extracted, roots: [] }
+  const roots = await resolveBlocklyArchiveRoots(sourcePackage.sourceDirectory, sourcePackage.manifest, 'src')
+  return { extracted, roots: roots.map(root => ({
+    ...root,
+    packageName: sourcePackage.manifest.name,
+    version: sourcePackage.manifest.version,
+  })) }
+}
+
+/** Prepare package-local sources for explicit installs and template dependencies. */
+async function materializeBlocklyLibraryPackage(projectRoot, packageRoot, packageManifest, library, options) {
+  const { name: packageName, version } = packageManifest
+  // A package may be a catalog facade whose nested Aily dependency owns src.7z.
+  const sourcePackages = await collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest, false)
+  const roots = []
+  let extracted = false
+  for (const sourcePackage of sourcePackages) {
+    options.signal?.throwIfAborted()
+    const prepared = await packageLocalRoots(projectRoot, sourcePackage, options, true)
+    extracted ||= prepared.extracted
+    roots.push(...prepared.roots)
+  }
+  if (roots.length === 0) {
+    throw new ComponentLibraryError('BLOCKLY_LIBRARY_ARCHIVE_MISSING', `${packageName} has no compilable src or src.7z`)
+  }
+  const names = new Set()
+  for (const root of roots) {
+    if (names.has(root.folderName)) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `Multiple npm libraries map to ${root.folderName}`)
+    }
+    names.add(root.folderName)
+  }
+  return blocklyInstallResult(projectRoot, packageName, version, roots, library.compatibility, !extracted)
 }
 
 /** Materialize already-installed template libraries without npm or catalog resolution. */
@@ -1826,7 +1860,7 @@ export async function materializeCoderProjectLibraries(options) {
       if (installed.name !== name || !installed.version) {
         throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', `Installed library identity/version is invalid: ${name}`)
       }
-      // Blockly-only packages have no archive but may depend on source libraries.
+      // Packages without source may still depend on packages that contain Coder source.
       for (const item of await collectBlocklySourcePackages(projectRoot, realDirectory, installed, false)) {
         const previous = packages.get(item.manifest.name)
         if (previous && previous.manifest.version !== item.manifest.version) {
@@ -1862,17 +1896,11 @@ export async function installBlocklyLibraryPackage(options) {
       throw new ComponentLibraryError('CODER_LIBRARY_INCOMPATIBLE', `${library.name} is not compatible with the active Coder architecture`,
         { ...library.compatibility, compatibleAlternatives: search.compatibleAlternatives })
     }
-    const allPreviousRoots = await managedBlocklyRoots(projectRoot)
-    const previousRoots = allPreviousRoots.filter(root => root.receipt.packageName === packageName)
     const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
     const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
-    if (completeBlocklyRoots(previousRoots, version, allPreviousRoots, true) && installedPackage?.name === packageName
-      && installedPackage.version === version && directDependencySpec(manifest, packageName)) {
-      const dependencies = previousRoots[0].receipt.dependencyLibraries ?? []
-      const resultRoots = [...previousRoots, ...allPreviousRoots.filter(root => dependencies.some(item => item.packageName === root.receipt.packageName))]
-      return blocklyInstallResult(packageName, version, resultRoots, library.compatibility, true)
+    if (installedPackage?.name === packageName && installedPackage.version === version && directDependencySpec(manifest, packageName)) {
+      return materializeBlocklyLibraryPackage(projectRoot, packagePath(projectRoot, packageName), installedPackage, library, options)
     }
-    await assertUnmodifiedBlocklyRoots(previousRoots)
     return withBlocklyPackageTransaction(projectRoot, packageName, async packageRoot => {
       await runNpmLibraryCommand(projectRoot, ['install', `${packageName}@${version}`, '--save', '--save-exact',
         '--ignore-scripts', '--no-audit', '--no-fund'], { ...options, appDataPath })
@@ -1890,18 +1918,21 @@ export async function removeBlocklyLibraryPackage(options) {
   const { packageName, version } = options
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
   return withWorkspaceMutationLock(projectRoot, async () => {
+    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
     const allRoots = await managedBlocklyRoots(projectRoot)
     const roots = allRoots.filter(root => root.receipt.packageName === packageName)
-    if (allRoots.some(root => root.receipt.packageName !== packageName
-      && root.receipt.dependencyLibraries?.some(dependency => dependency.packageName === packageName))) {
-      throw new ComponentLibraryError('BLOCKLY_LIBRARY_IN_USE', `${packageName} is required by another installed Aily library`)
+    if (!directDependencySpec(manifest, packageName) || installedPackage?.name !== packageName || installedPackage.version !== version) {
+      // Preserve removal compatibility for installations created by the old sketch/libraries materializer.
+      if (!completeBlocklyRoots(roots.map(root => ({ ...root, receipt: { ...root.receipt, dependencyLibraries: [] } })), version)) {
+        throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', 'Removal requires the exact installed package version')
+      }
     }
-    // A parent can still be removed if one of its dependency sources was lost.
-    if (!completeBlocklyRoots(roots.map(root => ({ ...root, receipt: { ...root.receipt, dependencyLibraries: [] } })), version)) {
+    if (installedPackage?.version && installedPackage.version !== version) {
       throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', 'Removal requires the exact installed version and all managed source roots')
     }
     await assertUnmodifiedBlocklyRoots(roots)
-    const staging = await mkdtemp(path.join(projectRoot, 'sketch', 'libraries', '.aily-remove-'))
+    const staging = await mkdtemp(path.join(projectRoot, '.aily-library-remove-'))
     const moved = []
     try {
       await withBlocklyPackageTransaction(projectRoot, packageName, async () => {
@@ -1913,12 +1944,102 @@ export async function removeBlocklyLibraryPackage(options) {
         await runNpmLibraryCommand(projectRoot, ['uninstall', packageName, '--ignore-scripts', '--no-audit', '--no-fund'], options)
       })
       return { ...packageLibraryIdentity(packageName), packageName, version,
-        removed: true, installed: false, managed: false, installedVersion: '', libraryRoots: roots.map(root => root.folderName) }
+        removed: true, installed: false, managed: false, installedVersion: '',
+        libraryRoots: [], preservedLocalRoots: await localizedLibraryRoots(projectRoot, packageName) }
     } catch (error) {
       for (const backup of moved) await rename(backup.backup, backup.original)
       throw error
     } finally {
       await rm(staging, { recursive: true, force: true })
     }
+  })
+}
+
+async function localizedLibraryRoots(projectRoot, packageName) {
+  const librariesRoot = path.join(projectRoot, 'sketch', 'libraries')
+  const roots = []
+  for (const entry of await readdir(librariesRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue
+    const receipt = await readJson(path.join(librariesRoot, entry.name, CODER_LOCAL_LIBRARY_RECEIPT), 'local library receipt').catch(() => null)
+    if (receipt?.sourcePackage === packageName || receipt?.ownerPackage === packageName) {
+      roots.push(path.posix.join('sketch', 'libraries', entry.name))
+    }
+  }
+  return roots.sort()
+}
+
+export async function localizeCoderLibrary(options) {
+  const ref = parseCoderLibraryRef(options.libraryRef)
+  if (!ref.packageName) {
+    throw new ComponentLibraryError('CODER_LIBRARY_REF_INVALID', 'Only npm-backed Aily and Arduino official libraries can be localized')
+  }
+  const packageName = ref.packageName
+  const version = String(options.version ?? '').trim()
+  const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  return withWorkspaceMutationLock(projectRoot, async () => {
+    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const packageRoot = packagePath(projectRoot, packageName)
+    const packageManifest = await readJson(path.join(packageRoot, 'package.json'), 'library package')
+    if (!directDependencySpec(manifest, packageName) || packageManifest.name !== packageName || packageManifest.version !== version) {
+      throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', 'Localization requires the exact installed package version')
+    }
+    const prepared = await materializeBlocklyLibraryPackage(projectRoot, packageRoot, packageManifest, {
+      name: packageManifest.nickname || packageName,
+      compatibility: { compatible: true },
+    }, options)
+    const sourcePackages = await collectBlocklySourcePackages(projectRoot, packageRoot, packageManifest, false)
+    const roots = []
+    for (const sourcePackage of sourcePackages) {
+      roots.push(...(await packageLocalRoots(projectRoot, sourcePackage, options, false)).roots)
+    }
+    const requestedRoot = String(options.libraryRoot ?? '').trim().replace(/\\/gu, '/')
+    const selected = requestedRoot
+      ? roots.filter(root => relativeProjectPath(projectRoot, root.sourcePath) === requestedRoot)
+      : roots.length === 1 ? roots : []
+    if (selected.length === 0) {
+      throw new ComponentLibraryError('CODER_LIBRARY_ROOT_INVALID', roots.length > 1
+        ? 'libraryRoot is required when the installed package exposes multiple libraryRoots'
+        : 'libraryRoot must be copied exactly from the installed libraryRoots')
+    }
+    const librariesRoot = await ensureProjectDirectory(projectRoot, ['sketch', 'libraries'])
+    const localRoots = []
+    for (const root of selected) {
+      const target = path.join(librariesRoot, root.folderName)
+      const existing = await lstat(target).catch(() => null)
+      if (existing) {
+        const oldReceipt = await readJson(path.join(target, BLOCKLY_LIBRARY_RECEIPT), 'legacy library receipt').catch(() => null)
+        const localReceipt = await readJson(path.join(target, CODER_LOCAL_LIBRARY_RECEIPT), 'local library receipt').catch(() => null)
+        if (localReceipt?.sourcePackage === root.packageName) {
+          localRoots.push(path.posix.join('sketch', 'libraries', root.folderName))
+          continue
+        }
+        if (oldReceipt?.packageName === root.packageName) {
+          await rm(path.join(target, BLOCKLY_LIBRARY_RECEIPT), { force: true })
+          await writeFile(path.join(target, CODER_LOCAL_LIBRARY_RECEIPT), JSON.stringify({
+            source: 'aily-chat', ownerPackage: packageName, sourcePackage: root.packageName,
+            sourceVersion: oldReceipt.version || root.version,
+            sourceLibraryRoot: relativeProjectPath(projectRoot, root.sourcePath),
+          }, null, 2))
+          localRoots.push(path.posix.join('sketch', 'libraries', root.folderName))
+          continue
+        }
+        throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', `sketch/libraries/${root.folderName} already exists as an independent local library`)
+      }
+      const staging = await mkdtemp(path.join(librariesRoot, '.aily-localize-'))
+      const stagedRoot = path.join(staging, root.folderName)
+      try {
+        await copyDirectoryWithoutLinks(root.sourcePath, stagedRoot)
+        await writeFile(path.join(stagedRoot, CODER_LOCAL_LIBRARY_RECEIPT), JSON.stringify({
+          source: 'aily-chat', ownerPackage: packageName, sourcePackage: root.packageName, sourceVersion: root.version,
+          sourceLibraryRoot: relativeProjectPath(projectRoot, root.sourcePath),
+        }, null, 2))
+        options.signal?.throwIfAborted()
+        await rename(stagedRoot, target)
+      } finally {
+        await rm(staging, { recursive: true, force: true })
+      }
+      localRoots.push(path.posix.join('sketch', 'libraries', root.folderName))
+    }
+    return { ...prepared, localized: true, localRoots, libraryRoot: requestedRoot || undefined }
   })
 }

@@ -1,3 +1,4 @@
+import { coderUseEmbedHostNativeFsBridge } from './coderEmbedEnv.js'
 import {
   MenuId,
   MenuRegistry,
@@ -37,6 +38,9 @@ export function installEmbedEditorContextMenus(): void {
   const getMenuItems = MenuRegistry.getMenuItems.bind(MenuRegistry)
   MenuRegistry.getMenuItems = menuId => {
     const items = getMenuItems(menuId).filter(item => !isIMenuItem(item) || item.command.id !== SHOW_COMMANDS)
+    if (coderUseEmbedHostNativeFsBridge && menuId === MenuId.ExplorerContext) {
+      return items.filter(item => !isIMenuItem(item) || !['workbench.action.addRootFolder', 'workbench.action.removeRootFolder'].includes(item.command.id))
+    }
     if (menuId === MenuId.EmptyEditorGroupContext) {
       return items.filter(item => !isIMenuItem(item) || !hiddenEmptyGroupCommands.has(item.command.id))
     }

@@ -1,5 +1,6 @@
 export const AILY_LIBRARY_RECEIPT_FILE = '.aily-blockly-library.json'
 export const ARDUINO_LIBRARY_RECEIPT_FILE = '.aily-component-library.json'
+export const CODER_LOCAL_LIBRARY_RECEIPT_FILE = '.aily-coder-local-library.json'
 export const LOCAL_LIBRARY_PACKAGE_FILE = 'package.json'
 
 export type LibraryTreeSource = 'aily' | 'arduino' | 'aily-chat' | 'unknown'
@@ -34,6 +35,7 @@ export function classifyWorkspaceLibrarySource(input: {
   readonly ailyReceipt?: string
   readonly arduinoReceipt?: string
   readonly packageJson?: string
+  readonly localReceipt?: string
 }): LibraryTreeSource {
   if (sourceFrom(input.ailyReceipt) === 'blockly-library') {
     const packageName = parseJsonObject(input.ailyReceipt)?.packageName
@@ -53,7 +55,7 @@ export function classifyWorkspaceLibrarySource(input: {
     return 'arduino'
   }
 
-  if (sourceFrom(input.packageJson) === 'aily-chat') {
+  if (sourceFrom(input.localReceipt) === 'aily-chat' || sourceFrom(input.packageJson) === 'aily-chat') {
     return 'aily-chat'
   }
 

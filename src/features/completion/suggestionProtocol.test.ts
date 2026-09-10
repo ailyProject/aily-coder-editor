@@ -3,7 +3,7 @@ import test from 'node:test'
 import { readFileSync, existsSync } from 'node:fs'
 import fixture from './fixtures/v4-contract.json'
 import { parseSuggestionRequest, validateSuggestionResult, SuggestionSseDecoder, type SuggestionResult, type Suggestion } from './suggestionProtocol'
-import { CompletionCoordinator, RecentEditStore, isCompletionSource } from './completionState'
+import { CompletionCoordinator, RecentEditStore, completionReconnectDelay, isCompletionSource } from './completionState'
 const request = () => parseSuggestionRequest(structuredClone(fixture.request))
 function response(input = request()): SuggestionResult {
   const window = input.documents[0]!.windows[0]!
@@ -95,4 +95,11 @@ test('adjacent typing retains the original replacement intent across keystrokes'
 test('active source excludes credentials, generated code and dependency trees', () => {
   for (const file of ['/workspace/main.cpp', '/workspace/main.ino', '/workspace/test.ts']) assert.equal(isCompletionSource(file), true)
   for (const file of ['/workspace/.env.cpp', '/workspace/secrets.cpp', '/workspace/node_modules/a.ts', '/workspace/generated/main.cpp']) assert.equal(isCompletionSource(file), false)
+})
+test('transient capability reconnect uses bounded backoff and honors retry-after', () => {
+  assert.equal(completionReconnectDelay(0), 2_000)
+  assert.equal(completionReconnectDelay(3), 16_000)
+  assert.equal(completionReconnectDelay(20), 30_000)
+  assert.equal(completionReconnectDelay(0, 45_000), 45_000)
+  assert.equal(completionReconnectDelay(0, 120_000), 60_000)
 })

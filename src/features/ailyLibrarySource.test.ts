@@ -47,6 +47,15 @@ test('recognizes only the exact Aily Chat package source as a local generated li
   }), 'unknown')
 })
 
+test('recognizes an npm library localized by Aily Chat', () => {
+  assert.equal(classifyWorkspaceLibrarySource({
+    localReceipt: JSON.stringify({
+      source: 'aily-chat',
+      sourcePackage: '@aily-project/lib-local-sensor'
+    })
+  }), 'aily-chat')
+})
+
 test('uses unknown for copied, missing, or malformed library metadata', () => {
   assert.equal(classifyWorkspaceLibrarySource({}), 'unknown')
   assert.equal(classifyWorkspaceLibrarySource({ packageJson: '{invalid' }), 'unknown')

@@ -27,7 +27,14 @@ test('npm package contains a self-contained Node runtime without node_modules', 
   const metadata = JSON.parse(result.stdout)[0]
   const files = new Set(metadata.files.map(file => file.path))
   assert.equal(files.has('runtime/index.js'), true)
+  assert.equal(files.has('agent/tools.json'), true)
+  assert.equal(files.has('skill/aily-coder-library/SKILL.md'), true)
   assert.deepEqual(metadata.bundled, [])
   assert.equal([...files].some(file => file.startsWith('node_modules/')), false)
   assert.equal([...files].some(file => file.startsWith('server/') && file.endsWith('.js')), false)
+
+  const toolManifest = JSON.parse(await readFile(path.join(packageRoot, 'agent', 'tools.json'), 'utf8'))
+  const localize = toolManifest.tools.find(tool => tool.name === 'coder_library_localize')
+  assert.equal(localize?.rpc?.method, 'coder.library.localize')
+  assert.equal(localize?.effects?.executionDomain, 'workspace-external-mutation')
 })

@@ -28,8 +28,8 @@
 - Blockly 与 Coder 共用宿主的 `board-*` 主板源；新建表单选择项目类型，Coder 不再单独选择硬件平台。
 - Coder 工程复制所选主板包的 `template_arduino/package.json`，工程类型、入口、框架、主板及依赖配置均保存在该根 `package.json` 中。
 - 源码模板 `template_arduino/project.aci` 保持原始内容并复制为 `sketch/src/main.cpp`；`package.json.entry` 相对持久化 `sketch/` 工作区。
-- Coder 直接编译 `sketch/`；本地库位于 `sketch/libraries/`，已安装的 `@aily-project/lib-*` 则保留 npm 包结构并从各包的 `src/` 直接参与编译；不再维护根 `src/`、根 `components/` 或 `.temp` 源码副本。
-- Aily View 只保留 `User View` / `Config` / `Library` 三个顶层入口，分别对应 `sketch/src/`、根配置文件、`sketch/libraries/`。
+- Coder 直接编译 `sketch/`；Aily 与 Arduino 官方 npm 库的 `src.7z` 解压为包内同级 `src/`，最终库根映射到临时编译视图。只有需要修改库源码时，才将目标根本地化到 `sketch/libraries/`，且本地副本优先。
+- Aily View 只保留 `User View` / `Config` / `Library` 三个顶层入口，分别展示 `sketch/src/`、根配置文件，以及“真实 `sketch/libraries/` + npm 包最终 `src` 库根”的合并视图。
 
 ---
 
@@ -69,7 +69,7 @@ flowchart TB
 ## 本仓库提供什么
 
 - **内嵌代码工作台**：基于 `@codingame/monaco-vscode-*` 的暗色 IDE 风格 UI，与 Aily Blockly 视觉规范对齐。
-- **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示根 `package.json`，`Library` 递归展示 `sketch/libraries/`，详见 `docs/aily-code工程视图与信息架构设计.md`。
+- **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示根 `package.json`，`Library` 合并展示本地库与 Aily/Arduino npm 包最终 `src` 库根，详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
 - **语言服务桥接**：`monacoStdioLspClient` + `server/lspWsProxy.ts`，对接 clangd 等 LSP（需配合影子工作区 / `compile_commands`）。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。

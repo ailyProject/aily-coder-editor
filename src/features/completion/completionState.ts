@@ -1,6 +1,10 @@
 import type { RecentEdit } from './suggestionProtocol'
 
 export const abortError = (): DOMException => new DOMException('Suggestion cancelled', 'AbortError')
+export function completionReconnectDelay(attempt: number, retryAfterMs = 0): number {
+  const backoff = Math.min(30_000, 2_000 * (2 ** Math.min(4, Math.max(0, attempt))))
+  return Math.min(60_000, Math.max(backoff, retryAfterMs))
+}
 /** One remote inference at a time. Higher priority input cancels background predictions. */
 export class CompletionCoordinator {
   private active?: { priority: number; controller: AbortController }

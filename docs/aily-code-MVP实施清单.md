@@ -1,6 +1,6 @@
 # Aily Code MVP 实施清单
 
-> **当前实现覆盖（2026-08-21）**：Coder 由宿主新建表单选择，和 Blockly 共用 `board-*` 主板源；创建时复制主板包 `template_arduino/package.json`，Coder 配置均保存在该文件，并将保持原始内容的源码模板 `template_arduino/project.aci` 复制为 `sketch/src/main.cpp`。本地库为 `sketch/libraries/`。下文出现的根 `project.aci`、根 `src/`、根 `components/` 和手写骨架均为早期规划，不再作为当前验收口径。
+> **当前实现覆盖（2026-09-09）**：Coder 由宿主新建表单选择，和 Blockly 共用 `board-*` 主板源；创建时复制主板包 `template_arduino/package.json`，Coder 配置均保存在该文件，并将保持原始内容的源码模板 `template_arduino/project.aci` 复制为 `sketch/src/main.cpp`。可编辑本地库位于 `sketch/libraries/`；Aily 与 Arduino 官方 npm 库从包内最终 `src` 根映射，只有修改库源码时才本地化。下文出现的根 `project.aci`、根 `src/`、根 `components/` 和手写骨架均为早期规划，不再作为当前验收口径。
 
 ## 1. 文档目标
 

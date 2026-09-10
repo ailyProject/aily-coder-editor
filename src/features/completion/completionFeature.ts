@@ -3,7 +3,7 @@ import { registerExtension, ExtensionHostKind, type IExtensionManifest } from '@
 import metadata from '../../../package.json'
 import { ParentSuggestionTransport } from './suggestionTransport'
 import { SuggestionContextResolver, type EditorSnapshot } from './suggestionContext'
-import { RecentEditStore, contentHash, isCompletionSource, completionCoordinator, abortError } from './completionState'
+import { RecentEditStore, contentHash, isCompletionSource, completionCoordinator, abortError, completionReconnectDelay } from './completionState'
 import { SuggestionError, type Suggestion, type SuggestionResult, type SuggestionCapabilities, type FeedbackEvent, type SuggestionRequest } from './suggestionProtocol'
 import { setCompletionRuntime, type CompletionRuntime } from './completionRuntime'
 import { EditPresentation, applySuggestion } from './editPresentation'
@@ -83,13 +83,15 @@ export class CompletionFeature implements CompletionRuntime {
   private snoozeUntil = 0
   private epoch = 0
   private connectionEpoch = 0
+  private reconnectAttempt = 0
+  private reconnectTimer?: ReturnType<typeof setTimeout>
   private applying = false
   private navigating = false
   private lastTyping = 0
   private lastNes = 0
   private panel?: vscode.WebviewPanel
   constructor(private readonly api: typeof vscode) {
-    this.transport.onSessionChanged = () => { this.invalidate('stale'); void this.connect() }
+    this.transport.onSessionChanged = () => { this.invalidate('stale'); this.reconnectAttempt = 0; void this.connect() }
     this.resolver = new SuggestionContextResolver(api, crypto.randomUUID(), this.history, metadata.version)
     this.status = api.window.createStatusBarItem(api.StatusBarAlignment.Right, 50)
     this.status.command = 'aily.completion.settings'; this.status.show()
@@ -115,7 +117,7 @@ export class CompletionFeature implements CompletionRuntime {
     register('aily.completion.settings', () => this.settings())
     register('aily.completion.snooze', () => { this.snoozeUntil = Math.max(Date.now(), this.snoozeUntil) + 300_000; this.invalidate('ignored'); this.updateStatus() })
     register('aily.completion.resume', () => { this.snoozeUntil = 0; this.invalidate('stale'); this.updateStatus() })
-    register('aily.completion.reconnect', () => this.connect())
+    register('aily.completion.reconnect', () => { this.reconnectAttempt = 0; return this.connect() })
     register('aily.completion.next', () => this.cycle(1))
     register('aily.completion.previous', () => this.cycle(-1))
     register('aily.completion.panel', () => this.openPanel())
@@ -131,18 +133,27 @@ export class CompletionFeature implements CompletionRuntime {
     return this.config('enabled', true) && Date.now() >= this.snoozeUntil && (languages[document.languageId] ?? languages['*'] ?? true) && document.uri.scheme === 'file' && isCompletionSource(document.uri.path)
   }
   private async connect(): Promise<void> {
+    clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined
     const epoch = ++this.connectionEpoch
     this.capabilities = undefined; this.capabilityError = ''; this.updateStatus()
     if (resolveProvider() !== 'cloud') { this.capabilities = null; this.updateStatus(); return }
     try {
       const capabilities = await this.transport.capabilities()
       if (epoch !== this.connectionEpoch) return
+      this.reconnectAttempt = 0
       this.capabilities = capabilities; this.capabilityError = capabilities?.quota && !capabilities.quota.allowed ? '当前账户额度或权限不足。' : ''
+      if (capabilities === null) this.scheduleReconnect(60_000)
     } catch (error) {
       if (epoch !== this.connectionEpoch) return
       this.capabilityError = error instanceof Error ? error.message : '服务不可用'
+      if (error instanceof SuggestionError && [429, 502, 503, 504].includes(error.status)) this.scheduleReconnect(error.retryAfterMs)
     }
     this.updateStatus()
+  }
+  private scheduleReconnect(retryAfterMs = 0): void {
+    clearTimeout(this.reconnectTimer)
+    const delay = completionReconnectDelay(this.reconnectAttempt++, retryAfterMs)
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = undefined; void this.connect() }, delay)
   }
   async provide(document: vscode.TextDocument, position: vscode.Position, context: vscode.InlineCompletionContext, token: vscode.CancellationToken): Promise<vscode.InlineCompletionList | [] | undefined> {
     if (!this.enabled(document)) return []
@@ -396,5 +407,5 @@ export class CompletionFeature implements CompletionRuntime {
     if (resolveProvider() === 'lmstudio-fim' && this.config('enabled', true) && Date.now() >= this.snoozeUntil && (!document || this.enabled(document))) this.status.text = '$(sparkle) Aily 本地续写'
     if (resolveProvider() === 'off') this.status.text = '$(circle-slash) Aily 补全已关闭'
   }
-  dispose(): void { this.connectionEpoch++; this.invalidate('ignored'); this.transport.dispose(); this.panel?.dispose(); this.status.dispose(); this.subscriptions.forEach(item => item.dispose()) }
+  dispose(): void { this.connectionEpoch++; clearTimeout(this.reconnectTimer); this.invalidate('ignored'); this.transport.dispose(); this.panel?.dispose(); this.status.dispose(); this.subscriptions.forEach(item => item.dispose()) }
 }

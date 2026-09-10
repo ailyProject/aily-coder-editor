@@ -67,9 +67,7 @@ const EN: UiStrings = {
     'Continuing may cause compilation errors or incorrect runtime behavior.',
     ...(alternatives.length > 0 ? [`Similar compatible libraries: ${alternatives.join(', ')}`] : []),
   ].join('\n'),
-  added: (name, source) => source === 'aily'
-    ? `${name} was installed from Aily Library Manager`
-    : `${name} was installed under sketch/libraries`,
+  added: (name, source) => `${name} was installed from ${source === 'aily' ? 'Aily' : 'Arduino'} as a mapped package library`,
   removed: name => `${name} was uninstalled from the current project`,
   failed: (action, source, detail) => `${action === 'load'
     ? `Failed to load ${source === 'aily' ? 'Aily' : 'Arduino'} libraries`
@@ -96,9 +94,7 @@ const ZH_CN: UiStrings = {
     '继续安装可能导致编译失败或运行异常。',
     ...(alternatives.length > 0 ? [`可考虑的相近兼容库：${alternatives.join('、')}`] : []),
   ].join('\n'),
-  added: (name, source) => source === 'aily'
-    ? `${name} 已从 Aily 库安装到当前工程`
-    : `${name} 已安装到 sketch/libraries`,
+  added: (name, source) => `${name} 已从${source === 'aily' ? ' Aily' : ' Arduino 官方'}源安装并映射到当前工程`,
   removed: name => `${name} 已从当前工程卸载`,
   failed: (action, source, detail) => `${action === 'load'
     ? `加载${source === 'aily' ? ' Aily' : ' Arduino 官方'}库失败`
@@ -125,9 +121,7 @@ const ZH_HK: UiStrings = {
     '繼續安裝可能導致編譯失敗或執行異常。',
     ...(alternatives.length > 0 ? [`可考慮的相近相容函式庫：${alternatives.join('、')}`] : []),
   ].join('\n'),
-  added: (name, source) => source === 'aily'
-    ? `${name} 已從 Aily 函式庫安裝到目前專案`
-    : `${name} 已安裝到 sketch/libraries`,
+  added: (name, source) => `${name} 已從${source === 'aily' ? ' Aily' : ' Arduino 官方'}來源安裝並映射到目前專案`,
   removed: name => `${name} 已從目前專案解除安裝`,
   failed: (action, source, detail) => `${action === 'load'
     ? `載入${source === 'aily' ? ' Aily' : ' Arduino 官方'}函式庫失敗`
@@ -153,7 +147,7 @@ const JA = localized({
   compatible: '互換', otherArchitecture: '別のアーキテクチャ',
   resultUnit: '件', endOfResults: '一致するライブラリをすべて表示しました', sourceTabsLabel: 'ライブラリの提供元', versionLabel: 'バージョン',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} を Aily ライブラリからインストールしました` : `${name} を sketch/libraries にインストールしました`,
+  added: (name, source) => `${name} を ${source === 'aily' ? 'Aily' : 'Arduino'} からパッケージライブラリとしてインストールしました`,
   removed: name => `${name} をプロジェクトからアンインストールしました`,
   failed: (action, source, detail) => `${action === 'load' ? `${source === 'aily' ? 'Aily' : 'Arduino'} ライブラリの読み込みに失敗しました` : action === 'remove' ? 'ライブラリのアンインストールに失敗しました' : 'ライブラリのインストールに失敗しました'}：${detail}`,
 })
@@ -170,7 +164,7 @@ const KO = localized({
   compatible: '호환됨', otherArchitecture: '다른 아키텍처',
   resultUnit: '개', endOfResults: '일치하는 라이브러리를 모두 표시했습니다', sourceTabsLabel: '라이브러리 소스', versionLabel: '버전',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} 라이브러리를 Aily에서 설치했습니다` : `${name} 라이브러리를 sketch/libraries에 설치했습니다`,
+  added: (name, source) => `${name} 라이브러리를 ${source === 'aily' ? 'Aily' : 'Arduino'} 패키지로 설치했습니다`,
   removed: name => `${name} 라이브러리를 프로젝트에서 제거했습니다`,
   failed: (action, source, detail) => `${action === 'load' ? `${source === 'aily' ? 'Aily' : 'Arduino'} 라이브러리를 불러오지 못했습니다` : action === 'remove' ? '라이브러리를 제거하지 못했습니다' : '라이브러리를 설치하지 못했습니다'}: ${detail}`,
 })
@@ -187,7 +181,7 @@ const DE = localized({
   compatible: 'Kompatibel', otherArchitecture: 'Andere Architektur',
   resultUnit: 'Bibliotheken', endOfResults: 'Alle passenden Bibliotheken werden angezeigt', sourceTabsLabel: 'Bibliotheksquelle', versionLabel: 'Version',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} wurde aus der Aily-Bibliothek installiert` : `${name} wurde unter sketch/libraries installiert`,
+  added: (name, source) => `${name} wurde als zugeordnete ${source === 'aily' ? 'Aily' : 'Arduino'}-Paketbibliothek installiert`,
   removed: name => `${name} wurde aus dem Projekt deinstalliert`,
   failed: (action, source, detail) => `${action === 'load' ? `${source === 'aily' ? 'Aily' : 'Arduino'}-Bibliotheken konnten nicht geladen werden` : action === 'remove' ? 'Die Bibliothek konnte nicht deinstalliert werden' : 'Die Bibliothek konnte nicht installiert werden'}: ${detail}`,
 })
@@ -204,7 +198,7 @@ const FR = localized({
   compatible: 'Compatible', otherArchitecture: 'Autre architecture',
   resultUnit: 'bibliothèques', endOfResults: 'Toutes les bibliothèques correspondantes sont affichées', sourceTabsLabel: 'Source de la bibliothèque', versionLabel: 'version',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} a été installée depuis Aily` : `${name} a été installée dans sketch/libraries`,
+  added: (name, source) => `${name} a été installée comme bibliothèque de paquet ${source === 'aily' ? 'Aily' : 'Arduino'}`,
   removed: name => `${name} a été désinstallée du projet`,
   failed: (action, source, detail) => `${action === 'load' ? `Échec du chargement des bibliothèques ${source === 'aily' ? 'Aily' : 'Arduino'}` : action === 'remove' ? 'Échec de la désinstallation de la bibliothèque' : 'Échec de l’installation de la bibliothèque'} : ${detail}`,
 })
@@ -221,7 +215,7 @@ const ES = localized({
   compatible: 'Compatible', otherArchitecture: 'Otra arquitectura',
   resultUnit: 'bibliotecas', endOfResults: 'Se muestran todas las bibliotecas coincidentes', sourceTabsLabel: 'Origen de la biblioteca', versionLabel: 'versión',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} se instaló desde Aily` : `${name} se instaló en sketch/libraries`,
+  added: (name, source) => `${name} se instaló como biblioteca de paquete ${source === 'aily' ? 'Aily' : 'Arduino'}`,
   removed: name => `${name} se desinstaló del proyecto`,
   failed: (action, source, detail) => `${action === 'load' ? `No se pudieron cargar las bibliotecas ${source === 'aily' ? 'Aily' : 'Arduino'}` : action === 'remove' ? 'No se pudo desinstalar la biblioteca' : 'No se pudo instalar la biblioteca'}: ${detail}`,
 })
@@ -238,7 +232,7 @@ const PT = localized({
   compatible: 'Compatível', otherArchitecture: 'Outra arquitetura',
   resultUnit: 'bibliotecas', endOfResults: 'Todas as bibliotecas correspondentes foram exibidas', sourceTabsLabel: 'Origem da biblioteca', versionLabel: 'versão',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} foi instalada pela Aily` : `${name} foi instalada em sketch/libraries`,
+  added: (name, source) => `${name} foi instalada como biblioteca de pacote ${source === 'aily' ? 'Aily' : 'Arduino'}`,
   removed: name => `${name} foi desinstalada do projeto`,
   failed: (action, source, detail) => `${action === 'load' ? `Falha ao carregar bibliotecas ${source === 'aily' ? 'Aily' : 'Arduino'}` : action === 'remove' ? 'Falha ao desinstalar a biblioteca' : 'Falha ao instalar a biblioteca'}: ${detail}`,
 })
@@ -255,7 +249,7 @@ const RU = localized({
   compatible: 'Совместима', otherArchitecture: 'Другая архитектура',
   resultUnit: 'библиотек', endOfResults: 'Показаны все подходящие библиотеки', sourceTabsLabel: 'Источник библиотеки', versionLabel: 'версия',
 }, {
-  added: (name, source) => source === 'aily' ? `${name} установлена из Aily` : `${name} установлена в sketch/libraries`,
+  added: (name, source) => `${name} установлена как пакетная библиотека ${source === 'aily' ? 'Aily' : 'Arduino'}`,
   removed: name => `${name} удалена из проекта`,
   failed: (action, source, detail) => `${action === 'load' ? `Не удалось загрузить библиотеки ${source === 'aily' ? 'Aily' : 'Arduino'}` : action === 'remove' ? 'Не удалось удалить библиотеку' : 'Не удалось установить библиотеку'}: ${detail}`,
 })
@@ -272,7 +266,7 @@ const AR = localized({
   compatible: 'متوافقة', otherArchitecture: 'بنية أخرى',
   resultUnit: 'مكتبة', endOfResults: 'تم عرض جميع المكتبات المطابقة', sourceTabsLabel: 'مصدر المكتبة', versionLabel: 'الإصدار',
 }, {
-  added: (name, source) => source === 'aily' ? `تم تثبيت ${name} من Aily` : `تم تثبيت ${name} في sketch/libraries`,
+  added: (name, source) => `تم تثبيت ${name} كمكتبة حزمة من ${source === 'aily' ? 'Aily' : 'Arduino'}`,
   removed: name => `تمت إزالة ${name} من المشروع`,
   failed: (action, source, detail) => `${action === 'load' ? `تعذر تحميل مكتبات ${source === 'aily' ? 'Aily' : 'Arduino'}` : action === 'remove' ? 'تعذرت إزالة المكتبة' : 'تعذر تثبيت المكتبة'}: ${detail}`,
 })

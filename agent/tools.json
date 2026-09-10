@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "coder_library_search",
-      "description": "Search Coder libraries. source=registry selects Arduino official packages from the regional libraries-coder-index.json, returning coder:@aily-project-coder/lib-* refs. source=aily (default) searches Aily libraries using the shared Blockly libraries.json and libraries-index.json from the main application. Results return exact blockly:@aily-project/lib-* libraryRef, packageName, version, compatibility, activeArchitectures, compatibleAlternatives, installedVersion, installed and managed. An npm package alone is not ready for Coder: source must exist under sketch/libraries. Copy returned refs and versions; for removal require installed=true and managed=true and use installedVersion. Existing managed ZIP libraries remain discoverable for removal.",
+      "description": "Search Coder libraries. source=registry selects Arduino official packages from the regional libraries-coder-index.json, returning coder:@aily-project-coder/lib-* refs. source=aily (default) searches Aily libraries using the shared Blockly libraries.json and libraries-index.json. Results return exact refs, installedVersion, installed/managed state, compatibility and compatibleAlternatives, package-local sourceDirectory/libraryRoots, and any editable localRoots. Installed npm archives are ready only after src.7z is safely expanded beside the archive to node_modules/<package>/src. Use coder_library_localize before changing package library source.",
       "rpc": {
         "method": "coder.library.search"
       },
@@ -70,7 +70,7 @@
     },
     {
       "name": "coder_library_install",
-      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true. Use that override only when the user explicitly requested this named library and confirmed after being told the supported/current architectures and compatible alternatives; if that confirmation UI times out, is skipped, or is unavailable, the original explicit install request remains authoritative and the override may be used, but the final response must disclose the incompatibility and alternatives. Never override compatibility for an Agent-selected library. The Coder Runtime uses the same npm installation and src.7z materialization for Aily and official @aily-project-coder packages, with each scope using the main application regional registry configuration, retains the root package.json dependency and node_modules package, and safely extracts its src.7z into sketch/libraries. Require ready=true, packageJsonLinked=true and non-empty libraryRoots; inspect returned packageDirectory, sourceDirectory and libraryRoots. Copy libraryRef and version exactly; do not invoke npm or extract archives manually.",
+      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true under the explicit named-library confirmation policy; if confirmation times out, is skipped, or is unavailable, follow the user's still-authoritative explicit named-library request and disclose the warning. Aily and Arduino official packages share npm installation and safely expand src.7z beside the archive into node_modules/<package>/src. Their deepest continuous src wrapper and its library roots are mapped for the compiler and Aily View; installation does not copy source to sketch/libraries. Require ready=true, packageJsonLinked=true, sourceLayout=package-local and non-empty libraryRoots. Never edit returned package-local paths directly; call coder_library_localize first when customization is required.",
       "rpc": {
         "method": "coder.library.install"
       },
@@ -121,8 +121,60 @@
       }
     },
     {
+      "name": "coder_library_localize",
+      "description": "Copy an installed npm-backed Aily or Arduino official library root into the real project sketch/libraries directory before changing library code. Pass the exact libraryRef, installedVersion, and, for a multi-root result, the exact libraryRoot returned by coder_library_search or coder_library_install. The package-local source remains npm-managed; the copied local root becomes editable project source and takes precedence during builds. This operation is idempotent for a root already localized from the same package and never overwrites an independent local library.",
+      "rpc": {
+        "method": "coder.library.localize"
+      },
+      "permission": "change",
+      "requiresSession": false,
+      "supportsCancellation": false,
+      "timeoutMs": 120000,
+      "maxTimeoutMs": 180000,
+      "maxInputBytes": 65536,
+      "maxOutputBytes": 49152,
+      "availability": {
+        "developmentModes": [
+          "coder"
+        ]
+      },
+      "effects": {
+        "executionDomain": "workspace-external-mutation",
+        "filesystem": "write",
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "libraryRef",
+          "version"
+        ],
+        "properties": {
+          "libraryRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "description": "Exact npm-backed libraryRef returned by coder_library_search."
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Exact installedVersion returned by coder_library_search."
+          },
+          "libraryRoot": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Optional exact package-local libraryRoots entry. Required to select one root when the package exposes multiple roots."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "coder_library_remove",
-      "description": "Remove one exact installed Aily or Arduino official library using its project-local managed receipt. First search and require installed=true and managed=true; copy libraryRef and installedVersion. Both package scopes are uninstalled from root npm dependencies and their unchanged managed sketch/libraries roots are removed. Removal does not require an online catalog. Preserve local, copied, modified, malformed or differently sourced libraries. Existing managed ZIP libraries remain removable by their original refs.",
+      "description": "Remove one exact installed Aily or Arduino official npm library. First search and require installed=true and managed=true; copy libraryRef and installedVersion. Removal deletes the root npm dependency and package-local extracted source with the npm package, while preserving every copy localized under sketch/libraries. Existing legacy managed ZIP libraries remain removable by their original refs.",
       "rpc": {
         "method": "coder.library.remove"
       },

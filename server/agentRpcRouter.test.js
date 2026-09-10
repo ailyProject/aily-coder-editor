@@ -14,24 +14,26 @@ const context = {
   developmentMode: 'coder',
 }
 
-test('declares Coder library install and remove as external workspace mutations', async () => {
+test('declares Coder library install, localize and remove as external workspace mutations', async () => {
   const manifest = JSON.parse(
     await readFile(new URL('../agent/tools.json', import.meta.url), 'utf8'),
   )
 
-  for (const name of ['coder_library_install', 'coder_library_remove']) {
+  for (const name of ['coder_library_install', 'coder_library_localize', 'coder_library_remove']) {
     const tool = manifest.tools.find(candidate => candidate.name === name)
     assert.equal(tool?.effects?.executionDomain, 'workspace-external-mutation')
   }
   const search = manifest.tools.find(candidate => candidate.name === 'coder_library_search')
   const install = manifest.tools.find(candidate => candidate.name === 'coder_library_install')
   const remove = manifest.tools.find(candidate => candidate.name === 'coder_library_remove')
+  const localize = manifest.tools.find(candidate => candidate.name === 'coder_library_localize')
   assert.match(search?.description ?? '', /installedVersion/u)
   assert.match(search?.description ?? '', /managed/u)
   assert.match(search?.description ?? '', /compatibleAlternatives/u)
   assert.equal(install?.inputSchema?.properties?.allowIncompatible?.default, false)
   assert.match(install?.description ?? '', /times out, is skipped, or is unavailable/u)
-  assert.match(remove?.description ?? '', /project-local managed receipt/u)
+  assert.match(remove?.description ?? '', /preserving every copy localized under sketch\/libraries/u)
+  assert.match(localize?.description ?? '', /sketch\/libraries/u)
   assert.match(remove?.inputSchema?.properties?.version?.description ?? '', /installedVersion/u)
 })
 
@@ -59,6 +61,7 @@ test('routes shared Aily searches and mutations by exact library reference', asy
       libraries: [{ libraryRef: 'blockly:@aily-project/lib-demo', sourcePath: '/private/index' }],
     }),
     install: operation('install'),
+    localize: operation('localize'),
     remove: operation('remove'),
   })
 
@@ -77,10 +80,15 @@ test('routes shared Aily searches and mutations by exact library reference', asy
     params: { libraryRef: 'blockly:@aily-project/lib-demo', version: '1.0.0' },
     context,
   })
+  await router.execute({
+    method: 'coder.library.localize',
+    params: { libraryRef: 'blockly:@aily-project/lib-demo', version: '1.0.0', libraryRoot: 'node_modules/@aily-project/lib-demo/src/Demo' },
+    context,
+  })
 
   assert.equal(search.tier, 'preferred')
   assert.equal(search.libraries[0].sourcePath, undefined)
-  assert.deepEqual(calls.map(call => call.name), ['install', 'remove'])
+  assert.deepEqual(calls.map(call => call.name), ['install', 'remove', 'localize'])
   assert.equal(calls[0].input.workspaceRoot, context.workspaceRoot)
   assert.equal(calls[0].input.libraryRef, 'blockly:@aily-project/lib-demo')
   assert.equal(calls[0].input.version, '1.0.0')

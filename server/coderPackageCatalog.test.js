@@ -6,7 +6,7 @@ import test from 'node:test'
 import { loadCoderPackageCatalog } from './coderPackageCatalog.js'
 import { createCoderAgentRpcRouter } from './agentRpcRouter.js'
 import {
-  installArduinoComponentLibrary, installCoderLibrary, materializeCoderProjectLibraries,
+  installArduinoComponentLibrary, installCoderLibrary, localizeCoderLibrary, materializeCoderProjectLibraries,
   removeArduinoComponentLibrary, removeCoderLibrary, searchArduinoComponentLibraries, searchCoderLibraries,
 } from './componentLibraryService.js'
 
@@ -73,10 +73,10 @@ test('official editor list and Agent use regional npm packages and the Aily inst
   assert.equal(installed.library.source, 'registry')
   assert.equal(installed.library.ready, true)
   assert.equal(installed.library.packageJsonLinked, true)
-  assert.deepEqual(installed.library.libraryRoots, ['sketch/libraries/Demo'])
+  assert.deepEqual(installed.library.libraryRoots, ['node_modules/@aily-project-coder/lib-demo/src/Demo'])
   assert.equal(JSON.parse(await readFile(f.manifestPath, 'utf8')).dependencies[packageName], '1.0.0')
   assert.equal(await readFile(path.join(f.packageRoot, 'src.7z'), 'utf8'), 'archive')
-  assert.equal(await readFile(path.join(f.workspaceRoot, 'sketch/libraries/Demo/src/Demo.h'), 'utf8'), '#pragma once\n')
+  assert.equal(await readFile(path.join(f.packageRoot, 'src/Demo/src/Demo.h'), 'utf8'), '#pragma once\n')
   assert.equal((await installArduinoComponentLibrary({ ...f.options, libraryId: libraryRef })).alreadyInstalled, true)
   assert.equal(f.commands.length, 1)
   assert.equal((await searchCoderLibraries({ ...f.options, query: '' })).libraries.some(item => item.packageName === packageName), false)
@@ -86,7 +86,7 @@ test('official editor list and Agent use regional npm packages and the Aily inst
   const removed = await router.execute({ method: 'coder.library.remove', context, params: { libraryRef, version: state.installedVersion } })
   assert.equal(removed.library.removed, true)
   assert.deepEqual(JSON.parse(await readFile(f.manifestPath, 'utf8')).dependencies, {})
-  assert.deepEqual(await readdir(path.join(f.workspaceRoot, 'sketch/libraries')), [])
+  await assert.rejects(readdir(path.join(f.workspaceRoot, 'sketch/libraries')), { code: 'ENOENT' })
 })
 
 test('regional catalog caches and official npm registries stay isolated when the host region changes', async t => {
@@ -111,7 +111,7 @@ test('regional catalog caches and official npm registries stay isolated when the
   assert.equal(cached.stale, true); assert.equal(cached.indexUrl, 'https://rs1.aily.pro/libraries-coder-index.json')
 })
 
-test('official packages preserve compatibility, rollback, modified sources and offline template materialization', async t => {
+test('official packages preserve compatibility, rollback, localization and offline template preparation', async t => {
   const f = await fixture(t)
   f.catalog[0].architectures = ['avr']
   await assert.rejects(installCoderLibrary(f.options), { code: 'CODER_LIBRARY_INCOMPATIBLE' })
@@ -122,8 +122,11 @@ test('official packages preserve compatibility, rollback, modified sources and o
   await f.options.runNpmCommand({ args: ['install', `${packageName}@1.0.0`], env: {} })
   const result = await materializeCoderProjectLibraries(f.options)
   assert.equal(result.ready, true); assert.equal(result.libraries[0].source, 'registry')
+  const localized = await localizeCoderLibrary({ ...f.options, libraryRoot: result.libraryRoots[0] })
+  assert.deepEqual(localized.localRoots, ['sketch/libraries/Demo'])
   const header = path.join(f.workspaceRoot, 'sketch/libraries/Demo/src/Demo.h')
   await writeFile(header, 'local edit')
-  await assert.rejects(removeCoderLibrary(f.options), { code: 'BLOCKLY_LIBRARY_PROVENANCE_CONFLICT' })
+  const removed = await removeCoderLibrary(f.options)
+  assert.deepEqual(removed.preservedLocalRoots, ['sketch/libraries/Demo'])
   assert.equal(await readFile(header, 'utf8'), 'local edit')
 })
