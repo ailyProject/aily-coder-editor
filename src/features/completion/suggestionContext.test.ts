@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type * as vscode from 'vscode'
-import { SuggestionContextResolver } from './suggestionContext'
+import { SuggestionContextResolver, suggestionContextBudget } from './suggestionContext'
 import { RecentEditStore, contentHash } from './completionState'
 import { parseSuggestionRequest } from './suggestionProtocol'
 
@@ -51,6 +51,31 @@ test('context uses global UTF-16 coordinates and reads unsaved related headers',
   assert.equal(snapshot.request.documents.length, 2); assert.equal(snapshot.request.documents[1]!.windows[0]!.text, header.text)
   assert.equal(await h.resolver.isCurrent(snapshot), true)
   header.text += 'int changed();'; header.version++
+  assert.equal(await h.resolver.isCurrent(snapshot), false)
+})
+test('mode-specific budgets keep automatic completion smaller than advanced edits', () => {
+  const completion = suggestionContextBudget('completion')
+  const alternatives = suggestionContextBudget('alternatives')
+  const nextEdit = suggestionContextBudget('next-edit')
+  assert.ok(completion.beforeCharacters < alternatives.beforeCharacters)
+  assert.ok(completion.relatedCharacters < nextEdit.relatedCharacters)
+  assert.equal(completion.completionWindows, 1)
+  assert.ok(nextEdit.completionWindows > completion.completionWindows)
+})
+test('snapshot remains current across identical-content editor version drift', async () => {
+  const h = setup('int value = 1;\n')
+  const snapshot = await h.resolver.collect(h.doc, new Position(0, 14) as vscode.Position, 'alternatives', 'manual', false)
+  h.document.version++
+  assert.equal(await h.resolver.isCurrent(snapshot), true)
+  h.document.text = 'int value = 2;\n'
+  assert.equal(await h.resolver.isCurrent(snapshot), false)
+})
+test('active preview remains current while a webview temporarily owns focus', async () => {
+  const h = setup('int value = 1;\n')
+  const snapshot = await h.resolver.collect(h.doc, new Position(0, 14) as vscode.Position, 'alternatives', 'manual', false)
+  h.opened.splice(0, 1)
+  assert.equal(await h.resolver.isCurrent(snapshot), true)
+  h.document.text = 'int value = 2;\n'
   assert.equal(await h.resolver.isCurrent(snapshot), false)
 })
 test('dependency files are context-only and outside workspace definitions are not read', async () => {

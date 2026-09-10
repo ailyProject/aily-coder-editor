@@ -22,6 +22,13 @@ test('preserves global coordinates, CRLF and UTF-16 in a server-owned result', (
   const input = request(); assert.equal(input.documents[0]!.windows[0]!.range.start.line, 100)
   assert.equal(validateSuggestionResult(response(input), input).suggestions[0]!.primary.expectedText, 'const char* label = "😀";\r\n')
 })
+test('accepts the 60 second advanced-review expiry but rejects excessive retention', () => {
+  const input = request(); const value = response(input)
+  value.expiresInMs = 60_000
+  assert.equal(validateSuggestionResult(value, input).expiresInMs, 60_000)
+  value.expiresInMs = 120_001
+  assert.throws(() => validateSuggestionResult(value, input))
+})
 for (const [name, mutate] of Object.entries({
   'unknown fields': (v: typeof fixture.request & { endpoint?: string }) => { v.endpoint = 'https://example.com' },
   'workspace escape': (v: typeof fixture.request & { endpoint?: string }) => { v.documents[0]!.relativePath = '../secret.cpp' },

@@ -9,7 +9,7 @@ const nativeRange = (edit: TextEdit) => new monaco.Range(edit.range.start.line +
 export function applySuggestion(snapshot: EditorSnapshot, candidate: Suggestion): boolean {
   if (candidate.fileId !== snapshot.request.active.fileId || candidate.snapshotId !== snapshot.request.active.snapshotId) return false
   const model = monaco.editor.getModels().find(item => item.uri.toString() === snapshot.document.uri.toString())
-  if (!model || model.isDisposed() || snapshot.document.version !== snapshot.version || model.getValue() !== snapshot.text) return false
+  if (!model || model.isDisposed() || model.getValue() !== snapshot.text || snapshot.document.getText() !== snapshot.text) return false
   if (monaco.editor.getEditors().some(editor => editor.getModel() === model && editor.getOption(monaco.editor.EditorOption.readOnly))) return false
   const edits = [candidate.primary, ...candidate.additionalEdits]
   const sorted = [...edits].sort((a, b) => comparePosition(a.range.start, b.range.start))

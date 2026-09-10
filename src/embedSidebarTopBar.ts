@@ -49,6 +49,13 @@ function updateSidebarNavLabels(nav: HTMLElement): void {
     button.title = title
     button.setAttribute('aria-label', title)
   }
+  const completion = nav.querySelector<HTMLButtonElement>('[data-action-id="completion"]')
+  if (completion != null) {
+    const language = getHostEmbedContext()?.meta?.lang ?? initialHostLanguage()
+    const title = /^zh(?:_|-|$)/iu.test(language) ? 'Aily 高级补全' : 'Aily advanced completion'
+    completion.title = title
+    completion.setAttribute('aria-label', title)
+  }
 }
 
 onHostEmbedContextChanged(() => {
@@ -141,6 +148,25 @@ function mountSidebarNav(sidebar: HTMLElement): void {
   for (const item of SIDEBAR_NAV_ITEMS) {
     nav.append(createNavButton(item, onSelect))
   }
+
+  const completion = document.createElement('button')
+  completion.type = 'button'
+  completion.className = 'aily-embed-sidebar-nav__btn'
+  completion.dataset.actionId = 'completion'
+  const completionIcon = document.createElement('span')
+  completionIcon.className = 'codicon codicon-sparkle'
+  completionIcon.setAttribute('aria-hidden', 'true')
+  completion.append(completionIcon)
+  completion.addEventListener('click', () => {
+    void (async () => {
+      try {
+        await vscode.commands.executeCommand('aily.completion.settings')
+      } catch (err) {
+        console.warn('[aily-coder-editor] advanced completion menu failed:', err)
+      }
+    })()
+  })
+  nav.append(completion)
 
   mountedSidebarNav = nav
   updateSidebarNavLabels(nav)

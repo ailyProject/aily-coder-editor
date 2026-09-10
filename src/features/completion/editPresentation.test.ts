@@ -22,7 +22,7 @@ function setup() {
   runInNewContext(code, { module, exports, require: (name: string) => name === 'monaco-editor' ? { Range,
     editor: { EditorOption: { readOnly: 1 }, getModels: () => [model], getEditors: () => [{ getModel: () => model, getOption: () => readOnly }] } } : '' })
   const apply = (module.exports as { applySuggestion: (snapshot: EditorSnapshot, candidate: Suggestion) => boolean }).applySuggestion
-  const document = { uri, version: 1 }
+  const document = { uri, version: 1, getText: () => text }
   const snapshot = { document, version: 1, text, request: { active: { fileId: 'main', snapshotId: 'one' } } } as unknown as EditorSnapshot
   const candidate: Suggestion = { candidateId: 'local', fileId: 'main', snapshotId: 'one', kind: 'edit', primary: {
     range: { start: { line: 0, character: 4 }, end: { line: 0, character: 11 } }, expectedText: 'oldName', newText: 'newName' },
@@ -34,16 +34,20 @@ test('primary edit and import use a single model transaction between undo bounda
   const h = setup(); assert.equal(h.apply(h.snapshot, h.candidate), true)
   assert.deepEqual(h.calls, ['boundary', 'apply', 'boundary']); assert.equal(h.operations().length, 2)
 })
-test('source/version/expected text changes never partially apply an import', () => {
-  for (const mutation of ['version', 'text', 'expected', 'identity', 'readonly']) {
+test('source text/expected text/identity/read-only changes never partially apply an import', () => {
+  for (const mutation of ['text', 'expected', 'identity', 'readonly']) {
     const h = setup()
-    if (mutation === 'version') h.document.version++
     if (mutation === 'text') h.setText('int unrelated = 0;\n')
     if (mutation === 'expected') h.candidate.primary.expectedText = 'other'
     if (mutation === 'identity') h.candidate.snapshotId = 'other'
     if (mutation === 'readonly') h.setReadonly()
     assert.equal(h.apply(h.snapshot, h.candidate), false, mutation); assert.deepEqual(h.calls, [])
   }
+})
+test('identical-content document version drift can still apply atomically', () => {
+  const h = setup(); h.document.version++
+  assert.equal(h.apply(h.snapshot, h.candidate), true)
+  assert.deepEqual(h.calls, ['boundary', 'apply', 'boundary'])
 })
 test('overlapping local actions are rejected before creating an undo group', () => {
   const h = setup(); h.candidate.additionalEdits[0]!.range = h.candidate.primary.range

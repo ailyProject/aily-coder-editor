@@ -56,7 +56,9 @@ function resolveInstallRoot(options) {
   const configured = options['app-root'] || process.env.AILY_SUBAPP_INSTALL_ROOT
   return configured
     ? path.resolve(String(configured))
-    : path.join(defaultAppDataPath(), 'npm-global', 'app')
+    : path.join(process.env.AILY_NPM_PREFIX
+      ? path.resolve(process.env.AILY_NPM_PREFIX)
+      : path.join(defaultAppDataPath(), 'npm-global'), 'app')
 }
 
 function packagePath(installRoot, name) {

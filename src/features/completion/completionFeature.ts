@@ -12,6 +12,7 @@ import { resolveProvider } from '../aiInlineCompletion'
 
 const commands = [
   ['aily.completion.settings', 'Aily: 自动补全设置'], ['aily.completion.snooze', 'Aily: 暂停自动补全 5 分钟'], ['aily.completion.resume', 'Aily: 恢复自动补全'],
+  ['aily.completion.trigger', 'Aily: 立即生成行内补全'],
   ['aily.completion.next', 'Aily: 下一条补全候选'], ['aily.completion.previous', 'Aily: 上一条补全候选'], ['aily.completion.panel', 'Aily: 比较补全候选'],
   ['aily.completion.predict', 'Aily: 预测下一处编辑'], ['aily.completion.acceptEdit', 'Aily: 定位或接受编辑建议'], ['aily.completion.rejectEdit', 'Aily: 拒绝编辑建议'],
   ['aily.completion.acceptLine', 'Aily: 接受下一行补全'], ['aily.completion.reconnect', 'Aily: 重新连接补全服务'],
@@ -31,9 +32,11 @@ const manifest = {
       'aily.completion.eagerness': { type: 'string', enum: ['less', 'standard', 'more'], default: 'standard', description: '自动建议频率。' },
     } },
     keybindings: [
+      { key: 'alt+\\', mac: 'alt+\\', command: 'aily.completion.trigger', when: 'editorTextFocus && !suggestWidgetVisible && !inSnippetMode' },
       { key: 'alt+]', mac: 'alt+]', command: 'aily.completion.next', when: 'editorTextFocus && !inSnippetMode' },
       { key: 'alt+[', mac: 'alt+[', command: 'aily.completion.previous', when: 'editorTextFocus && !inSnippetMode' },
       { key: 'ctrl+enter', command: 'aily.completion.panel', when: 'editorTextFocus && !suggestWidgetVisible && !inSnippetMode' },
+      { key: 'alt+n', mac: 'alt+n', command: 'aily.completion.predict', when: 'editorTextFocus && !suggestWidgetVisible && !inSnippetMode' },
       { key: 'ctrl+alt+right', mac: 'ctrl+cmd+right', command: 'aily.completion.acceptLine', when: 'editorTextFocus && inlineSuggestionVisible' },
       { key: 'tab', command: 'aily.completion.acceptEdit', when: 'editorTextFocus && ailyNextEditAvailable && !suggestWidgetVisible && !inSnippetMode && !inlineSuggestionVisible && !editorTabMovesFocus' },
       { key: 'escape', command: 'aily.completion.rejectEdit', when: 'editorTextFocus && ailyNextEditAvailable && !suggestWidgetVisible' },
@@ -90,6 +93,8 @@ export class CompletionFeature implements CompletionRuntime {
   private lastTyping = 0
   private lastNes = 0
   private panel?: vscode.WebviewPanel
+  private manualOperation = ''
+  private manualEditor?: vscode.TextEditor
   constructor(private readonly api: typeof vscode) {
     this.transport.onSessionChanged = () => { this.invalidate('stale'); this.reconnectAttempt = 0; void this.connect() }
     this.resolver = new SuggestionContextResolver(api, crypto.randomUUID(), this.history, metadata.version)
@@ -102,10 +107,23 @@ export class CompletionFeature implements CompletionRuntime {
       api.workspace.onDidChangeTextDocument(event => this.changed(event)),
       api.workspace.onDidChangeWorkspaceFolders(() => { this.history.clear(); this.invalidate('stale'); void this.connect() }),
       api.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('aily.completion')) { this.invalidate('stale'); this.updateStatus() } }),
-      api.window.onDidChangeActiveTextEditor(() => { if (!this.navigating) { this.clearEdit('stale'); this.request?.abort(); this.epoch++; clearTimeout(this.timer) } this.updateStatus() }),
+      api.window.onDidChangeActiveTextEditor(editor => {
+        // Opening/closing a quick pick or the candidate webview can briefly
+        // report no active editor. Keep the explicit manual request alive as
+        // long as the user did not switch to another source editor.
+        if (this.manualOperation && (!editor || editor.document.uri.toString() === this.manualEditor?.document.uri.toString())) { this.updateStatus(); return }
+        if (!this.navigating) { this.clearEdit('stale'); this.request?.abort(); this.epoch++; clearTimeout(this.timer) }
+        this.updateStatus()
+      }),
       api.window.onDidChangeTextEditorSelection(event => {
         if (this.navigating || this.applying) return
-        if (this.pendingEdit && event.textEditor.document === this.pendingEdit.snapshot.document) this.clearEdit('stale')
+        if (this.pendingEdit && event.textEditor.document.uri.toString() === this.pendingEdit.snapshot.document.uri.toString()) {
+          const target = this.pendingEdit.candidate.primary.range.start
+          const expectedNavigation = this.pendingEdit.navigated && event.selections.length === 1 && event.selections[0]!.isEmpty &&
+            event.selections[0]!.active.line === target.line && event.selections[0]!.active.character === target.character
+          if (expectedNavigation) return
+          this.clearEdit('stale')
+        }
         if (Date.now() - this.lastTyping > 150) { clearTimeout(this.timer); this.request?.abort(); this.epoch++ }
       }),
       api.languages.onDidChangeDiagnostics(event => {
@@ -120,8 +138,13 @@ export class CompletionFeature implements CompletionRuntime {
     register('aily.completion.reconnect', () => { this.reconnectAttempt = 0; return this.connect() })
     register('aily.completion.next', () => this.cycle(1))
     register('aily.completion.previous', () => this.cycle(-1))
-    register('aily.completion.panel', () => this.openPanel())
-    register('aily.completion.predict', () => this.predict('manual'))
+    register('aily.completion.trigger', () => this.runManual('正在生成行内补全…', async () => {
+      this.clearEdit('superseded')
+      await api.commands.executeCommand('editor.action.inlineSuggest.trigger')
+      return true
+    }))
+    register('aily.completion.panel', () => this.runManual('正在生成多候选…', () => this.openPanel(), '当前上下文没有可比较的补全候选。'))
+    register('aily.completion.predict', () => this.runManual('正在预测下一处编辑…', () => this.predict('manual'), '当前上下文没有可用的下一处编辑建议。'))
     register('aily.completion.acceptEdit', () => this.acceptEdit())
     register('aily.completion.rejectEdit', () => this.clearEdit('rejected'))
     register('aily.completion.acceptLine', () => api.commands.executeCommand('editor.action.inlineSuggest.acceptNextLine'))
@@ -157,6 +180,10 @@ export class CompletionFeature implements CompletionRuntime {
   }
   async provide(document: vscode.TextDocument, position: vscode.Position, context: vscode.InlineCompletionContext, token: vscode.CancellationToken): Promise<vscode.InlineCompletionList | [] | undefined> {
     if (!this.enabled(document)) return []
+    // A manual alternatives/NES request owns the inference lane until it
+    // completes. Background inline requests must not advance the shared epoch
+    // and discard the explicit user action. Manual inline invoke remains valid.
+    if (this.manualOperation && context.triggerKind !== this.api.InlineCompletionTriggerKind.Invoke) return []
     if (this.capabilities === null) return undefined // Explicit old-host/404 fallback only.
     if (!this.capabilities || !this.capabilities.modes.includes('completion') || this.pendingEdit || token.isCancellationRequested) return []
     if (this.capabilities.quota && !this.capabilities.quota.allowed) return []
@@ -249,19 +276,20 @@ export class CompletionFeature implements CompletionRuntime {
     const eagerness = this.config<string>('eagerness', 'standard'); const delay = eagerness === 'less' ? 1600 : eagerness === 'more' ? 650 : 1000
     this.timer = setTimeout(() => { void this.predict(trigger) }, Math.max(delay, 1500 - (Date.now() - this.lastNes)))
   }
-  private async predict(trigger: SuggestionRequest['trigger']): Promise<void> {
-    if (trigger !== 'manual' && (this.visibleItems.size || this.request || this.pendingEdit)) return
+  private async predict(trigger: SuggestionRequest['trigger']): Promise<boolean> {
+    if (trigger !== 'manual' && this.manualOperation) return false
+    if (trigger !== 'manual' && (this.visibleItems.size || this.request || this.pendingEdit)) return false
     clearTimeout(this.timer)
     const api = this.api; const editor = api.window.activeTextEditor
-    if (!editor || !this.enabled(editor.document) || !this.capabilities?.modes.includes('next-edit') || editor.selections.length !== 1 || !editor.selection.isEmpty || this.applying) return
-    if (this.capabilities.quota && !this.capabilities.quota.allowed) return
+    if (!editor || !this.enabled(editor.document) || !this.capabilities?.modes.includes('next-edit') || editor.selections.length !== 1 || !editor.selection.isEmpty || this.applying) return false
+    if (this.capabilities.quota && !this.capabilities.quota.allowed) return false
     this.clearEdit('superseded'); this.cache = undefined; const epoch = ++this.epoch
     this.request?.abort(); const controller = new AbortController(); this.request = controller; this.lastNes = Date.now()
     try {
       const snapshot = await this.resolver.collect(editor.document, editor.selection.active, 'next-edit', trigger,
         this.config('nextEdit.extendedRange', true) && this.capabilities.features.extendedRange,
         this.config('autoImports', true) && this.capabilities.features.atomicAdditionalEdits)
-      if (controller.signal.aborted || epoch !== this.epoch) return
+      if (controller.signal.aborted || epoch !== this.epoch) return false
       const importWindows = snapshot.request.documents[0]!.windows.filter(window => window.purpose === 'import' && window.allowedNewText?.length === 1)
       let result: SuggestionResult
       if (trigger === 'diagnostic' && importWindows.length) {
@@ -271,16 +299,17 @@ export class CompletionFeature implements CompletionRuntime {
           suggestions: [{ candidateId: `local-${crypto.randomUUID()}`, fileId: snapshot.request.active.fileId, snapshotId: snapshot.request.active.snapshotId,
             kind: primary.expectedText ? 'edit' : 'insert', primary, additionalEdits: edits.slice(1) }], expiresInMs: 15_000, finishReason: 'complete' }
       } else result = await this.transport.suggest(snapshot.request, controller.signal)
-      if (controller.signal.aborted || epoch !== this.epoch || api.window.activeTextEditor !== editor || !await this.resolver.isCurrent(snapshot)) return
-      const candidate = result.suggestions[0]; if (!candidate) return
+      if (controller.signal.aborted || epoch !== this.epoch || api.window.activeTextEditor !== editor || !await this.resolver.isCurrent(snapshot)) return false
+      const candidate = result.suggestions[0]; if (!candidate) return false
       const signature = this.signature(candidate)
-      if ((this.rejections.get(signature) ?? 0) > Date.now()) return
+      if ((this.rejections.get(signature) ?? 0) > Date.now()) return false
       await api.commands.executeCommand('editor.action.inlineSuggest.hide')
-      if (controller.signal.aborted || epoch !== this.epoch || !await this.resolver.isCurrent(snapshot)) return
+      if (controller.signal.aborted || epoch !== this.epoch || !await this.resolver.isCurrent(snapshot)) return false
       this.pendingEdit = { snapshot, result, candidate, navigated: false, expiresAt: Date.now() + result.expiresInMs }
       this.renderEdit(); this.feedback(result, candidate, 'shown')
       this.expiry = setTimeout(() => this.clearEdit('stale'), result.expiresInMs)
-    } catch (error) { this.handleError(error) }
+      return true
+    } catch (error) { this.handleError(error); return false }
     finally { if (this.request === controller) this.request = undefined }
   }
   private renderEdit(): void {
@@ -336,7 +365,13 @@ export class CompletionFeature implements CompletionRuntime {
       const snapshot = await this.resolver.collect(editor.document, editor.selection.active, 'alternatives', 'manual', false)
       snapshot.request.options.maxCandidates = Math.max(1, Math.min(snapshot.request.options.maxCandidates, this.capabilities.maxCandidates))
       const result = await this.transport.suggest(snapshot.request, controller.signal)
-      if (controller.signal.aborted || epoch !== this.epoch || !await this.resolver.isCurrent(snapshot)) return undefined
+      const stale = await this.resolver.staleReason(snapshot)
+      if (controller.signal.aborted || epoch !== this.epoch || stale) {
+        const reason = controller.signal.aborted ? '请求被新的操作取消' : epoch !== this.epoch ? '编辑器操作序列已变化' : stale === 'active-content' ? '原文件内容已变化' : '关联上下文已变化'
+        console.warn('[aily-coder-editor] alternatives result discarded:', reason)
+        await this.api.window.showWarningMessage(`高级补全未展示：${reason}，请重试。`)
+        return undefined
+      }
       this.cache = { snapshot, result, selectedKey: '', bases: new Map() }
       return this.cache
     } catch (error) { this.handleError(error); return undefined }
@@ -347,8 +382,8 @@ export class CompletionFeature implements CompletionRuntime {
     await this.api.commands.executeCommand('editor.action.inlineSuggest.trigger')
     await this.api.commands.executeCommand(direction > 0 ? 'editor.action.inlineSuggest.showNext' : 'editor.action.inlineSuggest.showPrevious')
   }
-  private async openPanel(): Promise<void> {
-    const cache = await this.alternatives(); if (!cache) return
+  private async openPanel(): Promise<boolean> {
+    const cache = await this.alternatives(); if (!cache) return false
     this.panel?.dispose()
     for (const candidate of cache.result.suggestions) this.feedback(cache.result, candidate, 'shown')
     const panel = this.api.window.createWebviewPanel('aily-completion-candidates', '补全候选', { viewColumn: this.api.ViewColumn.Beside, preserveFocus: true }, { enableScripts: true, localResourceRoots: [] })
@@ -359,8 +394,12 @@ export class CompletionFeature implements CompletionRuntime {
     const subscription = panel.webview.onDidReceiveMessage(async message => {
       const candidate = cache.result.suggestions.find(item => item.candidateId === message?.candidateId)
       if (!candidate) return
-      if (!await this.resolver.isCurrent(cache.snapshot) || Date.now() - cache.snapshot.createdAt > cache.result.expiresInMs || !this.enabled(cache.snapshot.document)) {
-        await panel.webview.postMessage({ message: '原文件或上下文已改变，请重新生成候选。', disable: true }); return
+      const stale = await this.resolver.staleReason(cache.snapshot)
+      const expired = Date.now() - cache.snapshot.createdAt > cache.result.expiresInMs
+      const disabled = !this.enabled(cache.snapshot.document)
+      if (stale || expired || disabled) {
+        const detail = stale === 'active-content' ? '原文件内容已改变' : stale ? '关联上下文已改变' : expired ? '候选已过期' : '当前文件补全已关闭'
+        await panel.webview.postMessage({ message: `${detail}，请重新生成候选。`, disable: true }); return
       }
       this.applying = true
       try {
@@ -370,10 +409,29 @@ export class CompletionFeature implements CompletionRuntime {
       } finally { this.applying = false }
     })
     panel.onDidDispose(() => { subscription.dispose(); if (this.panel === panel) this.panel = undefined })
+    return true
+  }
+  private async runManual(label: string, operation: () => Promise<boolean>, emptyMessage?: string): Promise<void> {
+    if (this.manualOperation) return
+    clearTimeout(this.timer)
+    this.request?.abort()
+    completionCoordinator.cancel()
+    this.epoch++
+    this.manualEditor = this.api.window.activeTextEditor
+    this.manualOperation = label; this.updateStatus()
+    try {
+      const completed = await operation()
+      if (!completed && emptyMessage) await this.api.window.showInformationMessage(emptyMessage)
+    } finally {
+      this.manualOperation = ''; this.manualEditor = undefined; this.updateStatus()
+    }
   }
   private async settings(): Promise<void> {
     const language = this.api.window.activeTextEditor?.document.languageId
     const selected = await this.api.window.showQuickPick([
+      { label: '$(sparkle) 立即生成行内补全', detail: 'Alt+\\；不等待回车或停顿', action: 'trigger' },
+      { label: '$(list-selection) 生成并比较 3 条候选', detail: 'Ctrl+Enter；打开候选比较面板', action: 'panel' },
+      { label: '$(arrow-right) 预测下一处编辑', detail: 'Alt+N；分析最近编辑、诊断和同文件引用', action: 'predict' },
       { label: this.config('enabled', true) ? '关闭自动补全' : '启用自动补全', action: 'toggle' },
       { label: '暂停 5 分钟', action: 'snooze' }, { label: '恢复自动补全', action: 'resume' },
       { label: `切换当前语言补全${language ? ` (${language})` : ''}`, action: 'language' },
@@ -400,10 +458,13 @@ export class CompletionFeature implements CompletionRuntime {
   }
   private updateStatus(): void {
     if (!this.status) return
+    if (this.manualOperation) { this.status.text = `$(sync~spin) ${this.manualOperation}`; this.status.tooltip = '手动请求优先于后台预测，可继续输入以取消。'; return }
     if (this.pendingEdit) { this.status.text = `$(arrow-right) Tab → 第 ${this.pendingEdit.candidate.primary.range.start.line + 1} 行`; this.status.tooltip = '定位并审阅下一处编辑建议，再按 Tab 接受。'; return }
     const document = this.api.window.activeTextEditor?.document
     this.status.text = Date.now() < this.snoozeUntil ? '$(debug-pause) Aily 补全已暂停' : !this.config('enabled', true) || (document && !this.enabled(document)) ? '$(circle-slash) Aily 补全已关闭' : this.capabilityError ? '$(warning) Aily 补全不可用' : this.capabilities === null ? '$(sparkle) Aily 续写 v3' : this.capabilities ? '$(sparkle) Aily 补全 v4' : '$(sync~spin) Aily 补全连接中'
-    this.status.tooltip = this.capabilityError || (this.capabilities?.model ? `服务端模型：${this.capabilities.model.id}` : '自动补全设置')
+    this.status.tooltip = this.capabilityError || (this.capabilities?.model
+      ? `服务端模型：${this.capabilities.model.id}\n点击打开：立即补全 / 3 条候选 / 下一处编辑`
+      : '点击打开：立即补全 / 3 条候选 / 下一处编辑 / 自动补全设置')
     if (resolveProvider() === 'lmstudio-fim' && this.config('enabled', true) && Date.now() >= this.snoozeUntil && (!document || this.enabled(document))) this.status.text = '$(sparkle) Aily 本地续写'
     if (resolveProvider() === 'off') this.status.text = '$(circle-slash) Aily 补全已关闭'
   }

@@ -7,6 +7,18 @@ export type EditorSnapshot = {
   request: SuggestionRequest; document: vscode.TextDocument; text: string; version: number
   offset: number; dependencies: SnapshotDependency[]; createdAt: number
 }
+export type SuggestionContextBudget = {
+  beforeCharacters: number
+  afterCharacters: number
+  relatedCharacters: number
+  relatedDocuments: number
+  completionWindows: number
+}
+export function suggestionContextBudget(mode: SuggestionRequest['mode']): SuggestionContextBudget {
+  if (mode === 'next-edit') return { beforeCharacters: 4000, afterCharacters: 1500, relatedCharacters: 4096, relatedDocuments: 3, completionWindows: 6 }
+  if (mode === 'alternatives') return { beforeCharacters: 6000, afterCharacters: 2000, relatedCharacters: 4096, relatedDocuments: 3, completionWindows: 1 }
+  return { beforeCharacters: 5000, afterCharacters: 1500, relatedCharacters: 3072, relatedDocuments: 2, completionWindows: 1 }
+}
 function bounded<T>(promise: Thenable<T>, timeout: number, fallback: T): Promise<T> {
   return new Promise(resolve => {
     const timer = setTimeout(() => resolve(fallback), timeout)
@@ -19,6 +31,7 @@ export class SuggestionContextResolver {
   constructor(private readonly api: typeof vscode, private readonly session: string, private readonly history: RecentEditStore, private readonly version: string) {}
   async collect(document: vscode.TextDocument, position: vscode.Position, mode: SuggestionRequest['mode'], trigger: SuggestionRequest['trigger'], extendedRange: boolean, allowImports = false): Promise<EditorSnapshot> {
     const api = this.api; const text = document.getText(); const version = document.version
+    const budget = suggestionContextBudget(mode)
     const root = api.workspace.getWorkspaceFolder(document.uri)
     if (!root || !isCompletionSource(document.uri.path) || text.length > 300_000) throw new Error('Unsupported completion source')
     const fileId = `f-${contentHash(document.uri.toString())}`
@@ -41,9 +54,9 @@ export class SuggestionContextResolver {
     if (mode === 'next-edit') lineWindow(position.line, 2)
     else makeWindow(offset, offset, 'completion')
     // Context windows retain true document coordinates; only completion windows are writable.
-    const beforeStart = Math.max(0, offset - 10_000)
+    const beforeStart = Math.max(0, offset - budget.beforeCharacters)
     makeWindow(document.offsetAt(new api.Position(document.positionAt(beforeStart).line + (beforeStart > 0 ? 1 : 0), 0)), offset, 'context')
-    const afterEnd = Math.min(text.length, offset + 4000)
+    const afterEnd = Math.min(text.length, offset + budget.afterCharacters)
     makeWindow(offset, afterEnd === text.length ? afterEnd : document.offsetAt(new api.Position(document.positionAt(afterEnd).line, 0)), 'context')
     const recentEdits = this.history.read().filter(edit => edit.fileId === fileId)
     const diagnostics: DiagnosticContext[] = api.languages.getDiagnostics(document.uri)
@@ -52,17 +65,17 @@ export class SuggestionContextResolver {
         ...(diag.code == null ? {} : { code: String(typeof diag.code === 'object' ? diag.code.value : diag.code).slice(0, 128) }), freshness: 'observed-current',
       }))
     if (mode === 'next-edit') {
-      for (const diag of diagnostics) { if (windows.filter(w => w.purpose === 'completion').length >= 5) break; lineWindow(diag.range.start.line, 1) }
+      for (const diag of diagnostics) { if (windows.filter(w => w.purpose === 'completion').length >= Math.min(3, budget.completionWindows)) break; lineWindow(diag.range.start.line, 1) }
       if (extendedRange) {
         const refs = await bounded(api.commands.executeCommand<vscode.Location[]>('vscode.executeReferenceProvider', document.uri, position), 180, [])
         for (const ref of refs ?? []) {
-          if (windows.filter(w => w.purpose === 'completion').length >= 7) break
+          if (windows.filter(w => w.purpose === 'completion').length >= Math.min(5, budget.completionWindows)) break
           if (ref.uri.toString() === document.uri.toString()) lineWindow(ref.range.start.line)
         }
         // Lexical matches are location candidates, never a semantic rename operation.
         const words = new Set(recentEdits.slice(-4).flatMap(edit => `${edit.before} ${edit.after}`.match(/[A-Za-z_]\w{2,}/g) ?? []))
         for (const match of text.matchAll(/[A-Za-z_]\w{2,}/g)) {
-          if (windows.filter(w => w.purpose === 'completion').length >= 8) break
+          if (windows.filter(w => w.purpose === 'completion').length >= budget.completionWindows) break
           if (words.has(match[0]) && Math.abs(match.index - offset) > 200) lineWindow(document.positionAt(match.index).line)
         }
       }
@@ -87,15 +100,15 @@ export class SuggestionContextResolver {
       if (other !== document && text.includes(other.uri.path.split('/').at(-1)!)) related.set(other.uri.toString(), other.uri)
     }
     let contextBytes = 0
-    for (const uri of [...related.values()].slice(0, 8)) {
-      if (documents.length >= 5 || contextBytes >= 8192) break
+    for (const uri of [...related.values()].slice(0, budget.relatedDocuments * 2)) {
+      if (documents.length >= budget.relatedDocuments + 1 || contextBytes >= budget.relatedCharacters) break
       if (uri.toString() === document.uri.toString() || uri.scheme !== 'file' || api.workspace.getWorkspaceFolder(uri)?.uri.toString() !== root.uri.toString()) continue
       // LSP-resolved installed headers may be read as declarations, never edited.
       if (!isCompletionSource(uri.path) && !(uri.path.includes('/sketch/libraries/') && /\.(h|hpp)$/.test(uri.path))) continue
       const open = api.workspace.textDocuments.find(item => item.uri.toString() === uri.toString())
       const content = open?.getText() ?? await bounded(api.workspace.fs.readFile(uri).then(bytes => new TextDecoder().decode(bytes)), 150, '')
       if (!content || content.length > 300_000 || content.includes('\0')) continue
-      let snippet = content.slice(0, 2000)
+      let snippet = content.slice(0, Math.min(2000, budget.relatedCharacters - contextBytes))
       if (snippet.length < content.length) snippet = snippet.slice(0, Math.max(0, snippet.lastIndexOf('\n') + 1))
       if (!snippet) continue
       const lines = snippet.split('\n'); const id = `f-${contentHash(uri.toString())}`
@@ -140,16 +153,26 @@ export class SuggestionContextResolver {
       options: { crossFile: false, autoImports: documents[0]!.windows.some(window => window.purpose === 'import'), partialInsertAccept: true, maxCandidates: mode === 'alternatives' ? 3 : 1 },
     } }
   }
-  async isCurrent(snapshot: EditorSnapshot): Promise<boolean> {
+  async staleReason(snapshot: EditorSnapshot): Promise<'active-content' | 'context-content' | 'context-closed' | undefined> {
     for (const dependency of snapshot.dependencies) {
+      // A preview document can temporarily disappear from workspace.textDocuments
+      // while the candidate webview has focus. Validate the retained active
+      // TextDocument directly below instead of treating it as a closed dependency.
+      if (dependency.uri.toString() === snapshot.document.uri.toString()) continue
       const open = this.api.workspace.textDocuments.find(doc => doc.uri.toString() === dependency.uri.toString())
-      if (open) { if ((dependency.version != null && open.version !== dependency.version) || open.getText() !== dependency.text) return false }
+      if (open) { if (open.getText() !== dependency.text) return 'context-content' }
       else {
-        if (dependency.version != null) return false
+        if (dependency.version != null) return 'context-closed'
         const text = await bounded(this.api.workspace.fs.readFile(dependency.uri).then(bytes => new TextDecoder().decode(bytes)), 150, '')
-        if (text !== dependency.text) return false
+        if (text !== dependency.text) return 'context-content'
       }
     }
-    return snapshot.document.version === snapshot.version && snapshot.document.getText() === snapshot.text
+    // Embedded Monaco may advance TextDocument.version without changing bytes.
+    // Content equality is the useful concurrency boundary; applySuggestion also
+    // checks the Monaco model and every target range synchronously.
+    return snapshot.document.getText() === snapshot.text ? undefined : 'active-content'
+  }
+  async isCurrent(snapshot: EditorSnapshot): Promise<boolean> {
+    return await this.staleReason(snapshot) === undefined
   }
 }
