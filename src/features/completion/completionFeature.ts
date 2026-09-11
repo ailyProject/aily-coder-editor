@@ -12,7 +12,7 @@ import { getHostEmbedContext, onHostEmbedContextChanged } from '../../hostEmbedC
 import { setCompletionStatus } from './completionStatus'
 import { partialLength, planPartialImportAcceptance } from './partialImportAcceptance'
 import { affectsCompletionContext } from './completionFileChanges'
-import { editOrigin, focusFirstRenameReference, hasRecentReplacement, isTypedLineBreak, minimalEdit, MAX_PREDICTION_CHAIN } from './ailyTabOpportunity'
+import { editOrigin, hasRecentReplacement, isTypedLineBreak, minimalEdit, MAX_PREDICTION_CHAIN } from './ailyTabOpportunity'
 import { getLanguageServerState, hasLanguageServerCompilationDatabase, onLanguageServerStateChanged } from '../languageServerState'
 import { AILY_TAB_KEYBINDINGS, AILY_TAB_SNOOZE_PRESETS, ailyTabSnoozeDeadline, ailyTabSnoozeRemaining } from './ailyTabControls'
 
@@ -464,8 +464,10 @@ export class CompletionFeature {
       if (controller.signal.aborted || epoch !== this.epoch || api.window.activeTextEditor !== editor || !await this.resolver.isCurrent(snapshot)) return false
       this.recoveryAttempts = 0; this.capabilityError = ''; this.updateStatus()
       let candidate = result.suggestions[0]; if (!candidate) return false
-      candidate = { ...candidate, primary: minimalEdit(focusFirstRenameReference(candidate.primary,
-        snapshot.request.recentEdits, trigger === 'accept' ? 60_000 : 2000)) }
+      // Keep one model-approved local window as one atomic edit. In particular,
+      // repeated references from an unambiguous rename should be previewed and
+      // accepted together instead of forcing a distracting one-line chain.
+      candidate = { ...candidate, primary: minimalEdit(candidate.primary) }
       if (result.completionId !== 'local' && this.config('autoImports', true) && this.capabilities.features.atomicAdditionalEdits) candidate = await this.resolver.withImports(snapshot, candidate)
       if (controller.signal.aborted || epoch !== this.epoch || !await this.resolver.isCurrent(snapshot)) return false
       const signature = this.signature(candidate)

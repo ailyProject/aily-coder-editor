@@ -21,46 +21,6 @@ export function hasRecentReplacement(edits: readonly RecentEdit[], fileId: strin
   return edits.some(edit => edit.fileId === fileId && edit.origin === 'typing' && edit.ageMs <= 2000 && !!edit.before.trim() && !!edit.after.trim() && edit.after.length <= 128)
 }
 
-const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
-const identifierCharacter = (value: string | undefined): boolean => !!value && /[A-Za-z0-9_$]/.test(value)
-function renameIdentifier(line: string, before: string, after: string): string {
-  let result = ''; let offset = 0
-  while (offset < line.length) {
-    const found = line.indexOf(before, offset)
-    if (found < 0) return result + line.slice(offset)
-    const end = found + before.length
-    if (!identifierCharacter(line[found - 1]) && !identifierCharacter(line[end])) {
-      result += line.slice(offset, found) + after; offset = end
-    } else { result += line.slice(offset, end); offset = end }
-  }
-  return result
-}
-
-/** Aily Tab presents a rename as a chain of local edits: accept the nearest
- * reference, then predict the next one. Keep genuine multi-line rewrites intact. */
-export function focusFirstRenameReference(edit: TextEdit, recentEdits: readonly RecentEdit[], maxAgeMs = 2000): TextEdit {
-  const rename = [...recentEdits].reverse().find(item => item.origin === 'typing' && item.ageMs <= maxAgeMs &&
-    IDENTIFIER.test(item.before) && IDENTIFIER.test(item.after) && item.before !== item.after)
-  if (!rename) return edit
-  const terminalBreak = edit.expectedText.endsWith('\r\n') ? '\r\n' : edit.expectedText.endsWith('\n') ? '\n' : ''
-  // Providers occasionally omit the completion window's terminal newline
-  // while changing only an identifier. Compare the intended rename with that
-  // boundary restored so accepting a reference can never join source lines.
-  const proposed = terminalBreak && !edit.newText.endsWith('\n') ? edit.newText + terminalBreak : edit.newText
-  const beforeLines = edit.expectedText.replace(/\r\n/g, '\n').split('\n')
-  const afterLines = proposed.replace(/\r\n/g, '\n').split('\n')
-  if (beforeLines.length !== afterLines.length) return edit
-  const changed = beforeLines.map((line, index) => line === afterLines[index] ? -1 : index).filter(index => index >= 0)
-  if (!changed.length || changed.some(index => renameIdentifier(beforeLines[index]!, rename.before, rename.after) !== afterLines[index])) return edit
-  const index = changed[0]!
-  const character = index === 0 ? edit.range.start.character : 0
-  return {
-    range: { start: { line: edit.range.start.line + index, character },
-      end: { line: edit.range.start.line + index, character: character + beforeLines[index]!.length } },
-    expectedText: beforeLines[index]!, newText: afterLines[index]!,
-  }
-}
-
 /** Keep the exact edit, but remove context that the model left unchanged. */
 export function minimalEdit(edit: TextEdit): TextEdit {
   const before = edit.expectedText; const after = edit.newText

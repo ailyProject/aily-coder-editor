@@ -96,7 +96,10 @@ export class SuggestionContextResolver {
       const to = end === document.lineCount ? text.length : document.offsetAt(new api.Position(end, 0))
       if (to - from <= 4096) makeWindow(from, to, 'completion')
     }
-    if (mode === 'next-edit') lineWindow(position.line, 2)
+    // A compact function-sized window lets the model group a local rename or
+    // coherent rewrite into the single edit that Aily Tab presents. Distant
+    // references remain separate windows and retain the jump-before-apply flow.
+    if (mode === 'next-edit') lineWindow(position.line, 8)
     else makeWindow(offset, offset, 'completion')
     // Context windows retain true document coordinates; only completion windows are writable.
     const beforeStart = Math.max(0, offset - budget.beforeCharacters)

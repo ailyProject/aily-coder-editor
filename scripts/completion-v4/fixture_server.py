@@ -42,6 +42,7 @@ from src.services.code_suggestion_service import CodeSuggestionService, Suggesti
 root = Path(tempfile.mkdtemp(prefix='aily-v4-workspace-')).resolve()
 (root / 'main.cpp').write_text('int main() {\n  \n}\n')
 (root / 'rename.cpp').write_text('int oldName = 1;\n' + '// spacer\n' * 20 + 'int value = oldName;\n')
+(root / 'rename-local.js').write_text('function nominalZoneOf(distTb) {\n  if (distTb > 3000) return 0;\n  if (distTb > 2000) return 1;\n  if (distTb > 1000) return 2;\n\n  console.log("distTb", distTb);\n  return 3;\n}\n')
 (root / 'delete.cpp').write_text('int unused = 1;\nint main() { return 0; }\n')
 state = {'scenario': 'completion', 'requests': [], 'providerCalls': 0, 'feedback': []}
 redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
@@ -123,7 +124,9 @@ async def provider(request: Request):
         suggestions = [dict(windowId=windows[0]['windowId'], newText=value, additionalEdits=[]) for value in values]
     else:
         window = next((w for w in windows if w['range']['start']['line'] > 10 and 'oldName' in w['text']), windows[0]) if scenario == 'rename' else windows[0]
-        text = window['text'].replace('oldName', 'newName') if scenario == 'rename' else window['text'].replace('int unused = 1;\n', '')
+        text = (window['text'].replace('oldName', 'newName') if scenario == 'rename' else
+            window['text'].replace('distTb', 'AC') if scenario == 'rename-local' else
+            window['text'].replace('int unused = 1;\n', ''))
         suggestions = [dict(windowId=window['windowId'], newText=text, additionalEdits=[])] if text != window['text'] else []
     raw = json.dumps({'suggestions': suggestions}, ensure_ascii=False)
     async def stream():

@@ -35,6 +35,20 @@ export interface NativeFsWatchEventPayload {
 
 export type NativeFsWatchCallback = (ev: NativeFsWatchEventPayload) => void
 
+export type ParentBackedNativeFsWatchChange = {
+  watchRoot: string
+  event: NativeFsWatchEventPayload
+}
+
+/**
+ * Provider watcher events are also exposed to the Workbench integration so it can
+ * reconcile already-open clean models. This is required when Windows omits the
+ * filename or schedules Monaco's paint only after the iframe receives input.
+ */
+const _onDidReceiveParentBackedNativeFsWatchChange = new Emitter<ParentBackedNativeFsWatchChange>()
+export const onDidReceiveParentBackedNativeFsWatchChange =
+  _onDidReceiveParentBackedNativeFsWatchChange.event
+
 const watchCallbacksById = new Map<number, NativeFsWatchCallback>()
 
 interface PendingEntry {
@@ -657,6 +671,7 @@ export class ParentBackedNativeFsProvider {
           const changes = mapWatchEventToFileChanges(path, ev)
           if (changes.length > 0) {
             this._fire(...changes)
+            _onDidReceiveParentBackedNativeFsWatchChange.fire({ watchRoot: path, event: ev })
           }
         })
       })

@@ -33,7 +33,7 @@ Coder 的自动补全统一使用 Aily Tab。交互能力曾参考同类编辑�
 
 入口 `src/main.common.ts` 只加载 `features/completion/completionFeature.ts`，由它直接注册唯一的行内 provider。`completion` 和 `next-edit` 是统一控制器内两种结构化操作，不是用户可切换的补全产品模式。每次最多一条建议。
 
-链路为编辑器上下文/快照 → `CodeSuggestionHostBridgeService` → `/api/v4/code` → 受 windowId 约束的模型输出 → 完整 SSE 校验 → 目标缓冲区原子编辑 → 保存。宿主与服务端同时升级；共享服务的旧 v3 路由保留给其他客户端，Coder 不再连接它。
+链路为编辑器上下文/快照 → `CodeSuggestionHostBridgeService` → `/api/v4/code` → 受 windowId 约束的模型输出 → 完整 SSE 校验 → 目标缓冲区原子编辑 → 保存。光标处 `completion` 可由服务端优先路由到 DeepSeek FIM（原生 prefix/suffix），服务端再封装为相同的 v4 校验结果；`next-edit` 继续使用结构化 Chat 模型。局部重命名会在同一个受控代码窗口内组合明确的剩余引用，以左右内联差异一次预览、一次 Tab 原子接受；远距离或跨文件目标仍保持逐位置预测以及先跳转再接受。模型地址、选择与密钥始终只在服务端，Coder 不恢复本地 provider。宿主与服务端同时升级；共享服务的旧 v3 路由保留给其他客户端，Coder 不再连接它。
 
 SDK 声明由 Electron preload 的 `readCodeDeclaration` 按宿主解析的安装根目录读取；只允许头文件、realpath 检查和大小限制，发往服务端的路径为 `@sdk/...`。新增 preload 方法需要重启主软件。编辑器构建用 `npm run build`，开发链接用 `node scripts/link-dev.mjs --skip-build`，撤销链接用 `npm run dev:unlink`。
 

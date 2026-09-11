@@ -220,6 +220,27 @@ test('recent replacement intent finds a distant same-file window', async () => {
   assert.ok(snapshot.request.documents[0]!.windows.some(window => window.purpose === 'completion' && window.range.start.line === 21))
   assert.doesNotThrow(() => parseSuggestionRequest(snapshot.request))
 })
+test('the primary next-edit window covers a compact local rename group', async () => {
+  const source = [
+    'function nominalZoneOf(AC) {',
+    '  if (distTb > 3000) return 0;',
+    '  if (distTb > 2000) return 1;',
+    '  if (distTb > 1000) return 2;',
+    '',
+    '  console.log("distTb", distTb);',
+    '  return 3;',
+    '}',
+    '',
+  ].join('\n')
+  const h = setup(source, '/workspace/main.js', 'javascript')
+  h.history.add(`f-${contentHash(h.document.uri.toString())}`, 'distTb', 'AC', 'typing')
+  const snapshot = await h.resolver.collect(h.doc, new Position(0, 27) as vscode.Position, 'next-edit', 'edit', true)
+  const primary = snapshot.request.documents[0]!.windows.find(window => window.purpose === 'completion')!
+  assert.ok(primary.text.includes('if (distTb > 1000)'))
+  assert.ok(primary.text.includes('console.log("distTb", distTb)'))
+  assert.ok(primary.text.includes('return 3;'))
+  assert.doesNotThrow(() => parseSuggestionRequest(snapshot.request))
+})
 test('imports require one unique text-only LSP action; ambiguous/resource actions are excluded', async () => {
   const h = setup('Serial.println();\n')
   h.setDiagnostics([{ range: new Range(0, 0, 0, 6), severity: 0, message: 'unknown Serial' }])

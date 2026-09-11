@@ -1,20 +1,25 @@
 .aily-next-edit-gutter::before { content: '›'; color: var(--vscode-editorGhostText-foreground, #969696); font-size: 16px; }
-.aily-next-edit-original { background: var(--vscode-diffEditor-removedTextBackground, #a33a3a33); }
-.aily-next-edit-preview { box-sizing: border-box; color: var(--vscode-editor-foreground, #ddd); }
-.aily-next-edit-body { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
-.aily-next-edit-code, .aily-next-edit-imports { font: inherit; line-height: inherit; white-space: pre; margin: 0; overflow: visible; min-width: 0; }
-.aily-next-edit-code { flex: 1 1 auto; }
+.aily-next-edit-deleted-token { background: var(--vscode-diffEditor-removedTextBackground, #a33a3a55); border-radius: 2px; }
+.aily-next-edit-added-token { background: var(--vscode-diffEditor-insertedTextBackground, #3a9a3a55); border-radius: 2px; }
+.aily-next-edit-preview { box-sizing: border-box; position: relative; color: var(--vscode-editor-foreground, #ddd); }
+.aily-next-edit-body { min-width: 0; }
+.aily-next-edit-code, .aily-next-edit-imports { font: inherit; line-height: inherit; white-space: pre; margin: 0; min-width: 0; }
+.aily-next-edit-code { overflow: hidden; padding: 0 5px; border: 1px solid var(--vscode-inlineEdit-border, var(--vscode-editorWidget-border, #5557)); background: var(--vscode-inlineEdit-background, var(--vscode-editor-background, #1e1e1e)); }
+.aily-next-edit-code-line { display: block; min-height: 1em; }
 .aily-next-edit-actions { display: flex; align-items: center; flex: none; gap: 4px; font: 11px/18px var(--vscode-font-family, sans-serif); }
 .aily-next-edit-actions button { background: transparent; color: var(--vscode-descriptionForeground, #aaa); border: 1px solid transparent; border-radius: 4px; padding: 0 5px; cursor: pointer; white-space: nowrap; }
 .aily-next-edit-actions button:first-child { border-color: var(--vscode-widget-border, #6666); }
 .aily-next-edit-actions button:hover { background: var(--vscode-toolbar-hoverBackground, #8883); color: var(--vscode-editor-foreground, #ddd); }
 .aily-next-edit-actions button:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
-.aily-next-edit-single { margin-left: 16px; padding: 3px 7px 3px 10px; transform: translateY(-3px); border: 1px solid var(--vscode-editorWidget-border, #555); border-radius: 5px; background: var(--vscode-editorWidget-background, #252526); box-shadow: 0 2px 7px #0003; overflow: visible; }
-.aily-next-edit-single .aily-next-edit-body { align-items: center; gap: 10px; width: 100%; }
-.aily-next-edit-single .aily-next-edit-code { flex-basis: max-content; scrollbar-width: none; }
-.aily-next-edit-single .aily-next-edit-code::-webkit-scrollbar { display: none; }
-.aily-next-edit-multiline { height: 100%; overflow: visible; padding: 4px 12px 4px 0; background: transparent; }
+.aily-next-edit-inline { z-index: 20; overflow: visible; filter: drop-shadow(0 2px 5px #0003); }
+.aily-next-edit-inline .aily-next-edit-actions { position: absolute; z-index: 2; right: 2px; top: -22px; padding: 1px 3px; opacity: 0; border-radius: 4px; background: var(--vscode-editorWidget-background, #252526); transition: opacity 80ms ease; }
+.aily-next-edit-inline:hover .aily-next-edit-actions, .aily-next-edit-inline:focus-within .aily-next-edit-actions { opacity: 1; }
+.aily-next-edit-stacked { height: 100%; overflow: visible; padding: 4px 12px 4px 0; background: transparent; }
+.aily-next-edit-stacked .aily-next-edit-body { display: flex; align-items: flex-start; gap: 10px; }
+.aily-next-edit-stacked .aily-next-edit-code { flex: 1 1 auto; }
 .aily-next-edit-imports { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--vscode-widget-border, #6664); }
 .aily-tab-portal { width: min(520px, 85%); max-height: 230px; overflow: auto; margin: 0 18px 18px 0; padding: 8px 12px; border: 1px solid var(--vscode-editorWidget-border, #555); border-radius: 6px; background: var(--vscode-editorWidget-background, #252526); box-shadow: 0 4px 18px #0004; z-index: 30; }
+.aily-tab-portal .aily-next-edit-code { border: 0; padding: 0; background: transparent; }
+.aily-tab-portal .aily-next-edit-body { display: flex; align-items: flex-start; gap: 14px; }
 .aily-next-edit-location { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; font: 11px/18px var(--vscode-font-family, sans-serif); color: var(--vscode-descriptionForeground, #aaa); }
 .aily-next-edit-location > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -100,6 +100,7 @@
     "test:aily-view-library": "tsx --test src/features/ailyLibrarySource.test.ts src/features/ailyLibraryProjection.test.ts",
     "test:aily-tab": "node --import tsx --test src/features/completion/*.test.ts",
     "test:completion-v4": "node --import tsx --test src/features/completion/*.test.ts",
+    "test:native-fs": "tsx --test src/nativeFsWatchEvent.test.ts src/nativeFsExternalModelSync.test.ts",
     "test:native-search": "tsx --test src/features/nativeTextSearchProvider.test.ts",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",

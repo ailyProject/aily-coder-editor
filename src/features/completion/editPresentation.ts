@@ -7,10 +7,29 @@ import type { Suggestion, TextEdit } from './suggestionProtocol'
 import { comparePosition } from './suggestionProtocol'
 import { contentHash } from './completionState'
 import styles from './completion.css?inline'
-import { describeEditPreview } from './editPreview'
+import { describeEditPreview, type PreviewHighlight } from './editPreview'
 import { ailyTabInteractionBlocked } from './ailyTabControls'
 
 const nativeRange = (edit: TextEdit) => new monaco.Range(edit.range.start.line + 1, edit.range.start.character + 1, edit.range.end.line + 1, edit.range.end.character + 1)
+function markTextRanges(root: HTMLElement, ranges: readonly Omit<PreviewHighlight, 'line'>[]): void {
+  const document = root.ownerDocument
+  const showText = document.defaultView?.NodeFilter.SHOW_TEXT ?? 4
+  for (const range of [...ranges].sort((a, b) => b.start - a.start)) {
+    const walker = document.createTreeWalker(root, showText)
+    let offset = 0; let node: Text | null
+    while ((node = walker.nextNode() as Text | null)) {
+      const next = offset + node.data.length
+      if (range.start >= offset && range.end <= next) {
+        if (range.end < next) node.splitText(range.end - offset)
+        const selected = range.start > offset ? node.splitText(range.start - offset) : node
+        const mark = document.createElement('span'); mark.className = 'aily-next-edit-added-token'
+        selected.parentNode?.replaceChild(mark, selected); mark.append(selected)
+        break
+      }
+      offset = next
+    }
+  }
+}
 /** Read editor-scoped state, including the Workbench's IME/snippet guards. */
 export function editorSuggestionBlocked(uri: string, requireFocus = false): boolean {
   const editor = monaco.editor.getEditors().find(item => item.getModel()?.uri.toString() === uri && item.hasTextFocus())
@@ -94,14 +113,14 @@ export class EditPresentation {
     const targetText = crossFile ? snapshot.dependencies.find(dep => `f-${contentHash(dep.uri.toString())}` === candidate.fileId)?.text : snapshot.text
     const preview = describeEditPreview(targetText ?? candidate.primary.expectedText, candidate.primary)
     const portal = crossFile || collapsed
-    const single = !portal && preview.singleLine && !candidate.additionalEdits.length && !chooseImports
+    const single = preview.singleLine && !candidate.additionalEdits.length && !chooseImports
     const tree = editor.getDomNode()?.getRootNode()
     this.style = document.createElement('style'); this.style.textContent = styles
     ;(tree instanceof ShadowRoot ? tree : document.head).appendChild(this.style)
     const font = editor.getOption(monaco.editor.EditorOption.fontInfo)
     const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight)
     const root = document.createElement('div')
-    root.className = `aily-next-edit-preview ${portal ? 'aily-tab-portal' : single ? 'aily-next-edit-single' : 'aily-next-edit-multiline'}`
+    root.className = `aily-next-edit-preview ${portal ? 'aily-tab-portal' : 'aily-next-edit-inline'} ${single ? 'aily-next-edit-single' : 'aily-next-edit-multiline'}`
     root.style.fontFamily = font.fontFamily; root.style.fontSize = `${font.fontSize}px`; root.style.lineHeight = `${lineHeight}px`
     root.setAttribute('role', 'region'); root.setAttribute('aria-label', `Aily Tab ${target?.relativePath ?? ''}:${candidate.primary.range.start.line + 1}`)
     const controls = document.createElement('div'); controls.className = 'aily-next-edit-actions'
@@ -121,7 +140,7 @@ export class EditPresentation {
     }
     const body = document.createElement('div'); body.className = 'aily-next-edit-body'
     const code = document.createElement('pre'); code.className = 'aily-next-edit-code'
-    code.textContent = (single ? preview.after.trimStart() : preview.after) || '（删除此行）'
+    const previewText = preview.after || '（删除此行）'
     // Use the current editor's tokenization/theme; "ghost" describes an
     // unaccepted edit, not a monochrome foreground color.
     const colorize = (node: HTMLElement, text: string) => {
@@ -130,7 +149,20 @@ export class EditPresentation {
         if (node.isConnected && this.editor === editor) node.innerHTML = html.replace(/<br\s*\/?>(?:\s*)$/, '')
       }).catch(() => { /* Plain source remains readable if a grammar is unavailable. */ })
     }
-    colorize(code, code.textContent)
+    const renderCode = (node: HTMLElement, text: string, highlights: readonly PreviewHighlight[]) => {
+      node.replaceChildren()
+      for (const [line, value] of text.split('\n').entries()) {
+        const row = document.createElement('span'); row.className = 'aily-next-edit-code-line'
+        row.textContent = value || '\u200b'; node.append(row)
+        if (value) void monaco.editor.colorize(value, target?.languageId ?? snapshot.document.languageId,
+          { tabSize: editor.getModel()!.getOptions().tabSize }).then(html => {
+            if (!row.isConnected || this.editor !== editor) return
+            row.innerHTML = html.replace(/<br\s*\/?>(?:\s*)$/, '')
+            markTextRanges(row, highlights.filter(item => item.line === line))
+          }).catch(() => { markTextRanges(row, highlights.filter(item => item.line === line)) })
+      }
+    }
+    renderCode(code, previewText, preview.after ? preview.afterHighlights : [{ line: 0, start: 0, end: previewText.length }])
     body.append(code)
     if (!portal) body.append(controls)
     root.append(body)
@@ -140,31 +172,60 @@ export class EditPresentation {
       colorize(imports, imports.textContent)
       root.append(imports)
     }
-    if (!crossFile) this.decorations = editor.createDecorationsCollection([{ range: nativeRange(candidate.primary), options: {
-      linesDecorationsClassName: 'aily-next-edit-gutter',
-      className: 'aily-next-edit-original',
-      hoverMessage: { value: 'Tab 接受修改，Esc 拒绝。' },
-    } }])
+    if (!crossFile) {
+      const startLine = candidate.primary.range.start.line
+      this.decorations = editor.createDecorationsCollection([
+        { range: new monaco.Range(startLine + 1, 1, startLine + 1, 1), options: {
+          linesDecorationsClassName: 'aily-next-edit-gutter', hoverMessage: { value: 'Tab 接受修改，Esc 拒绝。' },
+        } },
+        ...preview.beforeHighlights.map(highlight => ({
+          range: new monaco.Range(startLine + highlight.line + 1, highlight.start + 1, startLine + highlight.line + 1, highlight.end + 1),
+          options: { className: 'aily-next-edit-deleted-token', hoverMessage: { value: 'Tab 接受修改，Esc 拒绝。' } },
+        })),
+      ])
+    }
     if (portal) {
       this.portal = { getId: () => 'aily.tab.portal', getDomNode: () => root,
         getPosition: () => ({ preference: monaco.editor.OverlayWidgetPositionPreference.BOTTOM_RIGHT_CORNER }) }
       editor.addOverlayWidget(this.portal)
-    } else if (single) {
-      const position = new monaco.Position(candidate.primary.range.start.line + 1, editor.getModel()!.getLineMaxColumn(candidate.primary.range.start.line + 1))
-      this.content = { getId: () => 'aily.tab.singleLine', getDomNode: () => root, suppressMouseDown: true,
-        getPosition: () => ({ position, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT] }),
-        beforeRender: () => {
-          const layout = editor.getLayoutInfo(); const anchor = editor.getScrolledVisiblePosition(position)
-          const width = Math.max(160, layout.contentLeft + layout.contentWidth - (anchor?.left ?? layout.contentLeft) - 12)
-          root.style.width = `${width}px`; root.style.maxWidth = `${width}px`
-          return null
-        } }
-      editor.addContentWidget(this.content)
-      this.listeners.push(editor.onDidLayoutChange(() => { if (this.content) editor.layoutContentWidget(this.content) }))
     } else {
-      const lines = preview.after.split('\n').length + candidate.additionalEdits.reduce((total, edit) => total + edit.newText.trimEnd().split('\n').length, 0)
-      editor.changeViewZones(accessor => { this.zone = accessor.addZone({ afterLineNumber: preview.lastLine + 1,
-        heightInPx: lines * lineHeight + 8 + (candidate.additionalEdits.length ? 8 : 0), domNode: root, suppressMouseDown: true }) })
+      const model = editor.getModel()!
+      const position = new monaco.Position(candidate.primary.range.start.line + 1, 1)
+      const proposedWidth = Math.min(620, Math.max(140, ...previewText.split('\n').map(line => line.length * font.typicalHalfwidthCharacterWidth + 16)))
+      const geometry = () => {
+        const layout = editor.getLayoutInfo(); const anchor = editor.getScrolledVisiblePosition(position)
+        if (!anchor) return undefined
+        let right = anchor.left
+        for (let line = candidate.primary.range.start.line + 1; line <= preview.lastLine + 1; line++) {
+          const point = editor.getScrolledVisiblePosition(new monaco.Position(line, model.getLineMaxColumn(line)))
+          if (point) right = Math.max(right, point.left)
+        }
+        const available = layout.contentLeft + layout.contentWidth - right - 12
+        return { offset: Math.max(font.typicalHalfwidthCharacterWidth * 2, right - anchor.left + font.typicalHalfwidthCharacterWidth * 2), available }
+      }
+      const initial = geometry()
+      const inline = !!initial && initial.available >= Math.min(220, proposedWidth)
+      if (inline) {
+        root.style.width = `${Math.min(proposedWidth, initial.available)}px`
+        root.style.transform = `translate(${initial.offset}px, -1px)`
+        this.content = { getId: () => 'aily.tab.inlineEdit', getDomNode: () => root, suppressMouseDown: true,
+          getPosition: () => ({ position, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT] }),
+          beforeRender: () => {
+            const current = geometry()
+            if (current) {
+              root.style.width = `${Math.min(proposedWidth, current.available)}px`
+              root.style.transform = `translate(${current.offset}px, -1px)`
+            }
+            return null
+          } }
+        editor.addContentWidget(this.content)
+        this.listeners.push(editor.onDidLayoutChange(() => { if (this.content) editor.layoutContentWidget(this.content) }))
+      } else {
+        root.classList.remove('aily-next-edit-inline'); root.classList.add('aily-next-edit-stacked')
+        const lines = previewText.split('\n').length + candidate.additionalEdits.reduce((total, edit) => total + edit.newText.trimEnd().split('\n').length, 0)
+        editor.changeViewZones(accessor => { this.zone = accessor.addZone({ afterLineNumber: preview.lastLine + 1,
+          heightInPx: lines * lineHeight + 8 + (candidate.additionalEdits.length ? 8 : 0), domNode: root, suppressMouseDown: true }) })
+      }
     }
   }
 }

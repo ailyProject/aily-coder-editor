@@ -3,6 +3,7 @@ import {
   IEditorService,
   IFileService,
   IStorageService,
+  ITextFileService,
   IWorkbenchLayoutService,
   IWorkbenchThemeService,
   getService,
@@ -49,6 +50,10 @@ import { setCoderWorkbenchQueryRoot } from './coderWorkbenchDom.js'
 import { installAilyViewInlineRenameHost } from './features/ailyViewInlineRename.js'
 import { showNodeModulesInExplorer } from './features/coderDirectoryVisibility.js'
 import { installNativeTextSearchProvider } from './features/nativeTextSearchProvider.js'
+import {
+  onDidReceiveParentBackedNativeFsWatchChange
+} from './parentBackedNativeFs.js'
+import { NativeFsExternalModelSync } from './nativeFsExternalModelSync.js'
 
 /** 与宿主 `?theme=` 共用：dark→Dark+、light→Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -133,6 +138,45 @@ async function migrateExplorerNodeModulesVisibility(): Promise<void> {
 }
 
 await migrateExplorerNodeModulesVisibility()
+
+/**
+ * FileService normally reloads clean models from provider events. Keep an explicit
+ * reconciliation path for embedded native FS because Windows can omit filenames
+ * and Chromium can defer Monaco's paint until the iframe receives pointer input.
+ */
+async function installNativeFsExternalModelSync(): Promise<void> {
+  if (!useEmbedHostLocalFolder) return
+
+  const textFileService = await getService(ITextFileService)
+  const editorService = await getService(IEditorService)
+  const sync = new NativeFsExternalModelSync({
+    listOpenModels: () => textFileService.files.models.map(model => ({
+      path: model.resource.fsPath,
+      dirty: model.isDirty()
+    })),
+    reloadCleanModel: async path => {
+      const resource = URI.file(path)
+      const model = textFileService.files.get(resource)
+      if (model == null || model.isDirty()) return
+      await textFileService.files.resolve(resource, {
+        reload: { async: false },
+        forceReadFromFile: true
+      })
+    },
+    renderVisibleEditors: () => {
+      for (const control of editorService.visibleTextEditorControls) {
+        const render = (control as { render?: (forceRedraw?: boolean) => void }).render
+        if (typeof render === 'function') render.call(control, true)
+      }
+    }
+  })
+
+  onDidReceiveParentBackedNativeFsWatchChange(({ watchRoot, event }) => {
+    sync.handle(watchRoot, event)
+  })
+}
+
+await installNativeFsExternalModelSync()
 
 if (useEmbedHostLocalFolder) {
   try {
