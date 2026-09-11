@@ -1,4 +1,3 @@
-import { sanitizeInlineCompletionOutput } from './aiInlineCompletionTransport'
 
 export type CompletionTrigger = 'automatic' | 'invoke'
 
@@ -87,7 +86,7 @@ function trimSuffixOverlap(text: string, suffix: string): string {
     if (!text.endsWith(overlap) || !overlap.trim()) continue
     const splitsIdentifier = /[\w$]/.test(overlap.at(-1) ?? '') && /^[\w$]/.test(suffix.slice(length))
     // A closing bracket in a generated nested call belongs to that call, even when
-    // the outer call already has the same bracket after the cursor.
+    // the outer call already has the same bracket after the caret.
     const closesGeneratedCode = overlap.split('').some((character, index) =>
       ')]}'.includes(character) && !unmatched.has(text.length - length + index))
     if (!splitsIdentifier && !closesGeneratedCode &&
@@ -116,6 +115,11 @@ export function prepareInlineCompletion(input: {
     text = text.slice(line.length)
   } else if (line.trim().length >= 3 && text.startsWith(line.trimStart())) {
     text = text.slice(line.trimStart().length)
+  } else {
+    // Models sometimes echo a partially typed identifier (std::ve + vector).
+    // Strip it once, before resolving imports or constructing an accept edit.
+    const partial = /[A-Za-z_$][\w$]*$/.exec(line)?.[0]
+    if (partial && text.startsWith(partial) && /[\w$]/.test(text.charAt(partial.length))) text = text.slice(partial.length)
   }
   if (text.trim().length >= 3 && suffix.startsWith(text)) return ''
   text = trimSuffixOverlap(text, suffix)
@@ -134,4 +138,17 @@ export function prepareInlineCompletion(input: {
   return input.prefix.includes('\r\n') || input.suffix.includes('\r\n')
     ? text.replace(/\n/g, '\r\n')
     : text
+}
+
+function sanitizeInlineCompletionOutput(raw: string): string {
+  const openingFence = /^[ \t]*```[\w-]*\r?\n/.exec(raw)
+  if (openingFence == null) {
+    return raw
+  }
+  const text = raw.slice(openingFence[0].length)
+  const closingFence = /\r?\n```[ \t]*(?:\r?\n)?$/.exec(text)
+  if (closingFence?.index != null) {
+    return text.slice(0, closingFence.index)
+  }
+  return text
 }

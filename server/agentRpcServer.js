@@ -54,6 +54,7 @@ export function attachCoderAgentRpcServer(httpServer, options = {}) {
       socket.destroy()
       return
     }
+    if (options.additionalUpgradePaths?.includes(requestUrl.pathname)) return
     if (requestUrl.pathname !== '/ws' || !tokensMatch(requestUrl.searchParams.get('token'), token)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       socket.destroy()

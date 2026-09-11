@@ -16,8 +16,9 @@ import {
 } from '@codingame/monaco-vscode-api/vscode/vs/platform/files/common/files'
 import type { IFileChange } from '@codingame/monaco-vscode-api/vscode/vs/platform/files/common/files'
 import {
+  isCaseSensitiveNativeFsRoot,
   NativeFsWatchEchoSuppressor,
-  resolveNativeFsWatchTargetPath
+  resolveNativeFsWatchRefreshPaths
 } from './nativeFsWatchEvent.js'
 
 const CHANNEL = 'aily-coder-editor-native-fs'
@@ -399,9 +400,9 @@ function mapWatchEventToFileChanges(
   watchRoot: string,
   ev: NativeFsWatchEventPayload,
 ): IFileChange[] {
-  const targetPath = resolveNativeFsWatchTargetPath(watchRoot, ev)
-  if (!targetPath || nativeFsWatchEchoSuppressor.shouldSuppress(targetPath)) return []
-  return [{ type: FileChangeType.UPDATED, resource: URI.file(targetPath) }]
+  return resolveNativeFsWatchRefreshPaths(watchRoot, ev)
+    .filter(targetPath => !nativeFsWatchEchoSuppressor.shouldSuppress(targetPath))
+    .map(targetPath => ({ type: FileChangeType.UPDATED, resource: URI.file(targetPath) }))
 }
 
 function assertUnderRoot(rootNorm: string, fsPathNorm: string): void {
@@ -447,17 +448,21 @@ export class ParentBackedNativeFsProvider {
   private readonly fdMap = new Map<number, OpenFd>()
 
   readonly onDidChangeCapabilities = Event.None
-  readonly capabilities =
-    FileSystemProviderCapabilities.FileReadWrite |
-    FileSystemProviderCapabilities.FileOpenReadWriteClose |
-    FileSystemProviderCapabilities.FileAppend |
-    FileSystemProviderCapabilities.PathCaseSensitive |
-    FileSystemProviderCapabilities.FileReadStream
+  readonly capabilities: FileSystemProviderCapabilities
 
   private readonly _onDidChangeFile = new Emitter<readonly IFileChange[]>()
   readonly onDidChangeFile = this._onDidChangeFile.event
 
-  constructor(private readonly rootFsPathNormalized: string) {}
+  constructor(private readonly rootFsPathNormalized: string) {
+    this.capabilities =
+      FileSystemProviderCapabilities.FileReadWrite |
+      FileSystemProviderCapabilities.FileOpenReadWriteClose |
+      FileSystemProviderCapabilities.FileAppend |
+      FileSystemProviderCapabilities.FileReadStream |
+      (isCaseSensitiveNativeFsRoot(rootFsPathNormalized)
+        ? FileSystemProviderCapabilities.PathCaseSensitive
+        : 0)
+  }
 
   private uriPath(resource: URI): string {
     return normalizeFsPathSep(resource.fsPath)

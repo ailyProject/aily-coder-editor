@@ -1,5 +1,6 @@
 /** Coder-owned Aily/Arduino library browser shown in the right secondary side bar. */
 import type * as vscode from 'vscode'
+import { LibrarySearchSession, libraryContextKey } from './librarySearchSession'
 import { IWorkbenchLayoutService, StandaloneServices } from '@codingame/monaco-vscode-api'
 import { Codicon } from '@codingame/monaco-vscode-api/vscode/vs/base/common/codicons'
 import { MenuId, MenuRegistry } from '@codingame/monaco-vscode-api/vscode/vs/platform/actions/common/actions'
@@ -231,6 +232,8 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
   #libraryType = ''
   #searchGeneration = 0
   #language: string
+  #contextKey = libraryContextKey(getHostEmbedContext())
+  readonly #searchSession = new LibrarySearchSession<ApiResponse>()
   readonly #hostContextUnsubscribe: () => void
 
   constructor(private readonly vscodeApi: typeof vscode) {
@@ -239,12 +242,16 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       const nextLanguage = this.#currentLanguage()
       const languageChanged = nextLanguage !== this.#language
       this.#language = nextLanguage
+      const contextKey = libraryContextKey(getHostEmbedContext())
+      const contextChanged = contextKey !== this.#contextKey
+      this.#contextKey = contextKey
+      if (contextChanged) this.#searchSession.invalidate()
       if (languageChanged && this.#view != null) {
         this.#view.title = this.#copy().panelTitle
         this.#renderWebviewHtml()
         return
       }
-      if (this.#activeSource === 'aily') {
+      if (contextChanged && this.#view?.visible) {
         void this.#searchLibraries(true)
       }
     })
@@ -274,6 +281,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     this.#view = view
     view.title = this.#copy().panelTitle
     view.webview.options = { enableScripts: true }
+    view.onDidChangeVisibility(() => { if (view.visible) void this.refresh() })
     this.#renderWebviewHtml()
     view.webview.onDidReceiveMessage((message: WebviewMessage) => {
       if (message.type === 'ready' || message.type === 'refresh') void this.refresh(message.type === 'refresh')
@@ -330,7 +338,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
 
   async #searchLibraries(reset: boolean, forceRefresh = false): Promise<void> {
     const root = workspaceRoot(this.vscodeApi)
-    if (!root || (this.#loadingMore && !reset)) return
+    if (!root || !this.#view?.visible || (this.#loadingMore && !reset)) return
     const generation = ++this.#searchGeneration
     const source = this.#activeSource
     const offset = reset ? 0 : this.#libraries.length
@@ -348,7 +356,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     this.#notice = null
     this.#sendState()
     try {
-      const response = await callApi('search', {
+      const body = {
         source,
         workspaceRoot: root,
         query: this.#query,
@@ -357,7 +365,9 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
         offset,
         limit: 50,
         forceRefresh
-      })
+      }
+      const key = JSON.stringify({ ...body, forceRefresh: false, context: this.#contextKey })
+      const response = await this.#searchSession.load(key, () => callApi('search', body), forceRefresh)
       if (generation !== this.#searchGeneration || source !== this.#activeSource) return
       const page = response.libraries ?? []
       this.#libraries = reset ? page : [...this.#libraries, ...page]
@@ -429,6 +439,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
         ? { ...item, ...response.library, source, installed: true, installedVersion: response.library?.installedVersion ?? version }
         : item
       this.#libraries = this.#libraries.map(update)
+      this.#searchSession.invalidate()
       this.#reportOperationFeedback('success', library, 'install', version)
     } catch (error) {
       this.#reportOperationFeedback(
@@ -481,6 +492,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     this.#reportOperationFeedback('loading', library, 'uninstall', installedVersion)
     try {
       await callApi('remove', { workspaceRoot: root, libraryId, source, version: installedVersion })
+      this.#searchSession.invalidate()
       this.#libraries = this.#libraries.map(item => item.id === libraryId
         ? { ...item, installed: false, installedVersion: '', managed: false, folderName: '' }
         : item)

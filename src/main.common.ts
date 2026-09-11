@@ -6,7 +6,6 @@ import { useEmbedHostLocalFolder, useHtmlFileSystemProvider } from './setup.comm
 // import './features/debugger'
 import './features/intellisense' // !!
 import './features/monacoStdioLspClient'
-import './features/aiInlineCompletion'
 import './features/completion/completionFeature'
 import './features/aiEditDiff'
 import './aiEditDiffBridge'
@@ -17,7 +16,6 @@ import './features/ailyBoardListEditor.workbench'
 // import './features/terminal'
 // import './features/scm'
 // import './features/testing'
-// import './features/ai'
 
 // import '@codingame/monaco-vscode-clojure-default-extension'
 // import '@codingame/monaco-vscode-coffeescript-default-extension'

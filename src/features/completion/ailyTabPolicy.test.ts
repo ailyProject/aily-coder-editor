@@ -5,7 +5,14 @@ import {
   InlineCompletionTriggerTracker,
   prepareInlineCompletion,
   shouldRequestInlineCompletion
-} from './aiInlineCompletionPolicy'
+} from './ailyTabPolicy'
+
+test('partial identifier echo is removed once while real continuation remains intact', () => {
+  const prepare = (raw: string, prefix: string) => prepareInlineCompletion({ raw, prefix, suffix: '\n}', trigger: 'invoke' })
+  assert.equal(prepare('vector<int> distances;', '    std::ve'), 'ctor<int> distances;')
+  assert.equal(prepare('ctor<int> distances;', '    std::ve'), 'ctor<int> distances;')
+  assert.equal(prepare('foofoo()', 'foo'), 'foo()')
+})
 
 test('infers code at a function body, expression or after an intent comment', () => {
   for (const prefix of ['void setup() {\n  ', '// Read the sensor and print its value\n', 'const value = ', 'Serial.', 'for (int i = 0;', 'for (let i = 0;']) {

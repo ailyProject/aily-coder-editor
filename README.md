@@ -105,7 +105,7 @@ aily-coder-editor/
 │   ├── features/
 │   │   ├── ailyViewExplorer.ts      # Aily View 逻辑工程树
 │   │   ├── monacoStdioLspClient.ts  # LSP 客户端
-│   │   └── aiInlineCompletion.ts    # 可选行间补全（非主 AI 链）
+│   │   └── completion/             # Aily Tab 统一补全（独立于 Chat/Agent）
 │   └── bridge/               # compile_commands 等桥接（进行中）
 ├── server/
 │   └── lspWsProxy.ts         # LSP WebSocket 代理
@@ -199,11 +199,11 @@ npm start
 `subapp-index.json` 并设置 `dev: true`。不再依赖主软件扫描源码目录或 Coder
 专用 Vite 启动入口。结束联调后执行 `npm run dev:unlink`。
 
-### 可选：行间 AI 补全
+### Aily Tab 自动补全
 
-Electron iframe 默认使用 `cloud`，通过宿主认证桥接请求补全；独立页面配置本地 URL 后使用 `lmstudio-fim`，否则关闭。可复制 `.env.example` 配置 `VITE_AI_INLINE_*`。云端模型与凭证由宿主/服务端管理。
+Coder 只注册 Aily Tab：自动续写、已有代码修改、关联文件预测、导入与诊断修复共用一个控制器。Tab 接受，跨文件先 Tab 跳转审阅、再 Tab 接受；Esc 拒绝，支持逐词/逐行接受和原生撤销。左侧顶部 Aily Tab 按钮提供触发、暂停和文件类型设置。
 
-自动补全结合光标前后代码与已打开的相关源码片段预测下一段代码；过滤重复语句和低价值输出，拒绝后短时抑制，并保持与 IntelliSense 候选的兼容性。具体策略、默认预算及验证场景见 [行内补全当前实现](docs/aily-code-inlineAi-current.md)。
+请求经宿主认证桥接进入 `/api/v4/code/suggestions`。旧 Copilot provider、三候选面板、模式选择、本地 FIM 与 v3 回退均已移除。模型和凭证只在服务端配置，前端不再读取 `VITE_AI_INLINE_*` 或 `aiInlineProvider`。用法、设置、三端边界见 [Aily Tab 说明](docs/aily-tab.md)。
 
 ---
 

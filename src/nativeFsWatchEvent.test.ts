@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  isCaseSensitiveNativeFsRoot,
   NativeFsWatchEchoSuppressor,
+  resolveNativeFsWatchRefreshPaths,
   resolveNativeFsWatchTargetPath
 } from './nativeFsWatchEvent.js'
 
@@ -33,6 +35,21 @@ test('preserves a possible same-named child on rename events', () => {
     }),
     '/workspace/demo/demo'
   )
+})
+
+test('refreshes both an atomically replaced file and its parent directory', () => {
+  assert.deepEqual(
+    resolveNativeFsWatchRefreshPaths('C:\\work\\device-a', {
+      eventType: 'rename',
+      filename: 'sketch\\src\\main.cpp'
+    }),
+    ['C:/work/device-a/sketch/src/main.cpp', 'C:/work/device-a/sketch/src']
+  )
+})
+
+test('does not advertise case-sensitive paths for Windows drive roots', () => {
+  assert.equal(isCaseSensitiveNativeFsRoot('C:\\work\\device-a'), false)
+  assert.equal(isCaseSensitiveNativeFsRoot('/workspace/device-a'), true)
 })
 
 test('maps missing filenames to the watch root and ignores watcher errors', () => {

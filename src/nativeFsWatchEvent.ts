@@ -77,3 +77,26 @@ export function resolveNativeFsWatchTargetPath(
   }
   return `${root}/${filename}`
 }
+
+/**
+ * VS Code needs the file event to reload an open model and the parent event to
+ * refresh Explorer. Atomic replacement is reported as rename on Windows.
+ */
+export function resolveNativeFsWatchRefreshPaths(
+  watchRoot: string,
+  event: NativeFsWatchPathEvent,
+): string[] {
+  const target = resolveNativeFsWatchTargetPath(watchRoot, event)
+  if (!target) return []
+  if (event.eventType?.toLowerCase() !== 'rename') return [target]
+
+  const root = normalizePath(watchRoot).replace(/\/$/, '')
+  if (target === root) return [target]
+  const parent = target.slice(0, target.lastIndexOf('/')) || root
+  return parent === target ? [target] : [target, parent]
+}
+
+/** Windows drive roots are case-insensitive and must not advertise otherwise. */
+export function isCaseSensitiveNativeFsRoot(root: string): boolean {
+  return !/^[a-zA-Z]:\//.test(normalizePath(root))
+}

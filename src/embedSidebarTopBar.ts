@@ -2,6 +2,7 @@ import * as vscode from 'vscode'
 import { resolveStyleHost } from './embedWorkbenchStyles'
 import { getHostEmbedContext, onHostEmbedContextChanged } from './hostEmbedContext.js'
 import { initialHostLanguage, workbenchUiStrings } from './features/ailyWorkbenchI18n.js'
+import { getCompletionStatus, onCompletionStatusChanged } from './features/completion/completionStatus'
 
 /** 避免热重载重复挂载 */
 const SIDEBAR_NAV_ATTR = 'data-aily-embed-sidebar-nav'
@@ -51,16 +52,19 @@ function updateSidebarNavLabels(nav: HTMLElement): void {
   }
   const completion = nav.querySelector<HTMLButtonElement>('[data-action-id="completion"]')
   if (completion != null) {
-    const language = getHostEmbedContext()?.meta?.lang ?? initialHostLanguage()
-    const title = /^zh(?:_|-|$)/iu.test(language) ? 'Aily 高级补全' : 'Aily advanced completion'
-    completion.title = title
+    const status = getCompletionStatus()
+    const title = status.text.replace(/\$\([^)]*\)\s*/g, '')
+    completion.title = `${title}\n${status.detail}`
     completion.setAttribute('aria-label', title)
+    const icon = completion.querySelector('span')
+    if (icon) icon.className = `codicon codicon-${status.text.match(/\$\(([^)~]+)/)?.[1] ?? 'sparkle'}`
   }
 }
 
 onHostEmbedContextChanged(() => {
   if (mountedSidebarNav != null) updateSidebarNavLabels(mountedSidebarNav)
 })
+onCompletionStatusChanged(() => { if (mountedSidebarNav) updateSidebarNavLabels(mountedSidebarNav) })
 
 /**
  * 在 shadowRoot / workbench 内查找侧栏 Part。

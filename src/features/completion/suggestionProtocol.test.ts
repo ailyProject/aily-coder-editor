@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync, existsSync } from 'node:fs'
 import fixture from './fixtures/v4-contract.json'
+import ailyTabFixture from './fixtures/aily-tab-contract.json'
 import { parseSuggestionRequest, validateSuggestionResult, SuggestionSseDecoder, type SuggestionResult, type Suggestion } from './suggestionProtocol'
 import { CompletionCoordinator, RecentEditStore, completionReconnectDelay, isCompletionSource } from './completionState'
 const request = () => parseSuggestionRequest(structuredClone(fixture.request))
@@ -17,6 +18,19 @@ const sse = (type: string, value: object) => `event: ${type}\r\ndata: ${JSON.str
 test('shared host contract is byte-identical when sibling workspace is present', () => {
   const host = '/Users/downey/Projects/OutSource/aily--blockly/src/app/editors/code-editor-pro/services/code-suggestion-protocol.ts'
   if (existsSync(host)) assert.equal(readFileSync(host, 'utf8'), readFileSync(new URL('./suggestionProtocol.ts', import.meta.url), 'utf8'))
+  const server = '/Users/downey/Projects/ZCK/aily-services/contracts/coder-aily-tab.json'
+  if (existsSync(server)) assert.equal(readFileSync(server, 'utf8'), readFileSync(new URL('./fixtures/aily-tab-contract.json', import.meta.url), 'utf8'))
+})
+test('Aily Tab cross-file edits require opt-in, an editable snapshot and the exact target window', () => {
+  const input = parseSuggestionRequest(structuredClone(ailyTabFixture.request))
+  const target = input.documents[1]!; const window = target.windows[0]!
+  const result: SuggestionResult = { ...response(input), suggestions: [{ candidateId: `${fixture.completionId}_0`, fileId: target.fileId, snapshotId: target.snapshotId, kind: 'edit',
+    primary: { range: window.range, expectedText: window.text, newText: ailyTabFixture.model.suggestions[0]!.newText }, additionalEdits: [] }] }
+  assert.equal(validateSuggestionResult(result, input).suggestions[0]!.fileId, 'sensor-source')
+  for (const mutate of [(r: typeof input) => { r.options.crossFile = false }, (r: typeof input) => { r.documents[1]!.permission = 'context-only' }, (r: typeof input) => { r.documents[1]!.snapshotId = 'new' }]) {
+    const invalid = structuredClone(input); mutate(invalid); assert.throws(() => validateSuggestionResult(result, invalid))
+  }
+  input.options.crossFile = false; assert.throws(() => parseSuggestionRequest(input))
 })
 test('preserves global coordinates, CRLF and UTF-16 in a server-owned result', () => {
   const input = request(); assert.equal(input.documents[0]!.windows[0]!.range.start.line, 100)
@@ -36,7 +50,7 @@ for (const [name, mutate] of Object.entries({
   'unknown active snapshot': (v: typeof fixture.request & { endpoint?: string }) => { v.active.snapshotId = 'old' },
   'duplicate window': (v: typeof fixture.request & { endpoint?: string }) => { v.documents[0]!.windows.push(v.documents[0]!.windows[0]!) },
   'UTF-16 range mismatch': (v: typeof fixture.request & { endpoint?: string }) => { v.documents[0]!.windows[0]!.range.end.character = 1 },
-  'cross-file opt in': (v: typeof fixture.request & { endpoint?: string }) => { v.options.crossFile = true },
+  'dependency edit': (v: typeof fixture.request & { endpoint?: string }) => { v.documents[0]!.relativePath = 'sdk/private.h' },
   'too many candidates': (v: typeof fixture.request & { endpoint?: string }) => { v.options.maxCandidates = 4 },
   'mismatched ID': (v: typeof fixture.request & { endpoint?: string }) => { v.opportunityId = crypto.randomUUID() },
   'active is read-only': (v: typeof fixture.request & { endpoint?: string }) => { v.documents[0]!.permission = 'context-only' },
@@ -63,6 +77,11 @@ test('additional imports require an exact locally authorized text and non-overla
   value.suggestions[0]!.additionalEdits[0]!.newText = '#include <Imaginary.h>\n'
   assert.throws(() => validateSuggestionResult(value, input))
 })
+test('imports hidden inside primary replacement still require a verified source', () => {
+  const input = request(); const value = response(input)
+  value.suggestions[0]!.primary.newText = '#include <Imaginary.h>\r\n' + value.suggestions[0]!.primary.newText
+  assert.throws(() => validateSuggestionResult(value, input), /校验/)
+})
 test('v4 SSE needs meta, one valid result and matching done, even across every split point', () => {
   const input = request(); const result = response(input); const identity = { protocolVersion: 2, requestId: input.requestId, opportunityId: input.opportunityId, completionId: result.completionId }
   const stream = sse('meta', identity) + sse('result', result) + sse('done', identity)
@@ -88,6 +107,17 @@ test('coordinator cancels background work and admits only the latest queued inpu
   const third = coordinator.run(3, async () => { calls.push('manual'); return 3 })
   release(); assert.equal(await first, 'old'); assert.equal(await second, 'AbortError'); assert.equal(await third, 3); assert.deepEqual(calls, ['nes', 'manual'])
 })
+test('coordinator paces requests after completion and drops cancelled queued work', async () => {
+  const coordinator = new CompletionCoordinator(40); const starts: number[] = []
+  await coordinator.run(2, async () => { starts.push(Date.now()); return 1 })
+  const cancelled = new AbortController()
+  const queued = coordinator.run(2, async () => { throw new Error('cancelled work reached inference') }, cancelled.signal).catch(error => error.name)
+  cancelled.abort()
+  await coordinator.run(2, async () => { starts.push(Date.now()); return 2 })
+  assert.equal(await queued, 'AbortError')
+  assert.ok(starts[1]! - starts[0]! >= 40)
+  coordinator.cancel()
+})
 test('history stays bounded and never replays undo as a new intent', () => {
   const store = new RecentEditStore(); for (let i = 0; i < 40; i++) store.add('file', '', String(i), 'typing', i)
   store.add('file', 'x', '', 'undo', 50); assert.equal(store.read(100).length, 19); assert.equal(store.read(400_000).length, 0)
@@ -108,5 +138,5 @@ test('transient capability reconnect uses bounded backoff and honors retry-after
   assert.equal(completionReconnectDelay(3), 16_000)
   assert.equal(completionReconnectDelay(20), 30_000)
   assert.equal(completionReconnectDelay(0, 45_000), 45_000)
-  assert.equal(completionReconnectDelay(0, 120_000), 60_000)
+  assert.equal(completionReconnectDelay(0, 120_000), 120_000)
 })

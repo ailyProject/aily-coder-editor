@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
-import { existsSync, watch as watchFs } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import {
   copyFile,
@@ -364,17 +364,21 @@ async function startReloadServer() {
 async function startWatchMode() {
   const reload = await startReloadServer()
   await writeJsonAtomic(markerPath, { reloadUrl: reload.url })
-  let timer
-  const watcher = watchFs(path.join(packageRoot, 'ui'), { recursive: true }, () => {
-    clearTimeout(timer)
-    timer = setTimeout(() => reload.broadcast(), 250)
-  })
   const builder = spawn(npmCommand, ['run', 'build:watch'], {
     cwd: packageRoot,
     env: { ...process.env },
     shell: process.platform === 'win32',
-    stdio: 'inherit',
+    stdio: ['inherit', 'pipe', 'inherit'],
     windowsHide: true,
+  })
+  // File notifications also fire while Vite is emptying/writing ui/. Only a
+  // completed build is a reload opportunity; otherwise an empty index can stick.
+  let output = ''
+  builder.stdout.on('data', chunk => {
+    process.stdout.write(chunk)
+    output += chunk.toString()
+    const lines = output.split(/\r?\n/); output = lines.pop() || ''
+    for (const line of lines) if (/built in \d[\d.]*\s*(?:ms|s)/.test(line)) reload.broadcast()
   })
 
   console.log(`Coder dev reload bus: ${reload.url}`)
@@ -384,8 +388,6 @@ async function startWatchMode() {
   const stop = async (signal) => {
     if (stopping) return
     stopping = true
-    clearTimeout(timer)
-    watcher.close()
     await rm(markerPath, { force: true })
     builder.kill(signal === 'SIGTERM' ? 'SIGTERM' : 'SIGINT')
     await reload.close()

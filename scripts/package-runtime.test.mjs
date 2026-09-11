@@ -10,6 +10,12 @@ test('npm package contains a self-contained Node runtime without node_modules', 
   const packageJson = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'))
   assert.deepEqual(packageJson.dependencies ?? {}, {})
   assert.equal(packageJson.bundledDependencies, undefined)
+  assert.deepEqual(packageJson.ailyPortable, {
+    version: 1,
+    format: 'js',
+    platforms: ['darwin', 'win32', 'linux'],
+    architectures: ['arm64', 'x64'],
+  })
 
   const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   const result = spawnSync(

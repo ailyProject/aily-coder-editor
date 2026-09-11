@@ -11,23 +11,14 @@ import {
   WebSocketMessageWriter,
   toSocket
 } from 'vscode-ws-jsonrpc'
+import { setLanguageServerState, hasLanguageServerCompilationDatabase } from './languageServerState'
+import { getHostEmbedContext } from '../hostEmbedContext'
 
-/**
- * 直连 stdio LSP 的 WebSocket 桥：`MonacoLanguageClient` 构造时会访问全局 `vscode` 代理，
- * 须先 `waitServicesReady()`。
- *
- * Query：
- *   `lspWs` 完整 WS URL（兼容 `clangdWs`）；否则 `ws(s)://当前 host:lspWsPort`（`lspWsPort` 默认 3030，兼容 `clangdWsPort`）。
- *   `lspLanguages` 逗号分隔的 Monaco language id，默认 C/C++/CUDA/ObjC。
- *   `lspClientId` / `lspClientName` / `lspDiagnostics`（诊断集合名）可覆写客户端元数据。
- */
+/** One language client per workbench, backed by its managed Coder runtime. */
 const params = new URLSearchParams(window.location.search)
-const lspWsParam = params.get('lspWs') ?? params.get('clangdWs')
-const lspWsPortParam =
-  params.get('lspWsPort') ?? params.get('clangdWsPort') ?? '3030'
-const lspWs =
-  lspWsParam ??
-  `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${lspWsPortParam}`
+const explicitUrl = params.get('lspWs') ?? params.get('clangdWs')
+const explicitPort = params.get('lspWsPort') ?? params.get('clangdWsPort')
+const standaloneUrl = explicitUrl ?? (explicitPort ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:${explicitPort}` : undefined)
 
 const defaultLanguages = ['cpp', 'c', 'cuda-cpp', 'objective-cpp'] as const
 
@@ -59,10 +50,14 @@ function buildClientOptions() {
   return {
     documentSelector: parseDocumentSelector(),
     diagnosticCollectionName,
-    workspaceFolder: {
-      uri: vscode.Uri.file('/workspace'),
-      name: 'workspace',
-      index: 0
+    workspaceFolder: vscode.workspace.workspaceFolders?.[0],
+    middleware: {
+      handleDiagnostics(uri: vscode.Uri, diagnostics: vscode.Diagnostic[], next: (uri: vscode.Uri, diagnostics: vscode.Diagnostic[]) => void): void {
+        // An Arduino board without its compiler flags produces misleading missing
+        // SDK/type errors. Keep definitions/completions available without publishing
+        // those fallback-parser errors as project diagnostics.
+        next(uri, getHostEmbedContext()?.boardProfile && hasLanguageServerCompilationDatabase() === false ? [] : diagnostics)
+      },
     },
     traceOutputChannel: traceChannel,
     trace: Trace.Verbose,
@@ -77,47 +72,63 @@ function buildClientOptions() {
   }
 }
 
-if (lspWs != null && lspWs.length > 0) {
-  void (async () => {
+let endpoint: string | undefined
+let generation = 0
+let attempt = 0
+let retry: ReturnType<typeof setTimeout> | undefined
+let socket: WebSocket | undefined
+let languageClient: MonacoLanguageClient | undefined
+let disposed = false
+async function connect(url: string): Promise<void> {
+  const current = ++generation
+  clearTimeout(retry)
+  const previousSocket = socket; const previousClient = languageClient
+  socket = undefined; languageClient = undefined
+  await previousClient?.dispose(); previousSocket?.close()
+  if (disposed || current !== generation) return
+  setLanguageServerState('connecting')
+  try {
     await waitServicesReady()
-
-    const ws = new WebSocket(lspWs)
-
+    if (disposed || current !== generation) return
+    const ws = new WebSocket(url); socket = ws
     await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => {
-        resolve()
-      }
-      ws.onerror = () => {
-        reject(new Error(`WebSocket failed to connect: ${lspWs}`))
-      }
+      const timer = setTimeout(() => { ws.close(); reject(new Error('language server timeout')) }, 8000)
+      ws.onopen = () => { clearTimeout(timer); resolve() }
+      ws.onerror = ws.onclose = () => { clearTimeout(timer); reject(new Error('language server unavailable')) }
     })
-
-    const iFace = toSocket(ws)
-    const messageTransports = {
-      reader: new WebSocketMessageReader(iFace),
-      writer: new WebSocketMessageWriter(iFace)
-    }
-
-    const clientId = params.get('lspClientId') ?? 'stdio-lsp'
-    const clientName = params.get('lspClientName') ?? 'LSP (stdio)'
-
-    const client = new MonacoLanguageClient({
-      id: clientId,
-      name: clientName,
-      clientOptions: buildClientOptions(),
-      messageTransports
+    if (disposed || current !== generation) { ws.close(); return }
+    const transports = { reader: new WebSocketMessageReader(toSocket(ws)), writer: new WebSocketMessageWriter(toSocket(ws)) }
+    const client = new MonacoLanguageClient({ id: params.get('lspClientId') ?? 'stdio-lsp', name: params.get('lspClientName') ?? 'C/C++ language service', clientOptions: buildClientOptions(), messageTransports: transports })
+    languageClient = client
+    transports.reader.onClose(() => {
+      if (current !== generation || disposed) return
+      setLanguageServerState('unavailable'); scheduleRetry(url)
     })
-
-    messageTransports.reader.onClose(async () => {
-      await client.dispose()
-    })
-
-    try {
-      await client.start()
-    } catch (e: unknown) {
-      console.error('[lsp] MonacoLanguageClient.start 失败:', e)
-    }
-  })().catch((e: unknown) => {
-    console.error('[lsp] bootstrap 异常:', e)
-  })
+    await client.start()
+    if (current !== generation || disposed) return
+    attempt = 0; setLanguageServerState('ready', client.initializeResult?.capabilities.experimental?.ailyCompilationDatabase)
+  } catch {
+    if (current !== generation || disposed) return
+    setLanguageServerState('unavailable'); scheduleRetry(url)
+  }
 }
+function scheduleRetry(url: string): void {
+  clearTimeout(retry)
+  retry = setTimeout(() => { void connect(url) }, Math.min(30_000, 2000 * 2 ** Math.min(4, attempt++)))
+}
+function receiveEndpoint(event: MessageEvent): void {
+  if (event.source !== window.parent || event.data?.channel !== 'aily-coder-editor-language-server' || typeof event.data.url !== 'string' || standaloneUrl) return
+  try {
+    const url = new URL(event.data.url)
+    if (url.host !== location.host || url.pathname !== '/lsp' || !['ws:', 'wss:'].includes(url.protocol) || !url.searchParams.get('token')) return
+    if (endpoint === url.toString()) return
+    endpoint = url.toString(); attempt = 0; void connect(endpoint)
+  } catch { /* Invalid host endpoint is ignored without logging credentials. */ }
+}
+window.addEventListener('message', receiveEndpoint)
+if (standaloneUrl) { endpoint = standaloneUrl; void connect(standaloneUrl) }
+window.addEventListener('pagehide', () => {
+  disposed = true; generation++; clearTimeout(retry); window.removeEventListener('message', receiveEndpoint)
+  const previousSocket = socket
+  void Promise.resolve(languageClient?.dispose()).finally(() => previousSocket?.close())
+}, { once: true })

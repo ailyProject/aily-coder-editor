@@ -1,0 +1,126 @@
+{
+  "request": {
+    "protocolVersion": 2,
+    "requestId": "11111111-1111-4111-8111-111111111111",
+    "opportunityId": "11111111-1111-4111-8111-111111111111",
+    "workspaceSessionId": "workspace-session-test",
+    "client": {
+      "name": "aily-coder-editor",
+      "version": "0.1.6",
+      "sessionId": "session-test"
+    },
+    "mode": "next-edit",
+    "trigger": "manual",
+    "active": {
+      "fileId": "sensor-header",
+      "snapshotId": "sensor-header-snapshot",
+      "position": {
+        "line": 0,
+        "character": 34
+      }
+    },
+    "documents": [
+      {
+        "fileId": "sensor-header",
+        "snapshotId": "sensor-header-snapshot",
+        "relativePath": "Sensor.h",
+        "languageId": "cpp",
+        "version": 0,
+        "permission": "edit",
+        "windows": [
+          {
+            "windowId": "sensor-header-window",
+            "text": "struct Sensor { int read(int scale); };\r\n",
+            "purpose": "completion",
+            "range": {
+              "start": {
+                "line": 0,
+                "character": 0
+              },
+              "end": {
+                "line": 1,
+                "character": 0
+              }
+            }
+          }
+        ]
+      },
+      {
+        "fileId": "sensor-source",
+        "snapshotId": "sensor-source-snapshot",
+        "relativePath": "Sensor.cpp",
+        "languageId": "cpp",
+        "version": 0,
+        "permission": "edit",
+        "windows": [
+          {
+            "windowId": "sensor-source-window",
+            "text": "#include \"Sensor.h\"\r\nint Sensor::read() { return 1; }\r\n",
+            "purpose": "completion",
+            "range": {
+              "start": {
+                "line": 0,
+                "character": 0
+              },
+              "end": {
+                "line": 2,
+                "character": 0
+              }
+            }
+          }
+        ]
+      },
+      {
+        "fileId": "main",
+        "snapshotId": "main-snapshot",
+        "relativePath": "main.cpp",
+        "languageId": "cpp",
+        "version": 0,
+        "permission": "edit",
+        "windows": [
+          {
+            "windowId": "main-window",
+            "text": "#include \"Sensor.h\"\r\nint main() { Sensor sensor; return sensor.read(); }\r\n",
+            "purpose": "completion",
+            "range": {
+              "start": {
+                "line": 0,
+                "character": 0
+              },
+              "end": {
+                "line": 2,
+                "character": 0
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "recentEdits": [
+      {
+        "fileId": "sensor-header",
+        "before": "int read();",
+        "after": "int read(int scale);",
+        "ageMs": 100,
+        "origin": "typing"
+      }
+    ],
+    "diagnostics": [],
+    "options": {
+      "crossFile": true,
+      "autoImports": false,
+      "partialInsertAccept": false,
+      "maxCandidates": 1
+    }
+  },
+  "completionId": "sug_0123456789abcdef0123456789abcdef",
+  "model": {
+    "suggestions": [
+      {
+        "windowId": "sensor-source-window",
+        "newText": "#include \"Sensor.h\"\r\nint Sensor::read(int scale) { return scale; }\r\n",
+        "additionalEdits": []
+      }
+    ]
+  }
+}

@@ -6,6 +6,7 @@ import { setTimeout } from 'node:timers'
 import { fileURLToPath, URL } from 'node:url'
 import { attachCoderAgentRpcServer } from './agentRpcServer.js'
 import { handleComponentLibraryApiRequest } from './componentLibraryApi.js'
+import { attachCoderLanguageServer } from './languageServer.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const uiRoot = path.join(packageRoot, 'ui')
@@ -136,12 +137,13 @@ async function startServeMode(options) {
       response.end(error instanceof Error ? error.message : String(error))
     })
   })
-  const agentRpc = attachCoderAgentRpcServer(server)
+  const agentRpc = attachCoderAgentRpcServer(server, { additionalUpgradePaths: ['/lsp'] })
+  const languageServer = attachCoderLanguageServer(server, agentRpc.token)
 
   const shutdown = () => {
     if (shuttingDown) return
     shuttingDown = true
-    void agentRpc.close().finally(() => {
+    void Promise.allSettled([agentRpc.close(), languageServer.close()]).finally(() => {
       server.close(() => process.exit(0))
     })
     setTimeout(() => process.exit(0), 2000).unref()
