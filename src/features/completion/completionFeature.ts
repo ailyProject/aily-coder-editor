@@ -1,20 +1,26 @@
 import type * as vscode from 'vscode'
+import { getService, IStorageService } from '@codingame/monaco-vscode-api'
+import { StorageScope, StorageTarget } from '@codingame/monaco-vscode-api/vscode/vs/platform/storage/common/storage'
 import { registerExtension, ExtensionHostKind, type IExtensionManifest } from '@codingame/monaco-vscode-api/extensions'
 import metadata from '../../../package.json'
 import { ParentSuggestionTransport } from './suggestionTransport'
 import { SuggestionContextResolver, type EditorSnapshot } from './suggestionContext'
 import { RecentEditStore, contentHash, isCompletionSource, completionCoordinator, abortError, completionReconnectDelay } from './completionState'
 import { SuggestionError, type Suggestion, type SuggestionResult, type SuggestionCapabilities, type FeedbackEvent, type SuggestionRequest } from './suggestionProtocol'
-import { migrateAilyTabConfiguration } from './ailyTabConfiguration'
+import { migrateAilyTabConfiguration, updateAilyTabConfiguration } from './ailyTabConfiguration'
 import { EditPresentation, applySuggestion, editorSuggestionBlocked } from './editPresentation'
 import { InlineCompletionTriggerTracker, shouldRequestInlineCompletion, prepareInlineCompletion, extendSelectedCompletion, completionDebounceMs } from './ailyTabPolicy'
 import { getHostEmbedContext, onHostEmbedContextChanged } from '../../hostEmbedContext'
 import { setCompletionStatus } from './completionStatus'
 import { partialLength, planPartialImportAcceptance } from './partialImportAcceptance'
 import { affectsCompletionContext } from './completionFileChanges'
-import { editOrigin, hasRecentReplacement, isTypedLineBreak, minimalEdit, MAX_PREDICTION_CHAIN } from './ailyTabOpportunity'
+import { editOrigin, hasRecentReplacement, isTypedLineBreak, minimalEdit, MAX_PREDICTION_CHAIN, selectionOpportunity } from './ailyTabOpportunity'
 import { getLanguageServerState, hasLanguageServerCompilationDatabase, onLanguageServerStateChanged } from '../languageServerState'
-import { AILY_TAB_KEYBINDINGS, AILY_TAB_SNOOZE_PRESETS, ailyTabSnoozeDeadline, ailyTabSnoozeRemaining } from './ailyTabControls'
+import { AILY_TAB_KEYBINDINGS, AILY_TAB_SNOOZE_PRESETS, ailyTabSnoozeRemaining, normalizeCompletionExtensions, toggleCompletionExtension } from './ailyTabControls'
+import { AilyTabSnooze, AILY_TAB_SNOOZE_KEY } from './ailyTabSnooze'
+import { ClipboardHistoryStore } from './clipboardHistory'
+import { observeEditorClipboard } from './clipboardCapture'
+import { RepeatedWordHistory } from './repeatedWordHistory'
 
 const commands = [
   ['aily.completion.settings', 'Aily: 自动补全设置'], ['aily.completion.snooze', 'Aily: 选择自动补全暂停时长'], ['aily.completion.resume', 'Aily: 恢复自动补全'],
@@ -22,13 +28,15 @@ const commands = [
   ['aily.completion.acceptEdit', 'Aily: 定位或接受编辑建议'], ['aily.completion.rejectEdit', 'Aily: 拒绝编辑建议'],
   ['aily.completion.acceptLine', 'Aily: 接受下一行补全'], ['aily.completion.reconnect', 'Aily: 重新连接补全服务'],
   ['aily.completion.acceptEditWord', 'Aily: 接受编辑建议的下一个词'], ['aily.completion.acceptEditLine', 'Aily: 接受编辑建议的下一行'],
+  ['aily.completion.clearClipboard', 'Aily: 清空剪切复制历史'],
 ].map(([command, title]) => ({ command, title }))
 const manifest = {
   name: 'code-suggestions-v4', publisher: 'aily', version: metadata.version, engines: { vscode: '*' },
   enabledApiProposals: ['inlineCompletionsAdditions', 'textDocumentChangeReason'], contributes: {
     commands,
-    configuration: { title: 'Aily Tab', properties: {
+    configuration: { title: 'Aily Tab', properties: Object.fromEntries(Object.entries({
       'aily.completion.enabled': { type: 'boolean', default: true, description: '启用代码自动补全。' },
+      'aily.completion.clipboardContext': { type: 'boolean', default: true, description: '使用当前项目最近 5 分钟内的剪切、复制代码辅助补全；仅在本次编辑器会话中保留。' },
       'aily.completion.crossFile': { type: 'boolean', default: true, description: '预测关联源码中的下一处修改；Tab 先跳转，再按 Tab 接受。' },
       'aily.completion.excludedExtensions': { type: 'array', items: { type: 'string' }, default: [], description: '禁用补全的文件扩展名，例如 .md、.json。' },
       'aily.completion.suggestInComments': { type: 'boolean', default: true, description: '允许在注释内部提供建议。' },
@@ -39,7 +47,7 @@ const manifest = {
       'aily.completion.nextEdit.extendedRange': { type: 'boolean', default: true, description: '预测较远的引用、实现和调用位置。' },
       'aily.completion.nextEdit.showCollapsed': { type: 'boolean', default: false, description: '先显示编辑位置，按 Tab 后展开差异。' },
       'aily.completion.eagerness': { type: 'string', enum: ['less', 'standard', 'more'], default: 'standard', description: '自动建议频率。' },
-    } },
+    }).map(([key, value]) => [key, { scope: 'language-overridable', ...value }])) },
     keybindings: AILY_TAB_KEYBINDINGS,
   },
 } as unknown as IExtensionManifest
@@ -47,7 +55,7 @@ const manifest = {
 const { getApi } = registerExtension(manifest, ExtensionHostKind.LocalProcess, { system: true })
 void getApi().then(async api => {
   await migrateAilyTabConfiguration(api.workspace.getConfiguration('aily.completion'), api.ConfigurationTarget)
-  const controller = new CompletionFeature(api)
+  const controller = new CompletionFeature(api, await getService(IStorageService))
   // beforeunload can be vetoed by the Workbench. Dispose only after navigation
   // commits, otherwise a cancelled refresh silently disables future suggestions.
   if (typeof window !== 'undefined') window.addEventListener('pagehide', () => controller.dispose(), { once: true })
@@ -56,6 +64,7 @@ void getApi().then(async api => {
 type CandidateCache = { snapshot: EditorSnapshot; result: SuggestionResult; selectedKey: string; bases: Map<string, number> }
 type ItemMetadata = { result: SuggestionResult; candidate: Suggestion; length: number; base: number }
 type PendingEdit = { snapshot: EditorSnapshot; target?: EditorSnapshot; result: SuggestionResult; candidate: Suggestion; navigated: boolean; expiresAt: number; partialAllowed?: boolean; acceptedBase?: number }
+type ScheduledPrediction = 'edit' | 'accept' | 'diagnostic' | 'cursor' | 'selection'
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(abortError()); return }
@@ -68,6 +77,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export class CompletionFeature {
   private readonly transport = new ParentSuggestionTransport()
   private readonly history = new RecentEditStore()
+  private readonly clipboard = new ClipboardHistoryStore()
+  private readonly repeatedWords = new RepeatedWordHistory()
   private readonly resolver: SuggestionContextResolver
   private readonly presentation = new EditPresentation()
   private readonly subscriptions: vscode.Disposable[] = []
@@ -85,8 +96,10 @@ export class CompletionFeature {
   private request?: AbortController
   private requestSnapshot?: { controller: AbortController; snapshot: EditorSnapshot }
   private timer?: ReturnType<typeof setTimeout>
+  private timerTrigger?: ScheduledPrediction
+  private selectionSettleUntil = 0
   private expiry?: ReturnType<typeof setTimeout>
-  private snoozeUntil = 0
+  private readonly snoozeState: AilyTabSnooze
   private epoch = 0
   private connectionEpoch = 0
   private reconnectAttempt = 0
@@ -94,7 +107,6 @@ export class CompletionFeature {
   private applying = false
   private accepting = false
   private navigation?: { plan: PendingEdit; uri: string }
-  private snoozeTimer?: ReturnType<typeof setTimeout>
   private chain = new Set<string>()
   private chainSteps = 0
   private lastTyping = 0
@@ -102,14 +114,22 @@ export class CompletionFeature {
   private manualOperation = ''
   private manualEditor?: vscode.TextEditor
   private readonly inlineChanged: vscode.EventEmitter<void>
-  private recovery?: 'inline' | 'edit' | 'accept' | 'diagnostic'
+  private recovery?: 'inline' | ScheduledPrediction
   private recoveryAttempts = 0
   private recoveringInline = false
   private providerRegistration?: vscode.Disposable
   private predictionVersion?: { uri: string; version: number }
   private lineBreak?: { uri: string; version: number; line: number }
   private lineBreakTimer?: ReturnType<typeof setTimeout>
-  constructor(private readonly api: typeof vscode) {
+  constructor(private readonly api: typeof vscode, storage: IStorageService) {
+    this.snoozeState = new AilyTabSnooze({
+      read: () => storage.getNumber(AILY_TAB_SNOOZE_KEY, StorageScope.PROFILE),
+      write: until => {
+        if (until) storage.store(AILY_TAB_SNOOZE_KEY, until, StorageScope.PROFILE, StorageTarget.MACHINE)
+        else storage.remove(AILY_TAB_SNOOZE_KEY, StorageScope.PROFILE)
+      },
+      flush: () => storage.flush(),
+    }, () => this.updateStatus())
     this.inlineChanged = new api.EventEmitter<void>()
     this.subscriptions.push(this.inlineChanged)
     this.transport.onAvailabilityChanged = () => {
@@ -133,9 +153,14 @@ export class CompletionFeature {
       }
       else this.schedule(recovery)
     }
-    this.transport.onSessionChanged = () => { this.invalidate('stale'); this.reconnectAttempt = 0; void this.connect() }
+    this.transport.onSessionChanged = () => { this.clipboard.clear(); this.repeatedWords.clear(); this.invalidate('stale'); this.reconnectAttempt = 0; void this.connect() }
     this.resolver = new SuggestionContextResolver(api, crypto.randomUUID(), this.history, metadata.version,
-      path => this.transport.declaration(path), (uri, languageId) => this.allowedFile(uri, languageId), document => this.diagnosticsAvailable(document))
+      path => this.transport.declaration(path), (uri, languageId) => this.allowedFile(uri, languageId), document => this.diagnosticsAvailable(document),
+      workspace => this.capabilities?.features.clipboardContext === true && this.config('clipboardContext', true) ? this.clipboard.read(workspace) : [])
+    this.subscriptions.push(observeEditorClipboard((uri, text, operation) => {
+      const document = api.workspace.textDocuments.find(item => item.uri.toString() === uri)
+      if (document) this.captureClipboard(document, text, operation)
+    }))
     this.status = api.window.createStatusBarItem(api.StatusBarAlignment.Right, 50)
     this.status.command = 'aily.completion.settings'; this.status.show()
     this.subscriptions.push({ dispose: onLanguageServerStateChanged(() => {
@@ -144,7 +169,7 @@ export class CompletionFeature {
     let hostContext = this.dependencyContextKey()
     this.subscriptions.push({ dispose: onHostEmbedContextChanged(() => {
       const next = this.dependencyContextKey()
-      if (next !== hostContext) { hostContext = next; this.resolver.invalidate(); this.history.clear(); this.invalidate('stale') }
+      if (next !== hostContext) { hostContext = next; this.resolver.invalidate(); this.history.clear(); this.clipboard.clear(); this.repeatedWords.clear(); this.invalidate('stale') }
     }) })
     const watcher = api.workspace.createFileSystemWatcher('**/*')
     const treeChanged = (uri: vscode.Uri) => {
@@ -155,10 +180,10 @@ export class CompletionFeature {
     for (const document of api.workspace.textDocuments) this.texts.set(document.uri.toString(), document.getText())
     this.subscriptions.push(
       api.workspace.onDidOpenTextDocument(doc => this.texts.set(doc.uri.toString(), doc.getText())),
-      api.workspace.onDidCloseTextDocument(doc => { this.texts.delete(doc.uri.toString()); this.invalidate('stale'); this.triggers.close(doc.uri.toString()) }),
+      api.workspace.onDidCloseTextDocument(doc => { this.texts.delete(doc.uri.toString()); this.repeatedWords.forget(doc.uri.toString()); this.invalidate('stale'); this.triggers.close(doc.uri.toString()) }),
       api.workspace.onDidChangeTextDocument(event => this.changed(event)),
-      api.workspace.onDidChangeWorkspaceFolders(() => { this.history.clear(); this.resolver.invalidate(); this.invalidate('stale'); void this.connect() }),
-      api.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('aily.completion') || event.affectsConfiguration('editor.inlineSuggest')) { this.invalidate('stale'); this.updateStatus() } }),
+      api.workspace.onDidChangeWorkspaceFolders(() => { this.history.clear(); this.clipboard.clear(); this.repeatedWords.clear(); this.resolver.invalidate(); this.invalidate('stale'); void this.connect() }),
+      api.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('aily.completion') || event.affectsConfiguration('editor.inlineSuggest')) { if (event.affectsConfiguration('aily.completion.clipboardContext')) this.clipboard.clear(); this.invalidate('stale'); this.updateStatus() } }),
       api.window.onDidChangeActiveTextEditor(editor => {
         // Opening/closing an import-source quick pick can briefly
         // report no active editor. Keep the explicit manual request alive as
@@ -168,15 +193,20 @@ export class CompletionFeature {
         this.navigation = undefined
         this.recovery = undefined
         this.lineBreak = undefined; clearTimeout(this.lineBreakTimer)
-        this.clearEdit('stale'); this.request?.abort(); this.epoch++; clearTimeout(this.timer)
+        this.clearEdit('stale'); this.request?.abort(); this.epoch++; this.clearPredictionTimer()
         this.updateStatus()
       }),
       api.window.onDidChangeTextEditorSelection(event => {
         if ((this.navigation?.uri === event.textEditor.document.uri.toString()) || this.applying) return
+        const apiOrigin = event.kind === api.TextEditorSelectionChangeKind.Mouse ? 'mouse'
+          : event.kind === api.TextEditorSelectionChangeKind.Keyboard ? 'keyboard' : 'other'
+        const next = event.selections.length === 1 ? selectionOpportunity(apiOrigin, event.selections[0]!.isEmpty) : undefined
         // Applying the previous edit can emit an unclassified selection event
-        // after the synchronous transaction returns. Keep the accepted rename
-        // chain alive; real keyboard/mouse navigation still cancels it below.
-        if (this.timer && this.chainSteps > 0 && event.kind == null) return
+        // after the synchronous transaction returns. A typed replacement can do
+        // the same after changed() schedules its follow-up. Keep those chains;
+        // real keyboard/mouse navigation still supersedes them below.
+        if (this.timer && !next && Date.now() <= this.selectionSettleUntil &&
+          (this.timerTrigger === 'edit' || (this.timerTrigger === 'accept' && this.chainSteps > 0))) return
         if (this.pendingEdit) {
           const target = this.pendingEdit.candidate.primary.range.start
           const expectedNavigation = this.pendingEdit.navigated && event.textEditor.document.uri.toString() === (this.pendingEdit.target ?? this.pendingEdit.snapshot).document.uri.toString() && event.selections.length === 1 && event.selections[0]!.isEmpty &&
@@ -184,7 +214,16 @@ export class CompletionFeature {
           if (expectedNavigation) return
           this.clearEdit('stale')
         }
-        if (Date.now() - this.lastTyping > 150) { this.recovery = undefined; clearTimeout(this.timer); this.request?.abort(); this.epoch++ }
+        if (Date.now() - this.lastTyping > 150 || next) {
+          this.recovery = undefined; this.clearPredictionTimer(); this.request?.abort(); this.epoch++
+        }
+        if (!next || !this.enabled(event.textEditor.document) || editorSuggestionBlocked(event.textEditor.document.uri.toString(), true)) return
+        if (next === 'selection') {
+          const selected = event.textEditor.document.getText(event.selections[0])
+          if (!selected.trim() || selected.length > 16_384) return
+        }
+        this.cache = undefined; this.predictionVersion = undefined; this.chain.clear(); this.chainSteps = 0
+        this.schedule(next)
       }),
       api.languages.onDidChangeDiagnostics(event => {
         for (const uri of event.uris) this.resolver.diagnosticsObserved(uri)
@@ -196,11 +235,14 @@ export class CompletionFeature {
     const register = (name: string, callback: () => unknown) => this.subscriptions.push(api.commands.registerCommand(name, callback))
     register('aily.completion.settings', () => this.settings())
     register('aily.completion.snooze', () => this.snooze())
-    register('aily.completion.resume', () => { clearTimeout(this.snoozeTimer); this.snoozeUntil = 0; this.invalidate('stale'); this.updateStatus() })
+    register('aily.completion.clearClipboard', () => { this.clipboard.clear(); this.resolver.invalidate(); this.invalidate('stale') })
+    register('aily.completion.resume', async () => { await this.snoozeState.resume(); this.invalidate('stale'); this.updateStatus() })
     register('aily.completion.reconnect', () => { this.reconnectAttempt = 0; return this.connect() })
     register('aily.completion.trigger', () => this.runManual('Aily Tab 正在预测…', async () => {
       const editor = api.window.activeTextEditor
-      if (!editor || !this.enabled(editor.document)) return false
+      if (!editor) { await api.window.showInformationMessage('请先打开一个源码文件，再触发 Aily Tab。'); return false }
+      const disabled = this.disabledReason(editor.document)
+      if (disabled) { await api.window.showInformationMessage(disabled); return false }
       const text = editor.document.getText(); const offset = editor.document.offsetAt(editor.selection.active)
       if ((!this.isLineBreakDocument(editor.document) && hasRecentReplacement(this.history.read(), `f-${contentHash(editor.document.uri.toString())}`)) || !shouldRequestInlineCompletion(text.slice(0, offset), text.slice(offset), 'automatic')) await this.predict('manual')
       else await api.commands.executeCommand('editor.action.inlineSuggest.trigger')
@@ -226,7 +268,14 @@ export class CompletionFeature {
       handleEndOfLifetime: (item, reason) => { this.ended(item, reason) },
     }, { debounceDelayMs: 0, displayName: 'Aily Tab' })
   }
-  private config<T>(key: string, fallback: T): T { return this.api.workspace.getConfiguration('aily.completion').get(key, fallback) }
+  private config<T>(key: string, fallback: T): T { return this.api.workspace.getConfiguration('aily.completion', this.api.window.activeTextEditor?.document).get(key, fallback) }
+  private captureClipboard(document: vscode.TextDocument, text: string, operation: 'copy' | 'cut'): void {
+    const root = this.api.workspace.getWorkspaceFolder(document.uri)
+    if (!root || document.uri.scheme !== 'file' || !this.api.workspace.getConfiguration('aily.completion', document).get('clipboardContext', true)) return
+    if (this.clipboard.add(root.uri.toString(), this.api.workspace.asRelativePath(document.uri, false), document.languageId, text, operation)) {
+      this.resolver.invalidate(); this.invalidate('stale')
+    }
+  }
   private diagnosticsAvailable(document: vscode.TextDocument): boolean {
     return !['c', 'cpp', 'cuda-cpp', 'objective-cpp'].includes(document.languageId) ||
       (getLanguageServerState() === 'ready' && hasLanguageServerCompilationDatabase() !== false)
@@ -242,24 +291,39 @@ export class CompletionFeature {
     if (!this.relevantFileChange(uri)) return
     const snapshot = this.pendingEdit?.target ?? this.pendingEdit?.snapshot ?? this.requestSnapshot?.snapshot ?? this.cache?.snapshot
     const dependency = snapshot?.dependencies.find(dep => dep.uri.toString() === uri.toString())
-    if (dependency) {
+    const open = this.api.workspace.textDocuments.find(document => document.uri.toString() === uri.toString())
+    if (open || dependency) {
       try {
         const text = new TextDecoder().decode(await this.api.workspace.fs.readFile(uri))
-        // Saving an already captured buffer is not a new edit or a new context.
-        if (text === dependency.text) return
+        // Saving the current open buffer (including immediately after Tab) is
+        // not a new edit or context. A captured dependency remains the fallback
+        // for unopened sources and requests whose editor has just switched.
+        if (text === open?.getText() || text === dependency?.text) return
       } catch { /* Missing source also invalidates its snapshot. */ }
     }
     this.resolver.invalidate(); this.invalidate('stale')
   }
   private enabled(document: vscode.TextDocument): boolean {
-    return this.config('enabled', true) && Date.now() >= this.snoozeUntil && this.allowedFile(document.uri, document.languageId)
+    return !this.disabledReason(document)
   }
   private allowedFile(uri: vscode.Uri, languageId: string): boolean {
-    const languages = this.config<Record<string, boolean>>('languages', { '*': true })
+    return !this.fileDisabledReason(uri, languageId)
+  }
+  private fileDisabledReason(uri: vscode.Uri, languageId: string): string | undefined {
+    const scope = { uri, languageId }
+    const config = this.api.workspace.getConfiguration('aily.completion', scope)
+    const languages = config.get<Record<string, boolean>>('languages', { '*': true })
     const extension = uri.path.match(/\.[^/.]+$/)?.[0]?.toLowerCase() ?? ''
-    const excluded = this.config<string[]>('excludedExtensions', []).some(value => (value.startsWith('.') ? value : `.${value}`).toLowerCase() === extension)
-    return !excluded && this.api.workspace.getConfiguration('editor', { uri, languageId }).get('inlineSuggest.enabled', true) &&
-      (languages[languageId] ?? languages['*'] ?? true) && uri.scheme === 'file' && isCompletionSource(uri.path)
+    if (normalizeCompletionExtensions(config.get<string[]>('excludedExtensions', [])).includes(extension)) return `${extension} 文件的 Aily Tab 已关闭；可在补全设置中重新启用。`
+    if (!(languages[languageId] ?? languages['*'] ?? true)) return `${languageId} 语言的 Aily Tab 已关闭；可在补全设置中重新启用。`
+    if (!this.api.workspace.getConfiguration('editor', scope).get('inlineSuggest.enabled', true)) return '编辑器行内建议已关闭；请在编辑器设置中启用 Inline Suggest。'
+    if (uri.scheme !== 'file' || !isCompletionSource(uri.path)) return '当前文件不支持 Aily Tab；请打开可编辑的项目源码，依赖和生成目录不提供建议。'
+    return undefined
+  }
+  private disabledReason(document?: vscode.TextDocument): string | undefined {
+    if (!this.config('enabled', true)) return 'Aily Tab 已关闭；点击补全设置可重新启用。'
+    if (Date.now() < this.snoozeState.until) return `Aily Tab 已暂停，约 ${ailyTabSnoozeRemaining(this.snoozeState.until)}后自动恢复；点击补全设置可立即恢复。`
+    return document ? this.fileDisabledReason(document.uri, document.languageId) : undefined
   }
   private async connect(): Promise<void> {
     clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined
@@ -368,7 +432,9 @@ export class CompletionFeature {
     const kind = this.api.InlineCompletionEndOfLifeReasonKind
     if (reason.kind === kind.Ignored && reason.supersededBy && this.items.get(reason.supersededBy)?.candidate.candidateId === value.candidate.candidateId) return true
     this.feedback(value.result, value.candidate, reason.kind === kind.Accepted ? 'accepted' : reason.kind === kind.Rejected ? 'rejected' : 'ignored', reason.kind === kind.Accepted ? value.base + value.length : 0)
-    if (reason.kind === kind.Accepted) { this.cache = undefined; this.schedule('accept') }
+    if (reason.kind === kind.Accepted) {
+      this.cache = undefined; this.chain.add(this.signature(value.candidate)); this.chainSteps++; this.selectionSettleUntil = Date.now() + 300; this.schedule('accept')
+    }
     else if (reason.kind === kind.Rejected) this.cache = undefined
     return true
   }
@@ -386,6 +452,8 @@ export class CompletionFeature {
     this.resolver.documentChanged(event.document.uri)
     const detail = (event as vscode.TextDocumentChangeEvent & { detailedReason?: { source: string; metadata?: Record<string, unknown> } }).detailedReason
     const origin = event.reason === this.api.TextDocumentChangeReason.Undo ? 'undo' : event.reason === this.api.TextDocumentChangeReason.Redo ? 'redo' : this.applying ? 'completion' : editOrigin(detail)
+    if (isCompletionSource(event.document.uri.path)) this.repeatedWords.observe(uri, previous, current, event.contentChanges,
+      detail?.source === 'cursor' && detail.metadata?.['kind'] === 'cut' && !event.reason ? 'cut' : origin)
     clearTimeout(this.lineBreakTimer)
     this.lineBreak = isTypedLineBreak(event.contentChanges, origin)
       ? { uri, version: event.document.version, line: event.contentChanges[0]!.range.start.line + 1 } : undefined
@@ -401,13 +469,13 @@ export class CompletionFeature {
     if (this.lineBreak) {
       // v3 treated an indented new line as a fresh continuation. Recent rename
       // history and fresh incomplete-code diagnostics must not steal this lane.
-      clearTimeout(this.timer)
+      this.clearPredictionTimer()
       const opportunity = this.lineBreak
       this.lineBreakTimer = setTimeout(() => { void this.wakeLineBreak(opportunity) }, 350)
       return
     }
     if (!event.reason && !this.applying && !suppress && hasRecentReplacement(this.history.read(), `f-${contentHash(uri)}`) && this.api.window.activeTextEditor?.document === event.document) {
-      this.predictionVersion = { uri, version: event.document.version }; this.schedule('edit')
+      this.predictionVersion = { uri, version: event.document.version }; this.selectionSettleUntil = Date.now() + 300; this.schedule('edit')
     }
   }
   private isLineBreakDocument(document: vscode.TextDocument): boolean {
@@ -427,47 +495,77 @@ export class CompletionFeature {
     try { await this.api.commands.executeCommand('editor.action.inlineSuggest.trigger', { explicit: false }) }
     catch (error) { this.handleError(error) }
   }
-  private schedule(trigger: 'edit' | 'accept' | 'diagnostic'): void {
-    clearTimeout(this.timer)
+  private clearPredictionTimer(): void {
+    clearTimeout(this.timer); this.timer = undefined; this.timerTrigger = undefined
+  }
+  private repeatedWordAt(editor: vscode.TextEditor | undefined, trigger: SuggestionRequest['trigger']): ReturnType<RepeatedWordHistory['suggest']> {
+    if (!editor || editor.selections.length !== 1 || !['cursor', 'selection'].includes(trigger)) return undefined
+    const document = editor.document; const selection = editor.selection
+    return this.repeatedWords.suggest(document.uri.toString(), document.getText(), document.offsetAt(selection.active),
+      selection.isEmpty ? undefined : { start: document.offsetAt(selection.start), end: document.offsetAt(selection.end) })
+  }
+  private schedule(trigger: ScheduledPrediction): void {
+    // A late language-service diagnostic must not replace the word the user
+    // just pointed at. Real input/navigation still invalidates it normally.
+    if ((trigger === 'diagnostic' || trigger === 'accept') && this.timerTrigger &&
+      this.repeatedWordAt(this.api.window.activeTextEditor, this.timerTrigger)) return
+    this.clearPredictionTimer()
     if (!this.capabilities?.modes.includes('next-edit') || this.chainSteps >= MAX_PREDICTION_CHAIN) return
     if (this.transport.unavailable) { this.recovery = trigger; return }
     const eagerness = this.config<string>('eagerness', 'standard'); const delay = eagerness === 'less' ? 1600 : eagerness === 'more' ? 650 : 1000
-    this.timer = setTimeout(() => { void this.predict(trigger) }, Math.max(delay, 1500 - (Date.now() - this.lastNes)))
+    const repeated = this.repeatedWordAt(this.api.window.activeTextEditor, trigger)
+    this.timerTrigger = trigger
+    this.timer = setTimeout(() => {
+      this.timer = undefined; this.timerTrigger = undefined; void this.predict(trigger)
+    }, repeated ? 150 : Math.max(delay, 1500 - (Date.now() - this.lastNes)))
   }
   private async predict(trigger: SuggestionRequest['trigger']): Promise<boolean> {
-    if (this.transport.unavailable) { this.recovery = trigger === 'accept' || trigger === 'diagnostic' ? trigger : 'edit'; return false }
+    if (this.transport.unavailable) { this.recovery = trigger === 'manual' || trigger === 'typing' ? 'edit' : trigger; return false }
     if (trigger !== 'manual' && this.manualOperation) return false
-    if (trigger !== 'manual' && (this.visibleItems.size || this.request || this.pendingEdit)) return false
-    clearTimeout(this.timer)
+    const repeated = this.repeatedWordAt(this.api.window.activeTextEditor, trigger)
+    if (trigger !== 'manual' && !repeated && (this.visibleItems.size || (this.request && !this.request.signal.aborted) || this.pendingEdit)) return false
+    this.clearPredictionTimer()
     const api = this.api; const editor = api.window.activeTextEditor
-    if (!editor || !this.enabled(editor.document) || editorSuggestionBlocked(editor.document.uri.toString(), true) || !this.capabilities?.modes.includes('next-edit') || editor.selections.length !== 1 || !editor.selection.isEmpty || this.applying) return false
+    if (!editor || !this.enabled(editor.document) || editorSuggestionBlocked(editor.document.uri.toString(), true) || !this.capabilities?.modes.includes('next-edit') || editor.selections.length !== 1 || this.applying) return false
+    const selected = editor.selection.isEmpty ? undefined : editor.selection
+    if ((trigger === 'selection') !== !!selected || (selected && (!editor.document.getText(selected).trim() || editor.document.getText(selected).length > 16_384))) return false
+    const selectionKey = JSON.stringify([editor.selection.anchor.line, editor.selection.anchor.character, editor.selection.active.line, editor.selection.active.character])
     if (!this.config('suggestInComments', true) && isInsideComment(editor.document.getText().slice(0, editor.document.offsetAt(editor.selection.active)))) return false
     if (this.capabilities.quota && !this.capabilities.quota.allowed) return false
     this.clearEdit('superseded'); this.cache = undefined; const epoch = ++this.epoch
-    this.request?.abort(); const controller = new AbortController(); this.request = controller; this.lastNes = Date.now()
+    this.request?.abort(); const controller = new AbortController(); this.request = controller
+    if (!repeated) this.lastNes = Date.now()
     try {
-      const snapshot = await this.resolver.collect(editor.document, editor.selection.active, 'next-edit', trigger,
+      const snapshot = repeated ? this.resolver.collectLocalWord(editor.document, editor.selection.active,
+        new api.Range(editor.document.positionAt(repeated.rangeOffset), editor.document.positionAt(repeated.rangeOffset + repeated.rangeLength)), trigger as 'cursor' | 'selection')
+        : await this.resolver.collect(editor.document, editor.selection.active, 'next-edit', trigger,
         this.config('nextEdit.extendedRange', true) && this.capabilities.features.extendedRange,
         this.config('autoImports', true) && this.capabilities.features.atomicAdditionalEdits,
-        this.config('crossFile', true) && this.capabilities.features.crossFile)
+        this.config('crossFile', true) && this.capabilities.features.crossFile, selected)
       if (controller.signal.aborted || epoch !== this.epoch) return false
       this.requestSnapshot = { controller, snapshot }
       const importWindows = snapshot.request.documents[0]!.windows.filter(window => window.purpose === 'import' && window.allowedNewText?.length === 1)
       let result: SuggestionResult
-      if ((trigger === 'diagnostic' || trigger === 'manual') && importWindows.length) {
+      if (repeated) {
+        const window = snapshot.request.documents[0]!.windows[0]!
+        result = { protocolVersion: 2, requestId: snapshot.request.requestId, opportunityId: snapshot.request.opportunityId, completionId: 'local',
+          suggestions: [{ candidateId: `local-word-${crypto.randomUUID()}`, fileId: snapshot.request.active.fileId, snapshotId: snapshot.request.active.snapshotId,
+            kind: 'edit', primary: { range: window.range, expectedText: window.text, newText: repeated.newText }, additionalEdits: [] }], expiresInMs: 15_000, finishReason: 'complete' }
+      } else if ((trigger === 'diagnostic' || trigger === 'manual') && importWindows.length) {
         const edits = importWindows.map(window => ({ range: window.range, expectedText: window.text, newText: window.allowedNewText![0]! }))
         const primary = edits[0]!
         result = { protocolVersion: 2, requestId: snapshot.request.requestId, opportunityId: snapshot.request.opportunityId, completionId: 'local',
           suggestions: [{ candidateId: `local-${crypto.randomUUID()}`, fileId: snapshot.request.active.fileId, snapshotId: snapshot.request.active.snapshotId,
             kind: primary.expectedText ? 'edit' : 'insert', primary, additionalEdits: edits.slice(1) }], expiresInMs: 15_000, finishReason: 'complete' }
       } else result = await this.transport.suggest(snapshot.request, controller.signal)
-      if (controller.signal.aborted || epoch !== this.epoch || api.window.activeTextEditor !== editor || !await this.resolver.isCurrent(snapshot)) return false
+      const currentSelectionKey = JSON.stringify([editor.selection.anchor.line, editor.selection.anchor.character, editor.selection.active.line, editor.selection.active.character])
+      if (controller.signal.aborted || epoch !== this.epoch || api.window.activeTextEditor !== editor || currentSelectionKey !== selectionKey || !await this.resolver.isCurrent(snapshot)) return false
       this.recoveryAttempts = 0; this.capabilityError = ''; this.updateStatus()
       let candidate = result.suggestions[0]; if (!candidate) return false
       // Keep one model-approved local window as one atomic edit. In particular,
       // repeated references from an unambiguous rename should be previewed and
       // accepted together instead of forcing a distracting one-line chain.
-      candidate = { ...candidate, primary: minimalEdit(candidate.primary) }
+      if (!repeated) candidate = { ...candidate, primary: minimalEdit(candidate.primary) }
       if (result.completionId !== 'local' && this.config('autoImports', true) && this.capabilities.features.atomicAdditionalEdits) candidate = await this.resolver.withImports(snapshot, candidate)
       if (controller.signal.aborted || epoch !== this.epoch || !await this.resolver.isCurrent(snapshot)) return false
       const signature = this.signature(candidate)
@@ -478,7 +576,7 @@ export class CompletionFeature {
       this.renderEdit(); this.feedback(result, candidate, 'shown')
       this.expiry = setTimeout(() => this.clearEdit('stale'), result.expiresInMs)
       return true
-    } catch (error) { if (this.transport.unavailable) this.recovery = trigger === 'accept' || trigger === 'diagnostic' ? trigger : 'edit'; this.handleError(error); return false }
+    } catch (error) { if (this.transport.unavailable) this.recovery = trigger === 'manual' || trigger === 'typing' ? 'edit' : trigger; this.handleError(error); return false }
     finally { if (this.request === controller) this.request = undefined; if (this.requestSnapshot?.controller === controller) this.requestSnapshot = undefined }
   }
   private renderEdit(): void {
@@ -534,7 +632,7 @@ export class CompletionFeature {
     try {
       const applied = applySuggestion(plan.target ?? plan.snapshot, plan.candidate)
       this.feedback(plan.result, plan.candidate, applied ? 'applied' : 'apply_failed', applied ? (plan.acceptedBase ?? 0) + plan.candidate.primary.newText.length : 0)
-      this.clearEdit(); if (applied) { this.chain.add(this.signature(plan.candidate)); this.chainSteps++; this.schedule('accept') }
+      this.clearEdit(); if (applied) { this.chain.add(this.signature(plan.candidate)); this.chainSteps++; this.selectionSettleUntil = Date.now() + 300; this.schedule('accept') }
     } finally { this.applying = false }
   }
   private async acceptPartial(unit: 'word' | 'line'): Promise<void> {
@@ -588,7 +686,7 @@ export class CompletionFeature {
     clearTimeout(this.expiry)
     if (this.pendingEdit && event) {
       this.feedback(this.pendingEdit.result, this.pendingEdit.candidate, event)
-      if (event === 'rejected') { this.rejections.set(this.signature(this.pendingEdit.candidate), Date.now() + 30_000); clearTimeout(this.timer); this.chainSteps = MAX_PREDICTION_CHAIN }
+      if (event === 'rejected') { this.rejections.set(this.signature(this.pendingEdit.candidate), Date.now() + 30_000); this.clearPredictionTimer(); this.chainSteps = MAX_PREDICTION_CHAIN }
     }
     this.pendingEdit = undefined; this.navigation = undefined; this.presentation.clear()
     void this.api.commands.executeCommand('setContext', 'ailyNextEditAvailable', false); this.updateStatus()
@@ -597,7 +695,7 @@ export class CompletionFeature {
   private signature(candidate: Suggestion): string { return `${candidate.fileId}:${contentHash(JSON.stringify(candidate.primary))}` }
   private async runManual(label: string, operation: () => Promise<boolean>, emptyMessage?: string): Promise<void> {
     if (this.manualOperation) return
-    clearTimeout(this.timer)
+    this.clearPredictionTimer()
     this.request?.abort()
     completionCoordinator.cancel()
     this.epoch++
@@ -611,36 +709,62 @@ export class CompletionFeature {
     }
   }
   private async settings(): Promise<void> {
-    const language = this.api.window.activeTextEditor?.document.languageId
+    // Keep the menu bound to the file for which it was opened, even if another
+    // editor becomes active while a quick pick is displayed.
+    const document = this.api.window.activeTextEditor?.document
+    const language = document?.languageId
+    const extension = document?.uri.path.match(/\.[^/.]+$/)?.[0]?.toLowerCase()
+    const config = this.api.workspace.getConfiguration('aily.completion', document)
+    const languages = config.get<Record<string, boolean>>('languages', { '*': true })
+    const extensions = normalizeCompletionExtensions(config.get<string[]>('excludedExtensions', []))
+    const paused = Date.now() < this.snoozeState.until
     const selected = await this.api.window.showQuickPick([
-      { label: '$(sparkle) 触发 Aily Tab', detail: 'Alt+\\；关联文件先按 Tab 跳转，再按 Tab 接受', action: 'trigger' },
-      { label: this.config('crossFile', true) ? '关闭跨文件预测' : '启用跨文件预测', action: 'crossFile' },
-      { label: '切换当前扩展名补全', action: 'extension' },
-      { label: this.config('enabled', true) ? '关闭自动补全' : '启用自动补全', action: 'toggle' },
-      { label: '选择暂停时长…', action: 'snooze' }, { label: '恢复自动补全', action: 'resume' },
-      { label: `切换当前语言补全${language ? ` (${language})` : ''}`, action: 'language' },
-      { label: '设置建议频率', action: 'frequency' }, { label: '更多设置', action: 'settings' }, { label: '重新连接服务', action: 'reconnect' },
-    ], { placeHolder: 'Aily Tab · 续写、修改与关联文件预测' })
+      ...(document && this.enabled(document) ? [{ label: '$(sparkle) 触发 Aily Tab', detail: '关联文件先按 Tab 跳转，再按 Tab 接受', action: 'trigger' }] : []),
+      ...(paused ? [{ label: '恢复自动补全', detail: `当前暂停还剩约 ${ailyTabSnoozeRemaining(this.snoozeState.until)}`, action: 'resume' }] : []),
+      { label: config.get('enabled', true) ? '关闭自动补全' : '启用自动补全', action: 'toggle' },
+      { label: '选择暂停时长…', detail: '重载页面后保留暂停，到期自动恢复', action: 'snooze' },
+      ...(extension ? [{ label: `${extensions.includes(extension) ? '启用' : '关闭'} ${extension} 文件补全`, action: 'extension' }] : []),
+      ...(language ? [{ label: `${(languages[language] ?? languages['*'] ?? true) ? '关闭' : '启用'} ${language} 语言补全`, action: 'language' }] : []),
+      ...(document && !this.api.workspace.getConfiguration('editor', document).get('inlineSuggest.enabled', true) ? [{ label: '启用编辑器行内建议', detail: '编辑器已关闭行内建议，启用后 Aily Tab 才能显示', action: 'inlineSuggest' }] : []),
+      { label: config.get('crossFile', true) ? '关闭跨文件预测' : '启用跨文件预测', action: 'crossFile' },
+      { label: config.get('clipboardContext', true) ? '关闭剪切复制联想' : '启用剪切复制联想',
+        detail: this.capabilities && !this.capabilities.features.clipboardContext ? '当前服务尚未支持，升级服务后生效' : '使用当前项目最近 5 分钟的剪切、复制代码', action: 'clipboardContext' },
+      { label: '清空剪切复制历史', action: 'clearClipboard' },
+      { label: '设置建议频率', action: 'frequency' }, { label: '自定义快捷键', action: 'keybindings' },
+      { label: '更多设置', action: 'settings' }, { label: '重新连接服务', action: 'reconnect' },
+    ], { placeHolder: this.disabledReason(document) ?? 'Aily Tab · 续写、修改与关联文件预测' })
     if (!selected) return
-    const config = this.api.workspace.getConfiguration('aily.completion'); const global = this.api.ConfigurationTarget.Global
-    if (selected.action === 'toggle') await config.update('enabled', !this.config('enabled', true), global)
-    else if (selected.action === 'crossFile') await config.update('crossFile', !this.config('crossFile', true), global)
-    else if (selected.action === 'extension') {
-      const extension = this.api.window.activeTextEditor?.document.uri.path.match(/\.[^/.]+$/)?.[0]?.toLowerCase()
-      if (extension) { const values = this.config<string[]>('excludedExtensions', []); await config.update('excludedExtensions', values.includes(extension) ? values.filter(value => value !== extension) : [...values, extension], global) }
+    const update = (key: string, value: unknown) => updateAilyTabConfiguration(config, key, value, this.api.ConfigurationTarget)
+    if (selected.action === 'toggle') {
+      const enabling = !config.get('enabled', true)
+      await update('enabled', enabling)
+      if (enabling) await this.snoozeState.resume()
     }
-    else if (selected.action === 'language' && language) { const languages = this.config<Record<string, boolean>>('languages', { '*': true }); await config.update('languages', { ...languages, [language]: !(languages[language] ?? languages['*'] ?? true) }, global) }
-    else if (selected.action === 'frequency') { const frequency = await this.api.window.showQuickPick(['less', 'standard', 'more'], { placeHolder: '建议频率：少 / 标准 / 多' }); if (frequency) await config.update('eagerness', frequency, global) }
+    else if (selected.action === 'crossFile') await update('crossFile', !config.get('crossFile', true))
+    else if (selected.action === 'clipboardContext') await update('clipboardContext', !config.get('clipboardContext', true))
+    else if (selected.action === 'extension' && extension) await update('excludedExtensions', toggleCompletionExtension(config.get<string[]>('excludedExtensions', []), extension))
+    else if (selected.action === 'language' && language) {
+      const current = config.get<Record<string, boolean>>('languages', { '*': true })
+      await update('languages', { ...current, [language]: !(current[language] ?? current['*'] ?? true) })
+    }
+    else if (selected.action === 'inlineSuggest') await updateAilyTabConfiguration(this.api.workspace.getConfiguration('editor', document), 'inlineSuggest.enabled', true, this.api.ConfigurationTarget)
+    else if (selected.action === 'frequency') {
+      const current = config.get('eagerness', 'standard')
+      const frequency = await this.api.window.showQuickPick([
+        { label: '较少', detail: '减少自动建议，适合专注编辑', value: 'less' },
+        { label: '标准', detail: '使用默认建议频率', value: 'standard' },
+        { label: '更多', detail: '更积极地预测下一处编辑', value: 'more' },
+      ].map(item => ({ ...item, description: item.value === current ? '当前' : undefined })), { placeHolder: '选择自动建议频率' })
+      if (frequency) await update('eagerness', frequency.value)
+    }
+    else if (selected.action === 'keybindings') await this.api.commands.executeCommand('workbench.action.openGlobalKeybindings', 'aily.completion')
     else if (selected.action === 'settings') await this.api.commands.executeCommand('workbench.action.openSettings', 'aily.completion')
     else await this.api.commands.executeCommand(`aily.completion.${selected.action}`)
   }
   private async snooze(): Promise<void> {
     const selected = await this.api.window.showQuickPick([...AILY_TAB_SNOOZE_PRESETS], { placeHolder: '暂停 Aily Tab 多久？' })
     if (!selected) return
-    const now = Date.now()
-    this.snoozeUntil = ailyTabSnoozeDeadline(now, selected.durationMs)
-    clearTimeout(this.snoozeTimer)
-    this.snoozeTimer = setTimeout(() => { this.snoozeUntil = 0; this.updateStatus() }, selected.durationMs)
+    await this.snoozeState.pause(selected.durationMs)
     this.invalidate('ignored'); this.updateStatus()
   }
   private handleError(error: unknown): void {
@@ -651,7 +775,7 @@ export class CompletionFeature {
     this.recovery = undefined; this.predictionVersion = undefined
     this.lineBreak = undefined; clearTimeout(this.lineBreakTimer)
     this.visibleItems.clear()
-    this.epoch++; this.request?.abort(); completionCoordinator.cancel(); clearTimeout(this.timer); this.cache = undefined; this.clearEdit(event)
+    this.epoch++; this.request?.abort(); completionCoordinator.cancel(); this.clearPredictionTimer(); this.selectionSettleUntil = 0; this.cache = undefined; this.clearEdit(event)
     void this.api.commands.executeCommand('editor.action.inlineSuggest.hide')
   }
   private updateStatus(): void {
@@ -659,6 +783,14 @@ export class CompletionFeature {
     try { this.renderStatus() } finally { setCompletionStatus(this.status.text, typeof this.status.tooltip === 'string' ? this.status.tooltip : '') }
   }
   private renderStatus(): void {
+    const document = this.api.window.activeTextEditor?.document
+    const disabled = this.disabledReason(document)
+    if (disabled) {
+      this.status.text = !this.config('enabled', true) ? '$(circle-slash) Aily Tab 已关闭'
+        : Date.now() < this.snoozeState.until ? '$(debug-pause) Aily Tab 已暂停' : '$(circle-slash) Aily Tab 当前文件已关闭'
+      this.status.tooltip = disabled
+      return
+    }
     const unavailable = this.transport.unavailable
     if (unavailable) {
       this.status.text = unavailable.status === 429 ? '$(watch) Aily Tab 稍后继续' : unavailable.status === 401 ? '$(account) Aily Tab 需登录' : unavailable.status === 402 || unavailable.status === 403 ? '$(lock) Aily Tab 额度或权限不足' : '$(watch) Aily Tab 正在恢复'
@@ -667,23 +799,15 @@ export class CompletionFeature {
     }
     if (this.manualOperation) { this.status.text = `$(sync~spin) ${this.manualOperation}`; this.status.tooltip = '手动请求优先于后台预测，可继续输入以取消。'; return }
     if (this.pendingEdit) { const path = this.pendingEdit.snapshot.request.documents.find(doc => doc.fileId === this.pendingEdit!.candidate.fileId)?.relativePath ?? ''; this.status.text = `$(arrow-right) Tab → ${path}:${this.pendingEdit.candidate.primary.range.start.line + 1}`; this.status.tooltip = '定位并审阅下一处编辑建议，再按 Tab 接受。'; return }
-    const document = this.api.window.activeTextEditor?.document
-    if (Date.now() < this.snoozeUntil) {
-      this.status.text = '$(debug-pause) Aily Tab 已暂停'
-      this.status.tooltip = `约 ${ailyTabSnoozeRemaining(this.snoozeUntil)}后自动恢复；点击可更改暂停时长或立即恢复。`
-      return
-    }
-    this.status.text = !this.config('enabled', true) || (document && !this.enabled(document)) ? '$(circle-slash) Aily Tab 已关闭' : this.capabilityError ? '$(warning) Aily Tab 不可用' : this.capabilities ? '$(sparkle) Aily Tab' : '$(sync~spin) Aily Tab 连接中'
-    this.status.tooltip = this.capabilityError || (this.capabilities?.model
-      ? `服务端模型：${this.capabilities.model.id}\nTab 接受 · Esc 拒绝 · 关联文件先跳转再接受`
-      : '点击设置 Aily Tab：跨文件预测、按类型关闭和暂停')
+    this.status.text = this.capabilityError ? '$(warning) Aily Tab 不可用' : this.capabilities ? '$(sparkle) Aily Tab' : '$(sync~spin) Aily Tab 连接中'
+    this.status.tooltip = this.capabilityError || 'Tab 接受 · Esc 拒绝 · 关联文件先跳转再接受\n点击设置 Aily Tab：跨文件预测、按类型关闭和暂停'
     if (document && ['c', 'cpp', 'cuda-cpp', 'objective-cpp'].includes(document.languageId)) {
       const connected = getLanguageServerState() === 'ready'
       this.status.tooltip += connected ? (hasLanguageServerCompilationDatabase() === false ? '\nC/C++ 语言服务已连接；缺少工程编译配置，暂停自动诊断修复。' : '\nC/C++ 语言服务已连接。') : '\nC/C++ 语言服务未连接，诊断修复和来源验证暂不可用。'
       if (!connected && this.capabilities && !this.capabilityError && this.enabled(document)) this.status.text += ' · 语言服务未连接'
     }
   }
-  dispose(): void { this.connectionEpoch++; clearTimeout(this.reconnectTimer); clearTimeout(this.snoozeTimer); this.invalidate('ignored'); this.transport.dispose(); this.status.dispose(); this.subscriptions.forEach(item => item.dispose()) }
+  dispose(): void { this.connectionEpoch++; clearTimeout(this.reconnectTimer); this.snoozeState.dispose(); this.repeatedWords.clear(); this.invalidate('ignored'); this.transport.dispose(); this.status.dispose(); this.subscriptions.forEach(item => item.dispose()) }
 }
 
 function isInsideComment(prefix: string): boolean {

@@ -42,11 +42,15 @@ with sync_playwright() as p:
     Path(root, 'rename.cpp').write_text('int oldName = 1;\n' + '// spacer\n' * 20 + 'int value = oldName;\n')
     Path(root, 'rename-local.js').write_text('function nominalZoneOf(distTb) {\n  if (distTb > 3000) return 0;\n  if (distTb > 2000) return 1;\n  if (distTb > 1000) return 2;\n\n  console.log("distTb", distTb);\n  return 3;\n}\n')
     Path(root, 'delete.cpp').write_text('int unused = 1;\nint main() { return 0; }\n')
+    Path(root, 'selection.cpp').write_text('int result = oldValue + 1;\n')
     Path(root, 'multiline.cpp').write_text('int main() {\n  \n}\n')
     baseline = page.request.get('http://127.0.0.1:8019/fixture/state').json()
     def access(text):
         page.keyboard.press(palette); expect(quick).to_be_visible(); quick.fill(text)
         page.wait_for_timeout(350); page.keyboard.press('Enter'); expect(quick).not_to_be_visible()
+        if text.startswith(root + '/'):
+            expect(frame.get_by_role('tab', name=Path(text).name, exact=True)).to_have_attribute('aria-selected', 'true')
+            expect(frame.locator('.monaco-editor.focused .view-lines')).to_be_visible()
     def command(text): access('>' + text)
     def snooze(label='5 分钟'):
         page.keyboard.press(palette); expect(quick).to_be_visible(); quick.fill('>Aily: 选择自动补全暂停时长')
@@ -80,16 +84,22 @@ with sync_playwright() as p:
     scenario('rename-local'); access(root + '/rename-local.js'); access(':1:24')
     page.keyboard.down('Shift')
     for _ in range(6): page.keyboard.press('ArrowRight')
-    page.keyboard.up('Shift'); page.keyboard.insert_text('AC')
-    page.keyboard.press('Escape'); command('Aily: 触发 Aily Tab')
+    page.keyboard.up('Shift'); page.keyboard.type('AC')
     preview = frame.locator('.aily-next-edit-inline')
     expect(preview).to_be_visible(timeout=10000)
+    check('typed replacement pause automatically predicts the next matching edit',
+        page.request.get('http://127.0.0.1:8019/fixture/state').json()['requests'][-1]['trigger'] == 'edit')
     check('local rename uses side-by-side inline diff', preview.locator('.aily-next-edit-code').is_visible())
     check('local rename highlights every old/new token', frame.locator('.aily-next-edit-deleted-token').count() == 5 and preview.locator('.aily-next-edit-added-token').count() == 5)
     page.screenshot(path=str(output / '03-local-rename-inline.png'))
     page.keyboard.press('Tab')
     renamed = disk('rename-local.js')
     check('one Tab applies all local rename references', renamed.count('distTb') == 0 and renamed.count('AC') == 6)
+    continued = frame.locator('.aily-next-edit-preview')
+    expect(continued).to_be_visible(timeout=10000)
+    check('Tab acceptance automatically continues to the next suggestion',
+        page.request.get('http://127.0.0.1:8019/fixture/state').json()['requests'][-1]['trigger'] == 'accept')
+    page.keyboard.press('Escape')
     page.keyboard.press(undo)
     restored = disk('rename-local.js')
     check('one undo restores only the grouped prediction', restored.startswith('function nominalZoneOf(AC)') and restored.count('distTb') == 5)
@@ -112,13 +122,27 @@ with sync_playwright() as p:
     check('one undo restores distant edit only', disk('rename.cpp') == original)
     # Whole-window deletion uses an empty replacement segment and remains undoable.
     scenario('delete'); access(root + '/delete.cpp'); access(':1:1')
-    command('Aily: 触发 Aily Tab')
+    frame.locator('.monaco-editor .view-line').first.click(position={'x': 45, 'y': 10})
     expect(frame.locator('.aily-next-edit-preview')).to_be_visible(timeout=10000)
+    check('mouse caret click predicts an edit near the pointer',
+        page.request.get('http://127.0.0.1:8019/fixture/state').json()['requests'][-1]['trigger'] == 'cursor')
     page.screenshot(path=str(output / '04-deletion.png'))
     page.keyboard.press('Tab')
     check('deletion applies', 'unused' not in disk('delete.cpp'))
     page.keyboard.press(undo)
     check('one undo restores deletion', 'int unused = 1;' in disk('delete.cpp'))
+    # A deliberate word/phrase selection is sent as an exact bounded edit focus.
+    scenario('selection'); access(root + '/selection.cpp'); access(':1:14')
+    page.keyboard.down('Shift')
+    for _ in range(8): page.keyboard.press('ArrowRight')
+    page.keyboard.up('Shift')
+    expect(frame.locator('.aily-next-edit-preview')).to_be_visible(timeout=10000)
+    selection_request = page.request.get('http://127.0.0.1:8019/fixture/state').json()['requests'][-1]
+    check('selected word triggers a bounded replacement suggestion', selection_request['trigger'] == 'selection' and
+        selection_request['active']['selection'] == selection_request['documents'][0]['windows'][0]['range'])
+    page.keyboard.press('Tab')
+    check('selected word suggestion applies with Tab', 'newValue' in disk('selection.cpp'))
+    scenario('delete'); access(root + '/delete.cpp'); access(':1:1')
     # Changing the source invalidates the shown edit; Tab cannot apply stale source.
     command('Aily: 触发 Aily Tab')
     expect(frame.locator('.aily-next-edit-preview')).to_be_visible(timeout=10000)
@@ -154,7 +178,10 @@ with sync_playwright() as p:
     page.keyboard.press(select_all); page.keyboard.insert_text('struct Sensor { int read(int scale); };\n')
     page.keyboard.press('Escape')
     check('source header is saved before cross-file prediction', 'read(int scale)' in disk('Sensor.h'))
-    scenario('aily-tab'); command('Aily: 触发 Aily Tab')
+    # Let the intentionally empty automatic edit opportunity settle before the
+    # explicit cross-file scenario takes ownership of the inference lane.
+    page.wait_for_timeout(750)
+    scenario('aily-tab'); frame.locator('.monaco-editor .view-line').first.click(position={'x': 120, 'y': 10})
     expect(frame.locator('.aily-tab-portal')).to_be_visible(timeout=15000)
     check('cross-file portal identifies unopened implementation', 'Sensor.cpp' in frame.locator('.aily-tab-portal').inner_text())
     page.screenshot(path=str(output / '06-aily-tab-cross-file.png'))
@@ -174,7 +201,7 @@ with sync_playwright() as p:
     scenario('empty'); access(root + '/Sensor.h')
     frame.locator('.monaco-editor .view-lines').click()
     page.keyboard.press(select_all); page.keyboard.insert_text('struct Sensor { int read(int factor); };\n'); disk('Sensor.h')
-    scenario('aily-tab'); command('Aily: 触发 Aily Tab')
+    scenario('aily-tab'); frame.locator('.monaco-editor .view-line').first.click(position={'x': 120, 'y': 10})
     expect(frame.locator('.aily-tab-portal')).to_be_visible(timeout=15000)
     page.keyboard.press('Escape')
     expect(frame.locator('.aily-tab-portal')).not_to_be_attached()
@@ -185,8 +212,11 @@ with sync_playwright() as p:
     frame.locator('.monaco-editor .view-lines').click()
     page.keyboard.press(select_all); page.keyboard.insert_text('struct Sensor { int read(int multiplier); };\n')
     check('fresh source rename is saved before stale-target test', 'read(int multiplier)' in disk('Sensor.h'))
-    command('Aily: 触发 Aily Tab')
+    scenario('aily-tab')
+    access(':1:18'); page.keyboard.press('Shift+ArrowLeft')
     expect(frame.locator('.aily-tab-portal')).to_be_visible(timeout=15000)
+    stale_request = page.request.get('http://127.0.0.1:8019/fixture/state').json()['requests'][-1]
+    check('selected source text triggers the stale-target proposal', stale_request['trigger'] == 'selection')
     Path(root, 'Sensor.cpp').write_text('// external change\n' + original_target)
     page.keyboard.press('Tab')
     expect(frame.locator('.aily-next-edit-preview')).not_to_be_attached(timeout=10000)

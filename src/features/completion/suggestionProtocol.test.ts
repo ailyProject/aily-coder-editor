@@ -21,6 +21,25 @@ test('shared host contract is byte-identical when sibling workspace is present',
   const server = '/Users/downey/Projects/ZCK/aily-services/contracts/coder-aily-tab.json'
   if (existsSync(server)) assert.equal(readFileSync(server, 'utf8'), readFileSync(new URL('./fixtures/aily-tab-contract.json', import.meta.url), 'utf8'))
 })
+test('clipboard history is optional, bounded reference data without edit permissions', () => {
+  const input = request()
+  input.clipboardHistory = [{ operation: 'cut', text: 'int moved = 1;', relativePath: 'old.cpp', languageId: 'cpp', ageMs: 100 }]
+  assert.doesNotThrow(() => parseSuggestionRequest(input))
+  for (const mutate of [
+    (value: typeof input) => { value.clipboardHistory![0]!.relativePath = '../secret.cpp' },
+    (value: typeof input) => { value.clipboardHistory![0]!.relativePath = '/secret.cpp' },
+    (value: typeof input) => { value.clipboardHistory![0]!.text = 'x'.repeat(2049) },
+    (value: typeof input) => { value.clipboardHistory![0]!.ageMs = 300001 },
+    (value: typeof input) => { value.clipboardHistory = Array(6).fill(value.clipboardHistory![0]) },
+    (value: typeof input) => { value.clipboardHistory = Array(3).fill({ ...value.clipboardHistory![0], text: 'x'.repeat(2048) }) },
+    (value: typeof input) => { Object.assign(value.clipboardHistory![0]!, { permission: 'edit' }) },
+  ]) {
+    const invalid = structuredClone(input); mutate(invalid); assert.throws(() => parseSuggestionRequest(invalid))
+  }
+  const result = response(input)
+  result.suggestions[0]!.fileId = 'old.cpp'
+  assert.throws(() => validateSuggestionResult(result, input))
+})
 test('Aily Tab cross-file edits require opt-in, an editable snapshot and the exact target window', () => {
   const input = parseSuggestionRequest(structuredClone(ailyTabFixture.request))
   const target = input.documents[1]!; const window = target.windows[0]!
@@ -31,6 +50,22 @@ test('Aily Tab cross-file edits require opt-in, an editable snapshot and the exa
     const invalid = structuredClone(input); mutate(invalid); assert.throws(() => validateSuggestionResult(result, invalid))
   }
   input.options.crossFile = false; assert.throws(() => parseSuggestionRequest(input))
+})
+test('cursor and selection triggers are bounded next-edit opportunities', () => {
+  const cursor = request(); cursor.trigger = 'cursor'; assert.doesNotThrow(() => parseSuggestionRequest(cursor))
+  const selected = request(); const window = selected.documents[0]!.windows[0]!
+  selected.trigger = 'selection'; selected.active.position = window.range.start; selected.active.selection = structuredClone(window.range)
+  assert.doesNotThrow(() => parseSuggestionRequest(selected))
+  for (const mutate of [
+    (value: typeof selected) => { value.mode = 'completion' },
+    (value: typeof selected) => { delete value.active.selection },
+    (value: typeof selected) => { value.active.selection = { start: value.active.position, end: value.active.position } },
+    (value: typeof selected) => { value.active.selection = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+  ]) {
+    const invalid = structuredClone(selected); mutate(invalid); assert.throws(() => parseSuggestionRequest(invalid))
+  }
+  const unexpected = request(); unexpected.active.selection = structuredClone(unexpected.documents[0]!.windows[0]!.range)
+  assert.throws(() => parseSuggestionRequest(unexpected))
 })
 test('preserves global coordinates, CRLF and UTF-16 in a server-owned result', () => {
   const input = request(); assert.equal(input.documents[0]!.windows[0]!.range.start.line, 100)

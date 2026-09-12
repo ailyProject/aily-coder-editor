@@ -1,6 +1,16 @@
 import type { RecentEdit, TextEdit } from './suggestionProtocol'
 
 export const MAX_PREDICTION_CHAIN = 5
+export type EditorSelectionOrigin = 'mouse' | 'keyboard' | 'other'
+export type SelectionOpportunity = 'cursor' | 'selection' | undefined
+
+/** Mouse caret moves and deliberate mouse/keyboard selections are fresh NES
+ * opportunities. Programmatic/command selection changes only invalidate stale
+ * work; they must not create background model traffic. */
+export function selectionOpportunity(origin: EditorSelectionOrigin, isEmpty: boolean): SelectionOpportunity {
+  if (origin === 'mouse') return isEmpty ? 'cursor' : 'selection'
+  return origin === 'keyboard' && !isEmpty ? 'selection' : undefined
+}
 /** Enter may include indentation and the second newline inserted between braces.
  * Only a real typing event qualifies; paste/undo/external writes never wake AI. */
 export function isTypedLineBreak(changes: readonly { text: string; rangeLength: number }[], origin: RecentEdit['origin']): boolean {
@@ -15,6 +25,10 @@ export function editOrigin(reason: { source: string; metadata?: Record<string, u
   if (reason.source !== 'cursor') return 'external'
   if (reason.metadata?.['kind'] === 'paste') return 'paste'
   if (['type', 'compositionType', 'compositionEnd', 'cut'].includes(String(reason.metadata?.['kind']))) return 'typing'
+  // Native Backspace/Delete execute editor commands with their own command ID
+  // as the source, rather than the generic "keyboard" source used by typing.
+  if (reason.metadata?.['kind'] === 'executeCommands' &&
+    ['deleteLeft', 'deleteRight', 'deleteWordLeft', 'deleteWordRight', 'deleteWordStartLeft', 'deleteWordEndRight'].includes(String(reason.metadata?.['detailedSource']))) return 'typing'
   return reason.metadata?.['detailedSource'] === 'keyboard' ? 'typing' : 'external'
 }
 export function hasRecentReplacement(edits: readonly RecentEdit[], fileId: string): boolean {

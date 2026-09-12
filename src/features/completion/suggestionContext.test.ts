@@ -3,6 +3,7 @@ import test from 'node:test'
 import type * as vscode from 'vscode'
 import { SuggestionContextResolver, suggestionContextBudget } from './suggestionContext'
 import { RecentEditStore, contentHash } from './completionState'
+import { ClipboardHistoryStore } from './clipboardHistory'
 import { parseSuggestionRequest } from './suggestionProtocol'
 import { prepareInlineCompletion } from './ailyTabPolicy'
 
@@ -10,6 +11,13 @@ class Position { constructor(public line: number, public character: number) {} }
 class Range {
   start: Position; end: Position
   constructor(a: number, b: number, c: number, d: number) { this.start = new Position(a, b); this.end = new Position(c, d) }
+}
+class Selection extends Range {
+  anchor: Position; active: Position
+  constructor(a: number, b: number, c: number, d: number) {
+    super(a, b, c, d); this.anchor = this.start; this.active = this.end
+  }
+  get isEmpty() { return this.start.line === this.end.line && this.start.character === this.end.character }
 }
 class Uri {
   scheme = 'file'
@@ -34,6 +42,7 @@ class Document {
 function setup(text: string, path = '/workspace/main.cpp', languageId = 'cpp') {
   const document = new Document(text, path, languageId); const opened = [document]; const files = new Map<string, string>()
   const history = new RecentEditStore()
+  const clipboard = new ClipboardHistoryStore()
   let definitions: unknown[] = []; let actions: unknown[] = []; let diagnostics: unknown[] = []; let completions: unknown[] = []
   const api = { Position, Range, DiagnosticSeverity: { Error: 0, Warning: 1 },
     workspace: { textDocuments: opened, getWorkspaceFolder: (uri: Uri) => uri.path.startsWith('/workspace/') ? { uri: new Uri('/workspace') } : undefined,
@@ -44,10 +53,52 @@ function setup(text: string, path = '/workspace/main.cpp', languageId = 'cpp') {
     commands: { executeCommand: async (command: string) => command.includes('Definition') ? definitions : command.includes('CodeAction') ? actions : command.includes('CompletionItem') ? { items: completions } : [] },
     languages: { getDiagnostics: () => diagnostics },
   } as unknown as typeof vscode
-  const resolver = new SuggestionContextResolver(api, 'test-session', history, '0.1.6')
-  return { api, document, opened, files, history, resolver, doc: document as unknown as vscode.TextDocument, setCompletions: (value: unknown[]) => { completions = value },
+  const resolver = new SuggestionContextResolver(api, 'test-session', history, '0.1.6', undefined, undefined, undefined, root => clipboard.read(root))
+  return { api, document, opened, files, history, clipboard, resolver, doc: document as unknown as vscode.TextDocument, setCompletions: (value: unknown[]) => { completions = value },
     setDefinitions: (value: unknown[]) => { definitions = value }, setActions: (value: unknown[]) => { actions = value }, setDiagnostics: (value: unknown[]) => { diagnostics = value } }
 }
+test('both suggestion modes receive clipboard references without manufacturing writable windows', async () => {
+  const h = setup('int main() {\n  \n}\n')
+  h.clipboard.add('file:///workspace', 'closed-source.cpp', 'cpp', 'int moved = 3;', 'cut')
+  h.clipboard.add('file:///other-workspace', 'foreign.cpp', 'cpp', 'private code', 'copy')
+  for (const mode of ['completion', 'next-edit'] as const) {
+    const snapshot = await h.resolver.collect(h.doc, new Position(1, 2) as vscode.Position, mode, 'manual', true)
+    assert.doesNotThrow(() => parseSuggestionRequest(snapshot.request))
+    assert.equal(snapshot.request.clipboardHistory?.length, 1)
+    assert.equal(snapshot.request.clipboardHistory[0]!.operation, 'cut')
+    assert.equal(snapshot.request.clipboardHistory[0]!.text, 'int moved = 3;')
+    assert.ok(snapshot.request.documents.every(doc => doc.relativePath !== 'closed-source.cpp'))
+  }
+  h.clipboard.clear()
+  const cleared = await h.resolver.collect(h.doc, new Position(1, 2) as vscode.Position, 'completion', 'manual', false)
+  assert.equal(cleared.request.clipboardHistory, undefined)
+})
+test('local word snapshots authorize only the pointed UTF-16 range without remote discovery', async () => {
+  const h = setup('// 😀\r\nnewWord oldWord oldWord\r\n')
+  h.api.commands.executeCommand = async () => { throw new Error('Local prediction must not query a language provider') }
+  const range = new Range(1, 8, 1, 15) as vscode.Range
+  const snapshot = h.resolver.collectLocalWord(h.doc, new Position(1, 10) as vscode.Position, range, 'cursor')
+  assert.doesNotThrow(() => parseSuggestionRequest(snapshot.request))
+  assert.equal(snapshot.request.documents.length, 1)
+  assert.equal(snapshot.dependencies.length, 1)
+  assert.equal(snapshot.request.options.crossFile, false)
+  assert.equal(snapshot.request.options.autoImports, false)
+  assert.deepEqual(snapshot.request.documents[0]!.windows, [{ windowId: 'word', purpose: 'completion',
+    range: { start: { line: 1, character: 8 }, end: { line: 1, character: 15 } }, text: 'oldWord' }])
+  assert.equal(await h.resolver.isCurrent(snapshot), true)
+  h.document.text = h.document.text.replace('newWord', 'another'); h.document.version++
+  assert.equal(await h.resolver.isCurrent(snapshot), false)
+})
+test('local selected words retain selection validation and workspace restrictions', () => {
+  const h = setup('const value = oldWord;\n')
+  const range = new Range(0, 14, 0, 21) as vscode.Range
+  const snapshot = h.resolver.collectLocalWord(h.doc, new Position(0, 21) as vscode.Position, range, 'selection')
+  assert.doesNotThrow(() => parseSuggestionRequest(snapshot.request))
+  assert.deepEqual(snapshot.request.active.selection, snapshot.request.documents[0]!.windows[0]!.range)
+  assert.throws(() => h.resolver.collectLocalWord(h.doc, new Position(0, 0) as vscode.Position, range, 'cursor'))
+  const external = setup('oldWord', '/private/other.cpp')
+  assert.throws(() => external.resolver.collectLocalWord(external.doc, new Position(0, 1) as vscode.Position, new Range(0, 0, 0, 7) as vscode.Range, 'cursor'))
+})
 test('context uses global UTF-16 coordinates and reads unsaved related headers', async () => {
   const h = setup('#include "local.h"\r\n// 😀 intent\r\n  ')
   const header = new Document('int unsaved();\r\n', '/workspace/local.h'); h.opened.push(header, new Document('private unrelated', '/workspace/unrelated.cpp'))
@@ -57,6 +108,16 @@ test('context uses global UTF-16 coordinates and reads unsaved related headers',
   assert.equal(await h.resolver.isCurrent(snapshot), true)
   header.text += 'int changed();'; header.version++
   assert.equal(await h.resolver.isCurrent(snapshot), false)
+})
+test('a selected word is an exact prioritized editable window with its own trigger', async () => {
+  const h = setup('const total = oldValue;\n')
+  const selection = new Selection(0, 14, 0, 22)
+  const snapshot = await h.resolver.collect(h.doc, selection.active as vscode.Position, 'next-edit', 'selection', true, false, false, selection as vscode.Selection)
+  assert.doesNotThrow(() => parseSuggestionRequest(snapshot.request))
+  assert.deepEqual(snapshot.request.active.selection, { start: { line: 0, character: 14 }, end: { line: 0, character: 22 } })
+  assert.equal(snapshot.request.trigger, 'selection')
+  assert.equal(snapshot.request.documents[0]!.windows[0]!.text, 'oldValue')
+  assert.deepEqual(snapshot.request.documents[0]!.windows[0]!.range, snapshot.request.active.selection)
 })
 test('Aily Tab discovers unopened related sources, carries cross-file history, and verifies navigation against dirty buffers', async () => {
   const h = setup('#include "Sensor.h"\nint main() { return sensor.read(); }\n')

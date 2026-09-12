@@ -1,6 +1,6 @@
 import type * as vscode from 'vscode'
 import { contentHash, isCompletionSource, type RecentEditStore } from './completionState'
-import type { CandidateDocument, CodeWindow, DiagnosticContext, SuggestionRequest, Range, Suggestion, TextEdit } from './suggestionProtocol'
+import type { CandidateDocument, ClipboardContext, CodeWindow, DiagnosticContext, SuggestionRequest, Range, Suggestion, TextEdit } from './suggestionProtocol'
 import type { ImportBinding } from './partialImportAcceptance'
 import { relatedSourcePaths } from './relatedSourcePaths'
 
@@ -45,8 +45,31 @@ export class SuggestionContextResolver {
   constructor(private readonly api: typeof vscode, private readonly session: string, private readonly history: RecentEditStore, private readonly version: string,
     private readonly readDeclaration?: (path: string) => Promise<{ text: string; relativePath: string; snapshotId: string } | undefined>,
     private readonly canEditRelated?: (uri: vscode.Uri, languageId: string) => boolean,
-    private readonly diagnosticsAvailable: (document: vscode.TextDocument) => boolean = () => true) {}
-  async collect(document: vscode.TextDocument, position: vscode.Position, mode: SuggestionRequest['mode'], trigger: SuggestionRequest['trigger'], extendedRange: boolean, allowImports = false, crossFile = false): Promise<EditorSnapshot> {
+    private readonly diagnosticsAvailable: (document: vscode.TextDocument) => boolean = () => true,
+    private readonly readClipboard: (workspace: string) => ClipboardContext[] = () => []) {}
+  /** A user-pointed word replacement needs only its current buffer. Keep the
+   * normal snapshot/permission checks without language or dependency discovery. */
+  collectLocalWord(document: vscode.TextDocument, position: vscode.Position, range: vscode.Range, trigger: 'cursor' | 'selection'): EditorSnapshot {
+    const root = this.api.workspace.getWorkspaceFolder(document.uri)
+    const text = document.getText(); const version = document.version
+    const from = document.offsetAt(range.start); const to = document.offsetAt(range.end)
+    const offset = document.offsetAt(position)
+    if (!root || document.uri.scheme !== 'file' || !isCompletionSource(document.uri.path) || text.length > 300_000 ||
+      from >= to || to - from > 256 || offset < from || offset > to || range.start.line !== range.end.line) throw new Error('Unsupported local word replacement')
+    const fileId = `f-${contentHash(document.uri.toString())}`; const snapshotId = `${version}-${contentHash(text)}`
+    const id = crypto.randomUUID()
+    return { document, text, version, offset, createdAt: Date.now(), contextGeneration: this.generation,
+      dependencies: [{ uri: document.uri, text, version }], request: {
+        protocolVersion: 2, requestId: id, opportunityId: id, workspaceSessionId: `${this.session}-${contentHash(root.uri.toString())}`,
+        client: { name: 'aily-coder-editor', version: this.version, sessionId: this.session }, mode: 'next-edit', trigger,
+        active: { fileId, snapshotId, position: wirePoint(position), ...(trigger === 'selection' ? { selection: toRange(range) } : {}) },
+        documents: [{ fileId, snapshotId, relativePath: this.api.workspace.asRelativePath(document.uri, false).replace(/\\/g, '/'),
+          languageId: document.languageId, version, permission: 'edit',
+          windows: [{ windowId: 'word', range: toRange(range), text: text.slice(from, to), purpose: 'completion' }] }],
+        recentEdits: [], diagnostics: [], options: { crossFile: false, autoImports: false, partialInsertAccept: false, maxCandidates: 1 },
+      } }
+  }
+  async collect(document: vscode.TextDocument, position: vscode.Position, mode: SuggestionRequest['mode'], trigger: SuggestionRequest['trigger'], extendedRange: boolean, allowImports = false, crossFile = false, selection?: vscode.Selection): Promise<EditorSnapshot> {
     const discoveryDeadline = Date.now() + 150
     const discoveryTimeLeft = () => Math.max(0, discoveryDeadline - Date.now())
     const api = this.api; const text = document.getText(); const version = document.version
@@ -56,11 +79,13 @@ export class SuggestionContextResolver {
     const budget = suggestionContextBudget(mode)
     const root = api.workspace.getWorkspaceFolder(document.uri)
     if (!root || !isCompletionSource(document.uri.path) || text.length > 300_000) throw new Error('Unsupported completion source')
+    const clipboardHistory = this.readClipboard(root.uri.toString())
+    const queryPosition = selection?.start ?? position
     const query = <T>(command: string): Promise<T[]> => {
-      const key = `${document.uri}:${version}:${position.line}:${position.character}:${command}`
+      const key = `${document.uri}:${version}:${queryPosition.line}:${queryPosition.character}:${command}`
       let pending = this.languageQueries.get(key)
       if (!pending) {
-        pending = Promise.resolve(api.commands.executeCommand<T[]>(command, document.uri, position)).catch(() => [])
+        pending = Promise.resolve(api.commands.executeCommand<T[]>(command, document.uri, queryPosition)).catch(() => [])
         this.languageQueries.set(key, pending)
         if (this.languageQueries.size > 32) this.languageQueries.delete(this.languageQueries.keys().next().value!)
       }
@@ -99,7 +124,10 @@ export class SuggestionContextResolver {
     // A compact function-sized window lets the model group a local rename or
     // coherent rewrite into the single edit that Aily Tab presents. Distant
     // references remain separate windows and retain the jump-before-apply flow.
-    if (mode === 'next-edit') lineWindow(position.line, 8)
+    if (mode === 'next-edit') {
+      if (selection && !selection.isEmpty) makeWindow(document.offsetAt(selection.start), document.offsetAt(selection.end), 'completion')
+      lineWindow(position.line, 8)
+    }
     else makeWindow(offset, offset, 'completion')
     // Context windows retain true document coordinates; only completion windows are writable.
     const beforeStart = Math.max(0, offset - budget.beforeCharacters)
@@ -272,7 +300,8 @@ export class SuggestionContextResolver {
       diagnosticGenerations: diagnostics.length ? [{ uri: document.uri.toString(), generation: diagnosticGeneration }] : [], dependencies, request: {
       protocolVersion: 2, requestId: id, opportunityId: id, workspaceSessionId: `${this.session}-${contentHash(root.uri.toString())}`,
       client: { name: 'aily-coder-editor', version: this.version, sessionId: this.session }, mode, trigger,
-      active: { fileId, snapshotId, position: wirePoint(position) }, documents, recentEdits: history.filter(edit => documents.some(doc => doc.fileId === edit.fileId)), diagnostics,
+      active: { fileId, snapshotId, position: wirePoint(position), ...(selection && !selection.isEmpty ? { selection: toRange(selection) } : {}) }, documents, recentEdits: history.filter(edit => documents.some(doc => doc.fileId === edit.fileId)), diagnostics,
+      ...(clipboardHistory.length ? { clipboardHistory } : {}),
       options: { crossFile, autoImports: documents[0]!.windows.some(window => window.purpose === 'import'), partialInsertAccept: true, maxCandidates: 1 },
     } }
   }

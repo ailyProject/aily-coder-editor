@@ -208,18 +208,29 @@ export class EditPresentation {
       if (inline) {
         root.style.width = `${Math.min(proposedWidth, initial.available)}px`
         root.style.transform = `translate(${initial.offset}px, -1px)`
-        this.content = { getId: () => 'aily.tab.inlineEdit', getDomNode: () => root, suppressMouseDown: true,
-          getPosition: () => ({ position, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT] }),
-          beforeRender: () => {
+        const content: monaco.editor.IContentWidget = { getId: () => 'aily.tab.inlineEdit', getDomNode: () => root, suppressMouseDown: true,
+          getPosition: () => ({ position, preference: [monaco.editor.ContentWidgetPositionPreference.EXACT] }) }
+        this.content = content
+        editor.addContentWidget(content)
+        // getScrolledVisiblePosition flushes the Workbench renderer synchronously.
+        // Calling it from beforeRender re-enters this widget's measurement before
+        // its dimensions are cached. Refresh outside the render stack instead.
+        let layoutFrame: number | undefined
+        const scheduleLayout = () => {
+          if (layoutFrame !== undefined) return
+          layoutFrame = requestAnimationFrame(() => {
+            layoutFrame = undefined
+            if (this.content !== content || this.editor !== editor) return
             const current = geometry()
             if (current) {
               root.style.width = `${Math.min(proposedWidth, current.available)}px`
               root.style.transform = `translate(${current.offset}px, -1px)`
             }
-            return null
-          } }
-        editor.addContentWidget(this.content)
-        this.listeners.push(editor.onDidLayoutChange(() => { if (this.content) editor.layoutContentWidget(this.content) }))
+            editor.layoutContentWidget(content)
+          })
+        }
+        this.listeners.push(editor.onDidLayoutChange(scheduleLayout), editor.onDidScrollChange(scheduleLayout),
+          { dispose: () => { if (layoutFrame !== undefined) cancelAnimationFrame(layoutFrame) } })
       } else {
         root.classList.remove('aily-next-edit-inline'); root.classList.add('aily-next-edit-stacked')
         const lines = previewText.split('\n').length + candidate.additionalEdits.reduce((total, edit) => total + edit.newText.trimEnd().split('\n').length, 0)

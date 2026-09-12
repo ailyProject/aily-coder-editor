@@ -8,7 +8,7 @@ export const AILY_TAB_SNOOZE_PRESETS: readonly AilyTabSnoozePreset[] = Object.fr
   { label: '5 分钟', detail: '短暂专注，之后自动恢复', durationMs: 5 * 60_000 },
   { label: '30 分钟', detail: '暂停半小时', durationMs: 30 * 60_000 },
   { label: '1 小时', detail: '暂停一小时', durationMs: 60 * 60_000 },
-  { label: '8 小时', detail: '暂停到当前工作日结束', durationMs: 8 * 60 * 60_000 },
+  { label: '8 小时', detail: '从现在起暂停八小时', durationMs: 8 * 60 * 60_000 },
 ])
 
 export function ailyTabSnoozeDeadline(now: number, durationMs: number): number {
@@ -20,11 +20,25 @@ export function ailyTabSnoozeDeadline(now: number, durationMs: number): number {
 
 export function ailyTabSnoozeRemaining(until: number, now = Date.now()): string {
   const remaining = Math.max(0, until - now)
+  if (!remaining) return '0 秒'
   if (remaining < 60_000) return `${Math.max(1, Math.ceil(remaining / 1000))} 秒`
-  if (remaining < 60 * 60_000) return `${Math.ceil(remaining / 60_000)} 分钟`
-  const hours = Math.floor(remaining / (60 * 60_000))
-  const minutes = Math.ceil((remaining - hours * 60 * 60_000) / 60_000)
+  const totalMinutes = Math.ceil(remaining / 60_000)
+  if (totalMinutes < 60) return `${totalMinutes} 分钟`
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
   return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`
+}
+
+export function normalizeCompletionExtensions(values: readonly string[]): string[] {
+  return [...new Set(values.map(value => value.trim().toLowerCase()).filter(Boolean)
+    .map(value => value.startsWith('.') ? value : `.${value}`))]
+}
+
+export function toggleCompletionExtension(values: readonly string[], extension: string): string[] {
+  const normalized = normalizeCompletionExtensions(values)
+  const target = normalizeCompletionExtensions([extension])[0]
+  if (!target) return normalized
+  return normalized.includes(target) ? normalized.filter(value => value !== target) : [...normalized, target]
 }
 
 export function ailyTabInteractionBlocked(state: { isComposing?: unknown; inSnippetMode?: unknown; suggestWidgetVisible?: unknown }): boolean {

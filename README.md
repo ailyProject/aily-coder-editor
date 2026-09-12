@@ -201,7 +201,7 @@ npm start
 
 ### Aily Tab 自动补全
 
-Coder 只注册 Aily Tab：自动续写、已有代码修改、关联文件预测、导入与诊断修复共用一个控制器。Tab 接受，跨文件先 Tab 跳转审阅、再 Tab 接受；Esc 拒绝，支持逐词/逐行接受和原生撤销。左侧顶部 Aily Tab 按钮提供触发、暂停和文件类型设置。
+Coder 只注册 Aily Tab：自动续写、已有代码修改、关联文件预测、导入与诊断修复共用一个控制器。代码修改后停顿、鼠标点击代码附近或选中单词/语段都会形成下一处修改机会；Tab 接受后继续预测下一项。跨文件先 Tab 跳转审阅、再 Tab 接受；Esc 拒绝，支持逐词/逐行接受和原生撤销。左侧顶部 Aily Tab 按钮提供触发、暂停和文件类型设置。
 
 请求经宿主认证桥接进入 `/api/v4/code/suggestions`。旧 Copilot provider、三候选面板、模式选择、本地 FIM 与 v3 回退均已移除。模型和凭证只在服务端配置，前端不再读取 `VITE_AI_INLINE_*` 或 `aiInlineProvider`。用法、设置、三端边界见 [Aily Tab 说明](docs/aily-tab.md)。
 

@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { editOrigin, hasRecentReplacement, isTypedLineBreak, minimalEdit, MAX_PREDICTION_CHAIN } from './ailyTabOpportunity'
+import { editOrigin, hasRecentReplacement, isTypedLineBreak, minimalEdit, MAX_PREDICTION_CHAIN, selectionOpportunity } from './ailyTabOpportunity'
+
+test('mouse caret moves and deliberate selections create next-edit opportunities', () => {
+  assert.equal(selectionOpportunity('mouse', true), 'cursor')
+  assert.equal(selectionOpportunity('mouse', false), 'selection')
+  assert.equal(selectionOpportunity('keyboard', false), 'selection')
+  assert.equal(selectionOpportunity('keyboard', true), undefined)
+  assert.equal(selectionOpportunity('other', false), undefined)
+})
+test('native deletion command provenance preserves a delete-then-type word change', () => {
+  for (const detailedSource of ['deleteLeft', 'deleteRight', 'deleteWordLeft', 'deleteWordRight', 'deleteWordStartLeft', 'deleteWordEndRight']) {
+    assert.equal(editOrigin({ source: 'cursor', metadata: { kind: 'executeCommands', detailedSource } }), 'typing')
+    assert.equal(editOrigin({ source: 'applyEdits', metadata: { kind: 'executeCommands', detailedSource } }), 'external')
+  }
+  assert.equal(editOrigin({ source: 'cursor', metadata: { kind: 'executeCommands', detailedSource: 'extension.edit' } }), 'external')
+})
 test('physical Enter stays a continuation opportunity after a recent rename', () => {
   const rename = [{ fileId: 'main', origin: 'typing' as const, before: 'old', after: 'new', ageMs: 20 }]
   assert.equal(hasRecentReplacement(rename, 'main'), true)

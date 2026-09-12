@@ -44,7 +44,8 @@ root = Path(tempfile.mkdtemp(prefix='aily-v4-workspace-')).resolve()
 (root / 'rename.cpp').write_text('int oldName = 1;\n' + '// spacer\n' * 20 + 'int value = oldName;\n')
 (root / 'rename-local.js').write_text('function nominalZoneOf(distTb) {\n  if (distTb > 3000) return 0;\n  if (distTb > 2000) return 1;\n  if (distTb > 1000) return 2;\n\n  console.log("distTb", distTb);\n  return 3;\n}\n')
 (root / 'delete.cpp').write_text('int unused = 1;\nint main() { return 0; }\n')
-state = {'scenario': 'completion', 'requests': [], 'providerCalls': 0, 'feedback': []}
+(root / 'selection.cpp').write_text('int result = oldValue + 1;\n')
+state = {'scenario': 'completion', 'requests': [], 'providerCalls': 0, 'feedback': [], 'clipboardProviderInputs': []}
 redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
 class Benefits:
     async def get(self, _user): return True, 10000
@@ -104,7 +105,17 @@ async def provider(request: Request):
     windows = ([w for w in data['documents'][0]['windows'] if w['purpose'] == 'completion']
                if data['mode'] == 'next-edit' else [dict(windowId=data['cursorWindowId'])])
     scenario = state['scenario']
-    if scenario == 'aily-tab' and data['mode'] == 'next-edit':
+    if scenario == 'clipboard':
+        state['clipboardProviderInputs'].append(data.get('clipboardHistory', []))
+        history = data.get('clipboardHistory', [])
+        text = history[0]['text'].strip() if history else ''
+        if data['mode'] == 'next-edit':
+            window = windows[0]
+            replacement = window['text'].replace('return copiedLimit;', 'return copiedLimit + 1;')
+            suggestions = [dict(windowId=window['windowId'], newText=replacement, additionalEdits=[])] if text and replacement != window['text'] else []
+        else:
+            suggestions = [dict(windowId=windows[0]['windowId'], newText=text if text.endswith(';') else text + ';', additionalEdits=[])] if text else []
+    elif scenario == 'aily-tab' and data['mode'] == 'next-edit':
         suggestions = []
         active_text = '\n'.join(window['text'] for window in data['documents'][0]['windows'])
         parameter_match = re.search(r'\bread\(int\s+([A-Za-z_]\w*)\)', active_text)
@@ -123,9 +134,15 @@ async def provider(request: Request):
         values = (['tor<int> values;'] if scenario == 'import-completion' else ['int result = 0;\n  return result;'] if scenario == 'multiline' else ['return 0;'])
         suggestions = [dict(windowId=windows[0]['windowId'], newText=value, additionalEdits=[]) for value in values]
     else:
-        window = next((w for w in windows if w['range']['start']['line'] > 10 and 'oldName' in w['text']), windows[0]) if scenario == 'rename' else windows[0]
+        if scenario == 'selection':
+            selected = data.get('active', {}).get('selection')
+            window = next((w for w in windows if selected and w['range'] == selected), windows[0])
+        else:
+            window = next((w for w in windows if w['range']['start']['line'] > 10 and 'oldName' in w['text']), windows[0]) if scenario == 'rename' else windows[0]
         text = (window['text'].replace('oldName', 'newName') if scenario == 'rename' else
-            window['text'].replace('distTb', 'AC') if scenario == 'rename-local' else
+            window['text'].replace('oldValue', 'newValue') if scenario == 'selection' else
+            window['text'].replace('distTb', 'AC') if scenario == 'rename-local' and 'distTb' in window['text'] else
+            window['text'].replace('return 3;', 'return 4;') if scenario == 'rename-local' else
             window['text'].replace('int unused = 1;\n', ''))
         suggestions = [dict(windowId=window['windowId'], newText=text, additionalEdits=[])] if text != window['text'] else []
     raw = json.dumps({'suggestions': suggestions}, ensure_ascii=False)
