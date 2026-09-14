@@ -4,7 +4,7 @@ export async function activeDevReloadUrl(markerPath) {
   let reloadUrl
   try {
     const marker = JSON.parse(await readFile(markerPath, 'utf8'))
-    reloadUrl = new URL(String(marker.reloadUrl || ''))
+    reloadUrl = new globalThis.URL(String(marker.reloadUrl || ''))
   } catch {
     return ''
   }
@@ -14,8 +14,8 @@ export async function activeDevReloadUrl(markerPath) {
       reloadUrl.pathname !== '/events') return ''
 
   try {
-    const response = await fetch(new URL('/health', reloadUrl), {
-      signal: AbortSignal.timeout(300),
+    const response = await globalThis.fetch(new globalThis.URL('/health', reloadUrl), {
+      signal: globalThis.AbortSignal.timeout(300),
     })
     return response.ok ? reloadUrl.toString() : ''
   } catch {
