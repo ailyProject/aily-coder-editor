@@ -394,13 +394,16 @@ async function startWatchMode() {
   }
   process.once('SIGINT', () => void stop('SIGINT'))
   process.once('SIGTERM', () => void stop('SIGTERM'))
-  await new Promise((resolve, reject) => {
-    builder.once('error', reject)
-    builder.once('exit', code => code === 0 || stopping
-      ? resolve()
-      : reject(new Error(`Coder Vite watcher exited with code ${code}`)))
-  })
-  await stop('SIGTERM')
+  try {
+    await new Promise((resolve, reject) => {
+      builder.once('error', reject)
+      builder.once('exit', code => code === 0 || stopping
+        ? resolve()
+        : reject(new Error(`Coder Vite watcher exited with code ${code}`)))
+    })
+  } finally {
+    await stop('SIGTERM')
+  }
 }
 
 if (!packageName || !catalogId || !subapp.namespace || !subapp.titleKey) {

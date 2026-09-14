@@ -6,6 +6,7 @@ import { setTimeout } from 'node:timers'
 import { fileURLToPath, URL } from 'node:url'
 import { attachCoderAgentRpcServer } from './agentRpcServer.js'
 import { handleComponentLibraryApiRequest } from './componentLibraryApi.js'
+import { activeDevReloadUrl } from './devReload.js'
 import { attachCoderLanguageServer } from './languageServer.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -67,7 +68,10 @@ function resolveUiFile(requestUrl) {
   return indexPath
 }
 
-function serveFile(request, response, filePath) {
+async function serveFile(request, response, filePath) {
+  const reloadUrl = filePath === indexPath
+    ? await activeDevReloadUrl(path.join(packageRoot, '.aily-dev.json'))
+    : ''
   const headers = {
     'Cache-Control': filePath === indexPath ? 'no-cache' : 'public, max-age=31536000, immutable',
     'Content-Type': mimeType(filePath),
@@ -80,20 +84,11 @@ function serveFile(request, response, filePath) {
     response.end()
     return
   }
-  if (filePath === indexPath) {
-    const markerPath = path.join(packageRoot, '.aily-dev.json')
-    try {
-      const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
-      const reloadUrl = new URL(String(marker.reloadUrl || ''))
-      if (reloadUrl.hostname === '127.0.0.1' || reloadUrl.hostname === 'localhost') {
-        const reloadScript = `<script>new EventSource(${JSON.stringify(reloadUrl.toString())}).addEventListener('reload',()=>location.reload())</script>`
-        const html = readFileSync(indexPath, 'utf8').replace(/<\/body>/i, `${reloadScript}</body>`)
-        response.end(html)
-        return
-      }
-    } catch {
-      // Production and one-shot links do not have a development marker.
-    }
+  if (reloadUrl) {
+    const reloadScript = `<script>(()=>{const source=new EventSource(${JSON.stringify(reloadUrl)});source.addEventListener('reload',()=>location.reload());source.onerror=()=>source.close()})()</script>`
+    const html = readFileSync(indexPath, 'utf8').replace(/<\/body>/i, `${reloadScript}</body>`)
+    response.end(html)
+    return
   }
   createReadStream(filePath)
     .once('error', () => {
@@ -117,7 +112,7 @@ async function startServeMode(options) {
   let shuttingDown = false
 
   const server = createServer((request, response) => {
-    void handleComponentLibraryApiRequest(request, response).then(handled => {
+    void handleComponentLibraryApiRequest(request, response).then(async handled => {
       if (handled) return
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         response.writeHead(405, { Allow: 'GET, HEAD' })
@@ -125,7 +120,7 @@ async function startServeMode(options) {
         return
       }
       try {
-        serveFile(request, response, resolveUiFile(request.url))
+        await serveFile(request, response, resolveUiFile(request.url))
       } catch (error) {
         response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
         response.end(error instanceof Error ? error.message : String(error))
