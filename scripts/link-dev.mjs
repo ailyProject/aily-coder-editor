@@ -28,6 +28,7 @@ const catalogId = String(subapp.id || 'aily-coder-editor').trim()
 const markerPath = path.join(packageRoot, '.aily-dev.json')
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const booleanOptions = new Set(['help', 'skip-build', 'unlink', 'watch'])
+const versionStoreSchema = 2
 
 function parseArgs(argv) {
   const options = {}
@@ -63,6 +64,29 @@ function resolveInstallRoot(options) {
 
 function packagePath(installRoot, name) {
   return path.join(installRoot, 'node_modules', ...name.split('/'))
+}
+
+function storeKeyForPackage(name) {
+  return String(name).split('/').at(-1)
+}
+
+function developmentVersion(version) {
+  return `${version}-dev`
+}
+
+function developmentStorePaths(installRoot) {
+  const storeRoot = path.join(installRoot, 'store', storeKeyForPackage(packageName))
+  const version = developmentVersion(packageJson.version)
+  const versionRoot = path.join(storeRoot, version)
+  return {
+    storeRoot,
+    version,
+    versionRoot,
+    sourceRoot: path.join(versionRoot, 'source'),
+    readyPath: path.join(versionRoot, 'ready.json'),
+    activePath: path.join(storeRoot, 'active.json'),
+    activeBackupPath: path.join(storeRoot, 'active.json.aily-dev-backup'),
+  }
 }
 
 async function statPath(filePath) {
@@ -114,55 +138,25 @@ function run(command, args) {
   })
 }
 
-async function linkPackage(installRoot) {
-  const linkPath = packagePath(installRoot, packageName)
-  const backupPath = `${linkPath}.aily-dev-backup`
-  await mkdir(path.dirname(linkPath), { recursive: true })
-  const current = await statPath(linkPath)
-
-  if (current?.isSymbolicLink() && await realpath(linkPath).catch(() => '') === await realpath(packageRoot)) {
-    return { linkPath, replaced: Boolean(await statPath(backupPath)) }
-  }
-  if (current) {
-    if (await statPath(backupPath)) {
-      throw new Error(`Cannot replace ${linkPath}: backup already exists at ${backupPath}`)
-    }
-    await rename(linkPath, backupPath)
-  }
-
-  try {
-    await symlink(packageRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
-  } catch (error) {
-    if (current && await statPath(backupPath) && !(await statPath(linkPath))) {
-      await rename(backupPath, linkPath)
-    }
-    throw error
-  }
-  if (await realpath(linkPath) !== await realpath(packageRoot)) {
-    throw new Error(`Unexpected development link target: ${await realpath(linkPath)}`)
-  }
-  return { linkPath, replaced: Boolean(current) }
-}
-
-async function unlinkPackage(installRoot) {
+async function cleanupLegacyDevelopmentLink(installRoot) {
   const linkPath = packagePath(installRoot, packageName)
   const backupPath = `${linkPath}.aily-dev-backup`
   const current = await statPath(linkPath)
   if (current) {
-    if (!current.isSymbolicLink()) {
-      throw new Error(`Refusing to unlink a non-symlink package: ${linkPath}`)
+    if (current.isSymbolicLink()) {
+      const resolved = await realpath(linkPath).catch(() => '')
+      if (resolved && resolved !== await realpath(packageRoot)) {
+        throw new Error(`A different legacy development link still overrides the version store: ${linkPath} -> ${resolved}`)
+      }
+      await unlink(linkPath)
     }
-    const resolved = await realpath(linkPath).catch(() => '')
-    if (resolved && resolved !== await realpath(packageRoot)) {
-      throw new Error(`Refusing to unlink a different source package: ${linkPath} -> ${resolved}`)
-    }
-    await unlink(linkPath)
   }
   if (await statPath(backupPath)) {
+    if (await statPath(linkPath)) {
+      throw new Error(`Cannot restore legacy development backup while ${linkPath} exists`)
+    }
     await rename(backupPath, linkPath)
-    return { linkPath, restored: true }
   }
-  return { linkPath, restored: false }
 }
 
 function dependencyBackupPath(installRoot) {
@@ -197,6 +191,168 @@ async function updateDevelopmentDependency(installRoot, unlinking) {
   await writeJsonAtomic(installPackagePath, installPackage)
   if (Object.keys(backup).length) await writeJsonAtomic(backupFile, backup)
   else await rm(backupFile, { force: true })
+}
+
+async function mirrorDevelopmentPackage(sourceRoot) {
+  await mkdir(sourceRoot, { recursive: true })
+  for (const entry of await readdir(packageRoot, { withFileTypes: true })) {
+    if (['.git', '.aily-dev.json', '.aily-dev-reload.json', 'package.json'].includes(entry.name)) continue
+    const source = path.join(packageRoot, entry.name)
+    const destination = path.join(sourceRoot, entry.name)
+    if (entry.isDirectory()) {
+      await symlink(source, destination, process.platform === 'win32' ? 'junction' : 'dir')
+    } else if (entry.isSymbolicLink()) {
+      const resolved = await realpath(source)
+      const resolvedStat = await lstat(resolved)
+      if (resolvedStat.isDirectory()) {
+        await symlink(source, destination, process.platform === 'win32' ? 'junction' : 'dir')
+      } else {
+        await copyFile(source, destination)
+      }
+    } else if (entry.isFile()) {
+      await copyFile(source, destination)
+    }
+  }
+  await writeJsonAtomic(path.join(sourceRoot, 'package.json'), {
+    ...packageJson,
+    name: packageName,
+    version: developmentVersion(packageJson.version),
+    private: true,
+  })
+}
+
+async function createDevelopmentGeneration(installRoot) {
+  const paths = developmentStorePaths(installRoot)
+  await mkdir(paths.storeRoot, { recursive: true })
+  const currentActive = existsSync(paths.activePath) ? await readJson(paths.activePath) : null
+  if (!existsSync(paths.activeBackupPath)) {
+    if (await isDevelopmentLocator(paths.storeRoot, currentActive, packageName)) {
+      if (currentActive.previous) {
+        await writeJsonAtomic(paths.activeBackupPath, {
+          ...currentActive,
+          mode: 'auto',
+          selected: currentActive.previous,
+          previous: null,
+        })
+      } else {
+        await writeJsonAtomic(paths.activeBackupPath, { devActiveOriginallyMissing: true })
+      }
+    } else if (currentActive) {
+      await copyFile(paths.activePath, paths.activeBackupPath)
+    } else {
+      await writeJsonAtomic(paths.activeBackupPath, { devActiveOriginallyMissing: true })
+    }
+  }
+
+  await rm(paths.versionRoot, { recursive: true, force: true })
+  await mirrorDevelopmentPackage(paths.sourceRoot)
+  const locator = { version: paths.version, path: `${paths.version}/source` }
+  await writeJsonAtomic(paths.readyPath, {
+    schemaVersion: versionStoreSchema,
+    complete: true,
+    packageName,
+    storeKey: storeKeyForPackage(packageName),
+    version: paths.version,
+    path: locator.path,
+    distribution: null,
+    installMode: 'development',
+    installedAt: new Date().toISOString(),
+  })
+  await writeJsonAtomic(paths.activePath, {
+    schemaVersion: versionStoreSchema,
+    packageName,
+    storeKey: storeKeyForPackage(packageName),
+    disabled: false,
+    mode: 'pinned',
+    selected: locator,
+    previous: await isDevelopmentLocator(paths.storeRoot, currentActive, packageName)
+      ? currentActive.previous || null
+      : currentActive?.selected || null,
+    activatedAt: new Date().toISOString(),
+  })
+  await removeDevelopmentGenerations(paths.storeRoot, paths.version)
+  return paths
+}
+
+async function restoreDevelopmentGeneration(installRoot) {
+  const paths = developmentStorePaths(installRoot)
+  const currentActive = existsSync(paths.activePath) ? await readJson(paths.activePath) : null
+  if (await isDevelopmentLocator(paths.storeRoot, currentActive, packageName)) {
+    const backup = existsSync(paths.activeBackupPath) ? await readJson(paths.activeBackupPath) : null
+    if (backup?.devActiveOriginallyMissing === true) await rm(paths.activePath, { force: true })
+    else if (backup) await copyFile(paths.activeBackupPath, paths.activePath)
+    else await rm(paths.activePath, { force: true })
+  }
+  await rm(paths.activeBackupPath, { force: true })
+  await removeDevelopmentGenerations(paths.storeRoot)
+  return paths
+}
+
+async function hasVersionedDevelopmentPackage(installRoot, name) {
+  const storeRoot = path.join(installRoot, 'store', storeKeyForPackage(name))
+  const activePath = path.join(storeRoot, 'active.json')
+  if (!existsSync(activePath)) return false
+  try {
+    return await isDevelopmentLocator(storeRoot, await readJson(activePath), name)
+  } catch {
+    return false
+  }
+}
+
+async function hasVersionedLocalPackage(installRoot, name) {
+  if (await hasVersionedDevelopmentPackage(installRoot, name)) return true
+  const storeRoot = path.join(installRoot, 'store', storeKeyForPackage(name))
+  const activePath = path.join(storeRoot, 'active.json')
+  if (!existsSync(activePath)) return false
+  try {
+    const active = await readJson(activePath)
+    const version = active?.selected?.version
+    if (active?.mode !== 'pinned' || typeof version !== 'string') return false
+    const ready = await readJson(path.join(storeRoot, version, 'ready.json'))
+    return ready?.complete === true && ready?.installMode === 'next' && ready?.packageName === name
+  } catch {
+    return false
+  }
+}
+
+async function readLocatorMode(storeRoot, active, name) {
+  const version = active?.selected?.version
+  if (active?.mode !== 'pinned' || typeof version !== 'string') return ''
+  try {
+    const ready = await readJson(path.join(storeRoot, version, 'ready.json'))
+    return ready?.complete === true && ready?.packageName === name
+      ? String(ready.installMode || '')
+      : ''
+  } catch {
+    return ''
+  }
+}
+
+async function isDevelopmentLocator(storeRoot, active, name) {
+  const version = active?.selected?.version
+  if (active?.mode !== 'pinned' || typeof version !== 'string' || !version.endsWith('-dev')) return false
+  try {
+    const ready = await readJson(path.join(storeRoot, version, 'ready.json'))
+    return ready?.complete === true && ready?.installMode === 'development' && ready?.packageName === name
+  } catch {
+    return false
+  }
+}
+
+async function removeDevelopmentGenerations(storeRoot, keepVersion = '') {
+  if (!existsSync(storeRoot)) return
+  for (const entry of await readdir(storeRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === keepVersion) continue
+    const versionRoot = path.join(storeRoot, entry.name)
+    try {
+      const ready = await readJson(path.join(versionRoot, 'ready.json'))
+      if (ready?.installMode === 'development') {
+        await rm(versionRoot, { recursive: true, force: true })
+      }
+    } catch {
+      // Never remove an unverified version-store generation.
+    }
+  }
 }
 
 async function loadCatalogLocales() {
@@ -255,11 +411,13 @@ async function mergeDevelopmentIndex(installRoot) {
   console.log(`Merged ${catalogId} into the development subapp index at ${indexPath}`)
 }
 
-async function hasLinkedCatalogPackage(installRoot, index) {
+async function hasDevelopmentCatalogPackage(installRoot, index) {
   for (const [id, entry] of Object.entries(index)) {
     if (id === 'dev' || !entry || typeof entry !== 'object') continue
     const name = typeof entry.package === 'string' ? entry.package : ''
-    if (name && (await statPath(packagePath(installRoot, name)))?.isSymbolicLink()) return true
+    if (!name) continue
+    if ((await statPath(packagePath(installRoot, name)))?.isSymbolicLink()) return true
+    if (await hasVersionedLocalPackage(installRoot, name)) return true
   }
   return false
 }
@@ -269,9 +427,18 @@ async function removeDevelopmentIndexEntry(installRoot) {
   const backupPath = `${indexPath}.aily-dev-backup`
   if (!existsSync(indexPath)) return
   const current = await readJson(indexPath)
+  const storeRoot = path.join(installRoot, 'store', storeKeyForPackage(packageName))
+  const activePath = path.join(storeRoot, 'active.json')
+  const active = existsSync(activePath) ? await readJson(activePath) : null
+  if (await readLocatorMode(storeRoot, active, packageName) === 'next'
+    && current[catalogId]?.package === packageName) {
+    current[catalogId] = { ...current[catalogId], version: active.selected.version }
+    await writeJsonAtomic(indexPath, { ...current, dev: true })
+    return
+  }
   if (current[catalogId]?.package === packageName) delete current[catalogId]
 
-  if (await hasLinkedCatalogPackage(installRoot, current)) {
+  if (await hasDevelopmentCatalogPackage(installRoot, current)) {
     await writeJsonAtomic(indexPath, { ...current, dev: true })
     return
   }
@@ -307,14 +474,15 @@ function printHelp() {
   console.log(`Usage: npm run dev -- [options]
        npm run dev:link -- [options]
 
-Build and link Aily Coder Editor into the same user-level npm subapp directory used in
-production. npm run dev also watches the Vite build and reloads the iframe.
+Build Aily Coder Editor into a pinned <version>-dev generation in the same
+multi-version subapp store used in production. npm run dev also watches the
+Vite build and reloads the iframe.
 
 Options:
   --app-root <path>  Override the npm-global/app target
   --skip-build       Reuse the existing ui/ build
-  --watch            Watch source and reload the linked iframe
-  --unlink           Remove the link and restore replaced state
+  --watch            Watch source and reload the development iframe
+  --unlink           Remove <version>-dev and restore the prior active version
   --help             Show this help`)
 }
 
@@ -361,9 +529,11 @@ async function startReloadServer() {
   }
 }
 
-async function startWatchMode() {
+async function startWatchMode(developmentSourceRoot) {
   const reload = await startReloadServer()
+  const developmentMarkerPath = path.join(developmentSourceRoot, '.aily-dev.json')
   await writeJsonAtomic(markerPath, { reloadUrl: reload.url })
+  await writeJsonAtomic(developmentMarkerPath, { reloadUrl: reload.url })
   const builder = spawn(npmCommand, ['run', 'build:watch'], {
     cwd: packageRoot,
     env: { ...process.env },
@@ -389,6 +559,7 @@ async function startWatchMode() {
     if (stopping) return
     stopping = true
     await rm(markerPath, { force: true })
+    await rm(developmentMarkerPath, { force: true })
     builder.kill(signal === 'SIGTERM' ? 'SIGTERM' : 'SIGINT')
     await reload.close()
   }
@@ -420,20 +591,22 @@ const installRoot = resolveInstallRoot(options)
 await ensureInstallProject(installRoot)
 
 if (options.unlink) {
-  const result = await unlinkPackage(installRoot)
+  await cleanupLegacyDevelopmentLink(installRoot)
   await updateDevelopmentDependency(installRoot, true)
+  const paths = await restoreDevelopmentGeneration(installRoot)
   await removeDevelopmentIndexEntry(installRoot)
   await rm(markerPath, { force: true })
-  console.log(`Unlinked ${packageName} from ${installRoot}${result.restored ? ' and restored the installed package' : ''}`)
+  console.log(`Removed ${packageName}@${paths.version} and restored the prior active version`)
   process.exit(0)
 }
 
 if (!options['skip-build']) await run(npmCommand, ['run', 'build:subapp'])
 assertRunnablePackage()
-const result = await linkPackage(installRoot)
-await updateDevelopmentDependency(installRoot, false)
+await cleanupLegacyDevelopmentLink(installRoot)
+await updateDevelopmentDependency(installRoot, true)
+const paths = await createDevelopmentGeneration(installRoot)
 await mergeDevelopmentIndex(installRoot)
-console.log(`Linked ${packageName}: ${result.linkPath} -> ${packageRoot}${result.replaced ? ' (installed package backed up)' : ''}`)
-console.log('Host starts package-root index.js + ui/index.html from the linked source package.')
+console.log(`Activated ${packageName}@${paths.version}: ${paths.sourceRoot}`)
+console.log('Host starts package-root index.js + ui/index.html from the pinned development generation.')
 
-if (options.watch) await startWatchMode()
+if (options.watch) await startWatchMode(paths.sourceRoot)

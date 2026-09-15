@@ -146,24 +146,21 @@ npm pack
 或环境变量 `AILY_HOST_ROOT` 指定。
 
 独立 Aily Coder 启动时，若全局子应用目录缺少可运行的编辑器，会优先离线安装该包到
-`npm-global/app/node_modules/@aily-project/subapp-aily-coder-editor`；已安装版本和开发软链接
+`npm-global/app/store/subapp-aily-coder-editor/<版本>/source`；正式版和 `<版本>-dev` 开发版
 不会被该兜底包覆盖。普通 Blockly 的安装流程保持原样。打包独立 Coder 前也需运行此脚本，
 发行配置会将这两个文件带入应用资源的 `child/` 目录。
 
-本地模拟生产安装时，请让 npm 安装生成的 tgz，不要把源码目录或开发态
-`node_modules` 复制进子应用目录：
+本地验证生产打包态时，使用统一的多版本部署命令：
 
 ```bash
-AILY_SUBAPP_ROOT="/Users/downey/Library/aily-project/npm-global/app"
-npm install --prefix "$AILY_SUBAPP_ROOT" \
-  ./aily-project-subapp-aily-coder-editor-0.1.2.tgz \
-  --omit=dev --save-exact --no-audit --no-fund
+npm run deploy:next
 ```
 
-安装后包本身位于宿主统一的 `npm-global/app/node_modules/@aily-project/` 下，
-这是宿主的 npm 发现目录；但 Coder 包内部不会再包含一层 `node_modules`，运行时
-依赖已经构建进 `runtime/index.js`。正式发布时同样由宿主从 npm registry 安装，
-无需生产机器额外安装 Coder 的运行时依赖。
+`deploy:next` 内置执行 `build:subapp`，然后对构建结果执行真实 `npm pack` 和隔离安装，把结果部署到
+`npm-global/app/store/subapp-aily-coder-editor/<版本>-next/source`；它不引用源码、不启动 watcher。
+`--skip-build` 仅用于明确复用已有产物。本地运行优先级为 `dev > next > 线上正式版`，验证完成后
+执行 `npm run deploy:next -- --unlink` 恢复下一级版本。Coder 包内部不会包含一层 `node_modules`，
+运行时依赖已经构建进 `runtime/index.js`。
 
 ## 本地开发
 
@@ -186,18 +183,19 @@ npm start
 | 命令 | 说明 |
 |------|------|
 | `npm start` | 开发服务器 |
-| `npm run dev` | 构建并链接到宿主正式安装目录，监听改动并自动刷新 iframe |
+| `npm run dev` | 构建并激活多版本存储中的 `<版本>-dev`，监听改动并自动刷新 iframe |
 | `npm run build` | 类型检查 + 生产构建 |
 | `npm run build:subapp` | 构建可发布的 Coder 子应用包 |
-| `npm run dev:link` | 一次性构建并链接到 Aily Blockly 用户级子应用安装目录 |
-| `npm run dev:unlink` | 移除开发链接并恢复原安装包、依赖声明和目录索引 |
+| `npm run deploy:next` | 先构建，再按 npm 打包态部署为 `<版本>-next` |
+| `npm run dev:link` | 一次性构建并激活 Aily Blockly 用户级多版本存储中的开发版本 |
+| `npm run dev:unlink` | 移除 `<版本>-dev` 并恢复原 `active.json` 和目录索引 |
 | `npm run lint` | ESLint |
 | `npm run lsp-proxy` | 启动 LSP WebSocket 代理（配合 clangd） |
 
-`dev` / `dev:link` 与其它 Aily 子应用使用同一条用户级 npm 发现链路：源码包
-链接到 `${AILY_APPDATA_PATH}/npm-global/app/node_modules`，本地目录合入
+`dev` / `dev:link` 与其它 Aily 子应用使用同一条用户级多版本发现链路：源码包
+映射到 `${AILY_APPDATA_PATH}/npm-global/app/store/subapp-aily-coder-editor/<版本>-dev/source`，本地目录合入
 `subapp-index.json` 并设置 `dev: true`。不再依赖主软件扫描源码目录或 Coder
-专用 Vite 启动入口。结束联调后执行 `npm run dev:unlink`。
+专用 Vite 启动入口，且不再改写 `node_modules` 正式安装目录。结束联调后执行 `npm run dev:unlink`。
 
 ### Aily Tab 自动补全
 
