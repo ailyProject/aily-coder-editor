@@ -5,6 +5,38 @@ export const LOCAL_LIBRARY_PACKAGE_FILE = 'package.json'
 
 export type LibraryTreeSource = 'aily' | 'arduino' | 'aily-chat' | 'unknown'
 
+/** Identity used to resolve the same installed entry as the library list. */
+export type LibraryRemovalTarget = {
+  readonly id: string
+  readonly source: 'aily' | 'registry'
+  readonly query: string
+}
+
+export function packageLibraryRemovalTarget(packageName: string): LibraryRemovalTarget | undefined {
+  if (!/^@aily-project(?:-coder)?\/lib-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(packageName)) return undefined
+  const official = packageName.startsWith('@aily-project-coder/')
+  return { id: `${official ? 'coder' : 'blockly'}:${packageName}`, source: official ? 'registry' : 'aily', query: packageName }
+}
+
+export function workspaceLibraryRemovalTarget(input: {
+  readonly ailyReceipt?: string
+  readonly arduinoReceipt?: string
+}): LibraryRemovalTarget | undefined {
+  const aily = parseJsonObject(input.ailyReceipt)
+  if (aily?.source === 'blockly-library' && typeof aily.packageName === 'string') {
+    return packageLibraryRemovalTarget(aily.packageName)
+  }
+  const receipt = parseJsonObject(input.arduinoReceipt)
+  if (typeof receipt?.name !== 'string' || !receipt.name.trim() || typeof receipt.libraryId !== 'string') return undefined
+  if (receipt.source === 'aily-coder-index' && /^coder:[a-f0-9]{24}$/u.test(receipt.libraryId)) {
+    return { id: receipt.libraryId, source: 'aily', query: receipt.name }
+  }
+  if (receipt.source === 'arduino-library-manager' && /^arduino:.+$/u.test(receipt.libraryId)) {
+    return { id: receipt.libraryId, source: 'registry', query: receipt.name }
+  }
+  return undefined
+}
+
 type JsonObject = Record<string, unknown>
 
 function parseJsonObject(content: string | undefined): JsonObject | undefined {

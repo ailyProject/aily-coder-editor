@@ -34,6 +34,11 @@ export type UiStrings = {
   readonly endOfResults: string
   readonly sourceTabsLabel: string
   readonly versionLabel: string
+  readonly continueUninstall: string
+  libraryInUse(name: string): string
+  uninstallUsageDetail(locations: string): string
+  moreUsages(count: number): string
+  usageCheckFailed(detail: string): string
   readonly continueInstall: string
   incompatibleTitle(name: string): string
   incompatibleDetail(
@@ -59,6 +64,11 @@ const EN: UiStrings = {
   otherArchitecture: 'Other architecture',
   resultUnit: 'libraries',
   endOfResults: 'All matching libraries are shown', sourceTabsLabel: 'Library source', versionLabel: 'version',
+  continueUninstall: 'Uninstall anyway',
+  libraryInUse: name => `${name} is used in the project code`,
+  uninstallUsageDetail: locations => `The following source files reference this library:\n${locations}\n\nUninstalling may cause compilation errors. Uninstall anyway?`,
+  moreUsages: count => `… and ${count} more references`,
+  usageCheckFailed: detail => `Could not complete the library usage check. Nothing was uninstalled. ${detail}`,
   continueInstall: 'Install anyway',
   incompatibleTitle: name => `${name} may not be compatible with the current platform`,
   incompatibleDetail: (supported, active, alternatives) => [
@@ -86,6 +96,11 @@ const ZH_CN: UiStrings = {
   compatible: '兼容当前平台', otherArchitecture: '其他架构',
   resultUnit: '个库', endOfResults: '已显示全部匹配库',
   sourceTabsLabel: '库来源', versionLabel: '版本',
+  continueUninstall: '仍然卸载',
+  libraryInUse: name => `${name} 正在被项目代码使用`,
+  uninstallUsageDetail: locations => `以下代码引用了此库：\n${locations}\n\n卸载后可能导致编译失败，是否仍然卸载？`,
+  moreUsages: count => `……另有 ${count} 处引用`,
+  usageCheckFailed: detail => `无法完成库使用检查，尚未卸载。${detail}`,
   continueInstall: '仍然安装',
   incompatibleTitle: name => `${name} 可能与当前平台不兼容`,
   incompatibleDetail: (supported, active, alternatives) => [
@@ -113,6 +128,11 @@ const ZH_HK: UiStrings = {
   compatible: '相容目前平台', otherArchitecture: '其他架構',
   resultUnit: '個函式庫', endOfResults: '已顯示所有相符函式庫',
   sourceTabsLabel: '函式庫來源', versionLabel: '版本',
+  continueUninstall: '仍然解除安裝',
+  libraryInUse: name => `${name} 正在被專案程式碼使用`,
+  uninstallUsageDetail: locations => `以下程式碼引用了此函式庫：\n${locations}\n\n解除安裝後可能導致編譯失敗，是否仍然解除安裝？`,
+  moreUsages: count => `……另有 ${count} 處引用`,
+  usageCheckFailed: detail => `無法完成函式庫使用檢查，尚未解除安裝。${detail}`,
   continueInstall: '仍要安裝',
   incompatibleTitle: name => `${name} 可能與目前平台不相容`,
   incompatibleDetail: (supported, active, alternatives) => [

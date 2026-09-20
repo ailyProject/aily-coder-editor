@@ -33,6 +33,11 @@ const EMBED_WORKBENCH_CSS = `
   overflow: hidden;
 }
 
+/* Library's list toggle stays visible even when its tree row is not hovered. */
+.monaco-workbench .customview-tree .monaco-list .monaco-list-row .custom-view-tree-node-item .actions:has(.codicon-layout-sidebar-right) {
+  display: flex;
+}
+
 /* Cursor 式横向视图切换条 */
 .aily-embed-sidebar-nav {
   flex: none;

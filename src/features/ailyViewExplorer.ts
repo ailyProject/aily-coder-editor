@@ -42,7 +42,10 @@ import {
   classifyWorkspaceLibrarySource,
   iconForLibraryTreeSource,
   LOCAL_LIBRARY_PACKAGE_FILE,
-  type LibraryTreeSource
+  type LibraryTreeSource,
+  type LibraryRemovalTarget,
+  packageLibraryRemovalTarget,
+  workspaceLibraryRemovalTarget
 } from './ailyLibrarySource.js'
 import {
   listAilyLibraryProjections,
@@ -184,6 +187,7 @@ const COMMANDS = {
   refreshPackages: 'ailyView.refreshPackages',
   openDependencyPanel: 'ailyView.openDependencyPanel',
   toggleLibraryPanel: 'ailyView.toggleLibraryPanel',
+  uninstallLibrary: 'ailyView.uninstallLibrary',
   // §7.2 Package Status
   retryResolve: 'ailyView.retryResolve',
   showResolutionLog: 'ailyView.showResolutionLog',
@@ -396,8 +400,9 @@ type FsTreeElement = {
   readonly isDirectory: boolean
   /** 是否为 Installed Libraries 下的顶层包（用于 package 图标） */
   readonly isTopLevelPackage: boolean
-  /** Library 下一级库的来源；仅用于区分库图标。 */
+  /** Library 下一级库的来源；用于库图标与根节点菜单。 */
   readonly librarySource?: LibraryTreeSource
+  readonly libraryRemovalTarget?: LibraryRemovalTarget
 }
 
 // 提供给 TreeDataProvider：蓝图静态节点 + node_modules 动态节点
@@ -728,17 +733,20 @@ async function readOptionalProjectTextFile(
   }
 }
 
-async function classifyProjectLibraryDirectory(
+async function readProjectLibraryMetadata(
   vscodeApi: typeof vscode,
   libraryRelPath: string
-): Promise<LibraryTreeSource> {
+): Promise<Pick<FsTreeElement, 'librarySource' | 'libraryRemovalTarget'>> {
   const [ailyReceipt, arduinoReceipt, packageJson, localReceipt] = await Promise.all([
     readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${AILY_LIBRARY_RECEIPT_FILE}`),
     readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${ARDUINO_LIBRARY_RECEIPT_FILE}`),
     readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${LOCAL_LIBRARY_PACKAGE_FILE}`),
     readOptionalProjectTextFile(vscodeApi, `${libraryRelPath}/${CODER_LOCAL_LIBRARY_RECEIPT_FILE}`)
   ])
-  return classifyWorkspaceLibrarySource({ ailyReceipt, arduinoReceipt, packageJson, localReceipt })
+  return {
+    librarySource: classifyWorkspaceLibrarySource({ ailyReceipt, arduinoReceipt, packageJson, localReceipt }),
+    libraryRemovalTarget: workspaceLibraryRemovalTarget({ ailyReceipt, arduinoReceipt })
+  }
 }
 
 /** 列出目录真实子项；node_modules 与 Library 的直接子目录用库图标。 */
@@ -784,7 +792,7 @@ async function listFsDirectoryChildren(
   const classified = relPath === COMPONENTS_REL
     ? await Promise.all(out.map(async (item) => (
         item.isDirectory
-          ? { ...item, librarySource: await classifyProjectLibraryDirectory(vscodeApi, item.relPath) }
+          ? { ...item, ...await readProjectLibraryMetadata(vscodeApi, item.relPath) }
           : item
       )))
     : out
@@ -822,7 +830,8 @@ async function listInstalledLibraryChildren(
     label: projection.label,
     isDirectory: true,
     isTopLevelPackage: true,
-    librarySource: projection.source
+    librarySource: projection.source,
+    libraryRemovalTarget: packageLibraryRemovalTarget(projection.packageName)
   }))
 }
 
@@ -960,7 +969,8 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       element.relPath.toLowerCase().endsWith('.cpp')
     const contextId = isSourceCpp
       ? entryNodeIdForRelPath(element.relPath)
-      : `fs-${fsContextSuffix(element.relPath)}`
+      : `${element.librarySource != null ? 'library-root' : 'fs'}-${fsContextSuffix(element.relPath)}`
+        + (element.libraryRemovalTarget != null ? ':uninstallable' : '')
     item.contextValue = `aily.${nodeType}:${contextId}`
     item.tooltip = [element.label, element.relPath].join('\n')
 
@@ -1162,6 +1172,8 @@ const WHEN_SRC_CPP_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-
 const WHEN_PROJECT_CONFIG = `${WHEN_VIEW} && viewItem == aily.file:package-json`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_LIBRARY = `${WHEN_VIEW} && viewItem == aily.directory:library`
+const WHEN_LIBRARY_ROOT = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:library-root-/`
+const WHEN_UNINSTALLABLE_LIBRARY = `${WHEN_LIBRARY_ROOT} && viewItem =~ /:uninstallable$/`
 const WHEN_DEPS_GROUP =
   `${WHEN_VIEW} && (viewItem == aily.directory:library || viewItem == aily.group:installed-libraries || viewItem == aily.group:component-libraries || viewItem == aily.group:platform-packages)`
 const WHEN_PACKAGE_STATUS = `${WHEN_VIEW} && viewItem == aily.status:package-status`
@@ -1242,6 +1254,7 @@ const { getApi } = registerExtension(
           title: initialLibraryCopy.toggle,
           icon: '$(layout-sidebar-right)'
         },
+        { command: COMMANDS.uninstallLibrary, title: initialAilyViewCommands.uninstallLibrary, enablement: WHEN_UNINSTALLABLE_LIBRARY },
         { command: COMMANDS.retryResolve, title: initialAilyViewCommands.retryResolve },
         { command: COMMANDS.showResolutionLog, title: initialAilyViewCommands.showResolutionLog },
         { command: COMMANDS.openLockFile, title: initialAilyViewCommands.openLockFile },
@@ -1259,6 +1272,7 @@ const { getApi } = registerExtension(
         'view/item/context': [
           // Library 行右侧单一入口：展开/收起右侧库列表。
           { command: COMMANDS.toggleLibraryPanel, when: WHEN_LIBRARY, group: 'inline@10' },
+          { command: COMMANDS.uninstallLibrary, when: WHEN_LIBRARY_ROOT, group: '7_modification@30' },
           // 通用 - file / virtual-file → Open
           { command: COMMANDS.open, when: WHEN_FILE_LIKE, group: 'navigation@10' },
           // Platform Packages：仅右键 Open Folder，走 Electron 打开 appdata 真实目录
@@ -1329,7 +1343,7 @@ const { getApi } = registerExtension(
 )
 
 void getApi().then((vscode) => {
-  registerAilyComponentLibraryView(vscode)
+  const libraryView = registerAilyComponentLibraryView(vscode)
   let buildOutputsCache: BuildOutputsHint | null | undefined
   let buildOutputsInflight: Promise<BuildOutputsHint> | null = null
 
@@ -1782,6 +1796,13 @@ void getApi().then((vscode) => {
   })
   vscode.commands.registerCommand(COMMANDS.toggleLibraryPanel, () => {
     void toggleAilyComponentLibraryPanel()
+  })
+
+  vscode.commands.registerCommand(COMMANDS.uninstallLibrary, async (element?: ExplorerTreeElement) => {
+    if (element?.kind !== 'fs' || !element.libraryRemovalTarget) return
+    if (await libraryView.removeLibrary(element.libraryRemovalTarget)) {
+      provider.refresh(getStableBlueprintElement('library'))
+    }
   })
 
   // Package Status（§7.2）

@@ -1,5 +1,7 @@
 /** Coder-owned Aily/Arduino library browser shown in the right secondary side bar. */
 import type * as vscode from 'vscode'
+import type { LibraryRemovalTarget } from './ailyLibrarySource.js'
+import { findLibraryUsage } from './ailyLibraryUsage.js'
 import { LibrarySearchSession, libraryContextKey } from './librarySearchSession'
 import { IWorkbenchLayoutService, StandaloneServices } from '@codingame/monaco-vscode-api'
 import { Codicon } from '@codingame/monaco-vscode-api/vscode/vs/base/common/codicons'
@@ -33,6 +35,8 @@ type LibraryEntry = {
   readonly source: LibrarySource
   readonly packageName?: string
   readonly folderName: string
+  readonly libraryRoots?: readonly string[]
+  readonly sourceDirectory?: string
   readonly sdkLabel: string
   readonly name: string
   readonly version: string
@@ -474,9 +478,60 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     return choice === copy.continueInstall
   }
 
-  async #remove(libraryId: string, source: LibrarySource, version: string): Promise<void> {
+  /** Resolve independently of the visible tab, filters, pagination, or webview lifecycle. */
+  async removeLibrary(target: LibraryRemovalTarget): Promise<boolean> {
     const root = workspaceRoot(this.vscodeApi)
-    const library = this.#libraries.find(item => item.id === libraryId && item.source === source)
+    const contextKey = this.#contextKey
+    if (!root) return false
+    try {
+      const response = await callApi('search', {
+        workspaceRoot: root, source: target.source, query: target.query, offset: 0, limit: 50
+      })
+      if (root !== workspaceRoot(this.vscodeApi) || contextKey !== this.#contextKey) return false
+      const library = response.libraries?.find(item => item.id === target.id && item.source === target.source)
+      if (!library?.installed || library.managed !== true || !library.installedVersion) {
+        throw new Error(`${target.query}: ${this.#copy().unavailable}`)
+      }
+      return await this.#remove(library.id, library.source, library.installedVersion, library)
+    } catch (error) {
+      void this.vscodeApi.window.showErrorMessage(this.#copy().failed('remove', target.source, error instanceof Error ? error.message : String(error)))
+      return false
+    }
+  }
+
+  async #confirmLibraryRemoval(library: LibraryEntry, root: string): Promise<boolean> {
+    const copy = this.#copy()
+    const api = this.vscodeApi
+    const rootUri = api.Uri.file(root)
+    const rootPath = rootUri.path.replace(/\/$/u, '') + '/'
+    const documents = new Map(api.workspace.textDocuments
+      .filter(document => document.uri.scheme === rootUri.scheme && document.uri.path.startsWith(rootPath))
+      .map(document => [document.uri.path.slice(rootPath.length), document.getText()]))
+    let uses
+    try {
+      uses = await findLibraryUsage({
+        documents,
+        readDirectory: async path => (await api.workspace.fs.readDirectory(api.Uri.joinPath(rootUri, path)))
+          .map(([name, type]) => ({ name, isDirectory: (type & api.FileType.Directory) !== 0 })),
+        readFile: async path => new TextDecoder().decode(await api.workspace.fs.readFile(api.Uri.joinPath(rootUri, path)))
+      }, library)
+    } catch (error) {
+      throw new Error(copy.usageCheckFailed(error instanceof Error ? error.message : String(error)))
+    }
+    if (workspaceRoot(api) !== root) return false
+    if (!uses.length) return true
+    const locations = uses.slice(0, 12).map(use => `${use.file}:${use.line}  #include <${use.header}>`)
+    if (uses.length > locations.length) locations.push(copy.moreUsages(uses.length - locations.length))
+    const choice = await api.window.showWarningMessage(copy.libraryInUse(library.name || library.folderName), {
+      modal: true,
+      detail: copy.uninstallUsageDetail(locations.join('\n'))
+    }, copy.continueUninstall)
+    return choice === copy.continueUninstall && workspaceRoot(api) === root
+  }
+
+  async #remove(libraryId: string, source: LibrarySource, version: string, resolvedLibrary?: LibraryEntry): Promise<boolean> {
+    const root = workspaceRoot(this.vscodeApi)
+    const library = resolvedLibrary ?? this.#libraries.find(item => item.id === libraryId && item.source === source)
     const installedVersion = library?.installedVersion?.trim() || version.trim()
     if (
       !root
@@ -485,18 +540,21 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       || !installedVersion
       || this.#installing.has(libraryId)
       || this.#removing.has(libraryId)
-    ) return
+    ) return false
     this.#removing.add(libraryId)
     this.#notice = null
     this.#sendState()
-    this.#reportOperationFeedback('loading', library, 'uninstall', installedVersion)
+    const contextKey = this.#contextKey
     try {
+      if (!await this.#confirmLibraryRemoval(library, root) || contextKey !== this.#contextKey) return false
+      this.#reportOperationFeedback('loading', library, 'uninstall', installedVersion)
       await callApi('remove', { workspaceRoot: root, libraryId, source, version: installedVersion })
       this.#searchSession.invalidate()
       this.#libraries = this.#libraries.map(item => item.id === libraryId
         ? { ...item, installed: false, installedVersion: '', managed: false, folderName: '' }
         : item)
       this.#reportOperationFeedback('success', library, 'uninstall', installedVersion)
+      return true
     } catch (error) {
       this.#reportOperationFeedback(
         'error',
@@ -505,6 +563,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
         installedVersion,
         error instanceof Error ? error.message : String(error),
       )
+      return false
     } finally {
       this.#removing.delete(libraryId)
       this.#sendState()
@@ -544,7 +603,10 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-export type ComponentLibraryViewRegistration = vscode.Disposable & { refresh(): Promise<void> }
+export type ComponentLibraryViewRegistration = vscode.Disposable & {
+  refresh(): Promise<void>
+  removeLibrary(target: LibraryRemovalTarget): Promise<boolean>
+}
 
 export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): ComponentLibraryViewRegistration {
   const provider = new ComponentLibraryViewProvider(vscodeApi)
@@ -573,7 +635,8 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
   })
   return {
     dispose: () => { provider.dispose(); registration.dispose(); closeMenuItem.dispose(); unsubscribeCloseTitle() },
-    refresh: () => provider.refresh()
+    refresh: () => provider.refresh(),
+    removeLibrary: target => provider.removeLibrary(target)
   }
 }
 

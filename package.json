@@ -101,7 +101,7 @@
     "test:package-runtime": "npm run build:runtime && node --test scripts/package-runtime.test.mjs",
     "test:component-libraries": "node --test server/coderPackageCatalog.test.js server/blocklyLibraryService.test.js server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
     "test:aily-component-library": "tsx --test src/features/ailyComponentLibraryModel.test.ts src/hostOperationFeedback.test.ts",
-    "test:aily-view-library": "tsx --test src/features/ailyLibrarySource.test.ts src/features/ailyLibraryProjection.test.ts",
+    "test:aily-view-library": "tsx --test src/features/ailyLibrarySource.test.ts src/features/ailyLibraryProjection.test.ts src/features/ailyLibraryUsage.test.ts",
     "test:aily-tab": "node --import tsx --test src/features/completion/*.test.ts",
     "test:completion-v4": "node --import tsx --test src/features/completion/*.test.ts",
     "test:native-fs": "tsx --test src/nativeFsWatchEvent.test.ts src/nativeFsExternalModelSync.test.ts",
