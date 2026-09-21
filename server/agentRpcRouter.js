@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { presentLibrarySearch } from './librarySearchPresentation.js'
 import {
   installCoderLibrary,
   localizeCoderLibrary,
@@ -86,19 +87,24 @@ function searchParams(params) {
   if (params.source !== undefined && !['aily', 'registry'].includes(params.source)) {
     throw new CoderAgentRpcError('SUBAPP_TOOL_INPUT_INVALID', 'source must be aily or registry')
   }
+  if (params.detail !== undefined && !['summary', 'full'].includes(params.detail)) {
+    throw new CoderAgentRpcError('SUBAPP_TOOL_INPUT_INVALID', 'detail must be summary or full')
+  }
   return {
     ...(params.source !== undefined ? { source: params.source } : {}),
     query: requiredText(params, 'query', 256),
-    offset: boundedInteger(params.offset, 0, 0, Number.MAX_SAFE_INTEGER),
-    limit: boundedInteger(params.limit, 25, 1, 50),
+    offset: boundedInteger(params.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset'),
+    limit: boundedInteger(params.limit, 8, 1, 50, 'limit'),
     forceRefresh: params.forceRefresh === true,
   }
 }
 
-function boundedInteger(value, fallback, minimum, maximum) {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed)) return fallback
-  return Math.min(maximum, Math.max(minimum, parsed))
+function boundedInteger(value, fallback, minimum, maximum, field) {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new CoderAgentRpcError('SUBAPP_TOOL_INPUT_INVALID', `${field} must be an integer between ${minimum} and ${maximum}`, { field })
+  }
+  return value
 }
 
 function classifyError(error) {
@@ -168,8 +174,7 @@ export function createCoderAgentRpcRouter(operations = {}) {
           signal?.throwIfAborted()
           return {
             ok: true,
-            ...result,
-            libraries: Array.isArray(result?.libraries) ? result.libraries.map(publicLibrary) : [],
+            ...presentLibrarySearch(result, params.detail ?? 'summary'),
           }
         }
         if (method === 'coder.library.install') {

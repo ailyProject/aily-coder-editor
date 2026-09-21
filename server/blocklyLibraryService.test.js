@@ -236,7 +236,7 @@ test('archive validation failure rolls back npm metadata and previous package ve
   await f.writeCatalog()
   await assert.rejects(installCoderLibrary({ ...f.options, version: '2.0.0', extractArchive: async ({ destination }) => {
     await mkdir(path.join(destination, 'src'), { recursive: true })
-    await symlink(f.manifestPath, path.join(destination, 'src', 'Escape.h'))
+    await symlink(f.workspaceRoot, path.join(destination, 'src', 'Escape'), process.platform === 'win32' ? 'junction' : 'dir')
   } }), { code: 'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE' })
   assert.equal(JSON.parse(await readFile(path.join(f.packageRoot, 'package.json'), 'utf8')).version, '1.0.0')
   assert.equal(await readFile(path.join(f.packageRoot, 'src/Demo/Demo.h'), 'utf8'), '#pragma once\n')
