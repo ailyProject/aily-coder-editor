@@ -19,6 +19,7 @@ jobs:
     outputs:
       package_name: ${{ steps.package-metadata.outputs.package_name }}
       package_version: ${{ steps.package-metadata.outputs.package_version }}
+      package_sha256: ${{ steps.create-package.outputs.package_sha256 }}
     env:
       NPM_CONFIG_FETCH_RETRIES: 5
       NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: 10000
@@ -50,6 +51,7 @@ jobs:
         run: npm pack --dry-run --ignore-scripts .
 
       - name: Create npm package
+        id: create-package
         run: |
           package_dir="$RUNNER_TEMP/aily-coder-editor-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$package_dir"
@@ -60,6 +62,15 @@ jobs:
             echo "Expected exactly one npm package, found ${#package_tarballs[@]}."
             exit 1
           fi
+          gzip -t "${package_tarballs[0]}"
+          tar -tzf "${package_tarballs[0]}" > /dev/null
+          PACKAGE_TARBALL="${package_tarballs[0]}" node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          import { createHash } from 'node:crypto'
+
+          const sha256 = createHash('sha256').update(readFileSync(process.env.PACKAGE_TARBALL)).digest('hex')
+          appendFileSync(process.env.GITHUB_OUTPUT, `package_sha256=${sha256}\n`)
+          NODE
 
       - name: Upload package
         uses: actions/upload-artifact@v4
@@ -88,11 +99,58 @@ jobs:
           node-version: '22'
           registry-url: ${{ secrets.REGISTRY_URL }}
 
-      - name: Download package
+      - &download-package
+        name: Download package
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: aily-coder-editor-package
-          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}/attempt-1
+
+      - &verify-package
+        name: Verify downloaded package
+        id: verify-package
+        continue-on-error: true
+        env:
+          PACKAGE_DIR: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}/attempt-1
+          PACKAGE_SHA256: ${{ needs.build-package.outputs.package_sha256 }}
+        run: &verify-package-script |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync, readdirSync } from 'node:fs'
+          import { createHash } from 'node:crypto'
+          import { join } from 'node:path'
+
+          const tarballs = readdirSync(process.env.PACKAGE_DIR).filter(name => name.endsWith('.tgz'))
+          if (tarballs.length !== 1) {
+            throw new Error(`Expected exactly one npm package, found ${tarballs.length}`)
+          }
+          const tarball = join(process.env.PACKAGE_DIR, tarballs[0])
+          const content = readFileSync(tarball)
+          const sha256 = createHash('sha256').update(content).digest('hex')
+          console.log(`Package: ${tarball} (${content.length} bytes)`)
+          console.log(`Expected SHA-256: ${process.env.PACKAGE_SHA256}`)
+          console.log(`Actual SHA-256: ${sha256}`)
+          if (sha256 !== process.env.PACKAGE_SHA256) {
+            throw new Error('Downloaded package SHA-256 does not match the build artifact')
+          }
+          appendFileSync(process.env.GITHUB_ENV, `PACKAGE_TARBALL=${tarball}\n`)
+          NODE
+
+      - &download-package-retry
+        name: Download package again after failed verification
+        if: steps.verify-package.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          name: aily-coder-editor-package
+          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}/attempt-2
+
+      - &verify-package-retry
+        name: Verify package before publishing
+        if: steps.verify-package.outcome == 'failure'
+        env:
+          PACKAGE_DIR: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}/attempt-2
+          PACKAGE_SHA256: ${{ needs.build-package.outputs.package_sha256 }}
+        run: *verify-package-script
 
       - name: Publish package to default registry
         env:
@@ -121,14 +179,7 @@ jobs:
             done
           }
 
-          package_dir="$RUNNER_TEMP/aily-coder-editor-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          shopt -s nullglob
-          package_tarballs=("$package_dir"/*.tgz)
-          if [ "${#package_tarballs[@]}" -ne 1 ]; then
-            echo "Expected exactly one npm package, found ${#package_tarballs[@]}."
-            exit 1
-          fi
-          package_tarball="${package_tarballs[0]}"
+          package_tarball="$PACKAGE_TARBALL"
 
           echo "Package: $PACKAGE_NAME@$PACKAGE_VERSION"
           if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version &> /dev/null; then
@@ -186,11 +237,10 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Download package
-        uses: actions/download-artifact@v4
-        with:
-          name: aily-coder-editor-package
-          path: ${{ runner.temp }}/aily-coder-editor-package-${{ github.run_id }}-${{ github.run_attempt }}
+      - *download-package
+      - *verify-package
+      - *download-package-retry
+      - *verify-package-retry
 
       - name: Publish package to registry 2
         env:
@@ -231,14 +281,7 @@ jobs:
           echo "//$REGISTRY_2_NO_PROTO/:_authToken=$TOKEN_2" >> .npmrc
           trap 'rm -f .npmrc' EXIT
 
-          package_dir="$RUNNER_TEMP/aily-coder-editor-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          shopt -s nullglob
-          package_tarballs=("$package_dir"/*.tgz)
-          if [ "${#package_tarballs[@]}" -ne 1 ]; then
-            echo "Expected exactly one npm package, found ${#package_tarballs[@]}."
-            exit 1
-          fi
-          package_tarball="${package_tarballs[0]}"
+          package_tarball="$PACKAGE_TARBALL"
 
           echo "Package: $PACKAGE_NAME@$PACKAGE_VERSION"
           if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version &> /dev/null; then
