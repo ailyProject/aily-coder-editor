@@ -96,6 +96,7 @@ jobs:
 
       - name: Publish package to default registry
         env:
+          NPM_CONFIG_REGISTRY: ${{ secrets.REGISTRY_URL }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PACKAGE_NAME: ${{ needs.build-package.outputs.package_name }}
           PACKAGE_VERSION: ${{ needs.build-package.outputs.package_version }}
