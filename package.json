@@ -99,7 +99,7 @@
     "test:link-dev": "npm run build:subapp && node --test scripts/link-dev.test.mjs",
     "test:deploy-next": "node --test scripts/deploy-next.test.mjs",
     "test:package-runtime": "npm run build:runtime && node --test scripts/package-runtime.test.mjs",
-    "test:component-libraries": "node --test server/arduinoLibraryDependencies.test.js server/coderPackageCatalog.test.js server/blocklyLibraryService.test.js server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
+    "test:component-libraries": "node --test server/libraryDirectoryPublication.test.js server/arduinoLibraryDependencies.test.js server/coderPackageCatalog.test.js server/blocklyLibraryService.test.js server/componentLibraryService.test.js server/agentRpcRouter.test.js server/agentRpcServer.test.js",
     "test:aily-component-library": "tsx --test src/features/ailyComponentLibraryModel.test.ts src/hostOperationFeedback.test.ts",
     "test:aily-view-library": "tsx --test src/features/ailyLibrarySource.test.ts src/features/ailyLibraryProjection.test.ts",
     "test:aily-tab": "node --import tsx --test src/features/completion/*.test.ts",

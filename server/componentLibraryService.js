@@ -33,6 +33,7 @@ import {
 
 import { CODER_LIBRARY_PACKAGE, loadCoderPackageCatalog } from './coderPackageCatalog.js'
 import { checkArduinoDependencies, readArduinoDependencyMetadata } from './arduinoLibraryDependencies.js'
+import { publishLibraryDirectory } from './libraryDirectoryPublication.js'
 
 const SAFE_LIBRARY_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u
 const COMPONENT_LIBRARY_RECEIPT = '.aily-component-library.json'
@@ -1734,6 +1735,7 @@ async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
       throw error
     }) })))
   const previous = await lstat(packageRoot).catch(() => null)
+  let keepRecoveryFiles = false
   try {
     if (previous?.isSymbolicLink()) {
       throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', 'A linked library package must be unlinked before installation')
@@ -1742,17 +1744,49 @@ async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
     try {
       return await task(packageRoot)
     } catch (error) {
-      await rm(packageRoot, { recursive: true, force: true })
-      if (previous) await rename(path.join(temporaryRoot, 'package'), packageRoot)
-      for (const snapshot of snapshots) {
-        const target = path.join(projectRoot, snapshot.name)
-        if (snapshot.content === null) await rm(target, { force: true })
-        else await writeFile(target, snapshot.content)
+      try {
+        await rm(packageRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+        if (previous) await publishLibraryDirectory(path.join(temporaryRoot, 'package'), packageRoot)
+        for (const snapshot of snapshots) {
+          const target = path.join(projectRoot, snapshot.name)
+          if (snapshot.content === null) await rm(target, { force: true })
+          else await writeFile(target, snapshot.content)
+          const actual = await readFile(target).catch(failure => {
+            if (failure.code === 'ENOENT') return null
+            throw failure
+          })
+          if (snapshot.content === null ? actual !== null : !actual?.equals(snapshot.content)) {
+            throw new Error(`Rollback readback differs: ${snapshot.name}`)
+          }
+        }
+        error.details = { ...error.details, recovery: {
+          rollback: 'completed', scope: 'requested-package-and-project-manifests', packageName,
+          retryable: false,
+          nextAction: 'No directory probing is needed for rollback. Resolve the reported cause before retrying the exact install; do not repeat unchanged installs or infer a file-lock owner.',
+        } }
+      } catch (rollbackError) {
+        keepRecoveryFiles = true
+        // Preserve the original package backup and manifest bytes for recovery;
+        // a failed rollback must never be followed by deleting its only backup.
+        const manifestBackup = path.join(temporaryRoot, 'manifests.json')
+        let manifestsSaved = false
+        try {
+          await writeFile(manifestBackup, JSON.stringify(snapshots.map(({ name, content }) => ({
+            name, base64: content === null ? null : content.toString('base64'),
+          }))))
+          manifestsSaved = true
+        } catch { /* Report incomplete recovery evidence rather than conceal the original error. */ }
+        error.details = { ...error.details, recovery: {
+          rollback: 'failed', scope: 'requested-package-and-project-manifests', packageName,
+          retryable: false, backupDirectory: temporaryRoot, manifestsSaved,
+          error: String(rollbackError.message),
+          nextAction: 'Stop installation and repair the reported rollback failure. Preserve the recovery directory; do not delete it or retry npm automatically.',
+        } }
       }
       throw error
     }
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true })
+    if (!keepRecoveryFiles) await rm(temporaryRoot, { recursive: true, force: true })
   }
 }
 
@@ -1850,10 +1884,12 @@ async function preparePackageLocalSource(sourcePackage, options) {
       ? path.join(staging, 'src')
       : staging
     options.signal?.throwIfAborted()
-    await rename(nestedSource, sourceDirectory)
+    await publishLibraryDirectory(nestedSource, sourceDirectory, {
+      signal: options.signal, renameDirectory: options.renameSourceDirectory,
+    })
     return true
   } finally {
-    await rm(staging, { recursive: true, force: true })
+    await rm(staging, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
 }
 

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { Buffer } from 'node:buffer'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import process from 'node:process'
 import test from 'node:test'
 import {
   installCoderLibrary,
@@ -240,6 +242,68 @@ test('archive validation failure rolls back npm metadata and previous package ve
   } }), { code: 'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE' })
   assert.equal(JSON.parse(await readFile(path.join(f.packageRoot, 'package.json'), 'utf8')).version, '1.0.0')
   assert.equal(await readFile(path.join(f.packageRoot, 'src/Demo/Demo.h'), 'utf8'), '#pragma once\n')
+})
+
+test('a transient source rename is recovered in one install without rerunning npm or extraction', async t => {
+  const f = await fixture(t)
+  let renames = 0, extractions = 0
+  const installed = await installCoderLibrary({ ...f.options,
+    extractArchive: async options => { extractions++; await f.options.extractArchive(options) },
+    renameSourceDirectory: async (...args) => {
+      if (++renames === 1) throw Object.assign(new Error('denied'), { code: 'EPERM' })
+      await rename(...args)
+    },
+  })
+  assert.equal(installed.ready, true)
+  assert.equal(renames, 2)
+  assert.equal(extractions, 1)
+  assert.equal(f.commands.length, 1)
+})
+
+test('exhausted publication exposes verified rollback through the Agent RPC', async t => {
+  const f = await fixture(t)
+  await installCoderLibrary(f.options)
+  const before = await readFile(f.manifestPath)
+  f.catalog[0].version = '2.0.0'
+  await f.writeCatalog()
+  const router = createCoderAgentRpcRouter({ install: input => installCoderLibrary({ ...f.options, ...input,
+    renameSourceDirectory: async () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }) },
+  }) })
+  await assert.rejects(router.execute({ method: 'coder.library.install',
+    params: { libraryRef, version: '2.0.0' },
+    context: { actor: 'agent', actorId: 'subapp-agent-host', developmentMode: 'coder', workspaceRoot: f.workspaceRoot },
+  }), error => {
+    assert.equal(error.code, 'EPERM')
+    assert.equal(error.details.publication.attempts, 4)
+    assert.equal(error.details.recovery.rollback, 'completed')
+    assert.equal(error.details.recovery.retryable, false)
+    return true
+  })
+  assert.deepEqual(await readFile(f.manifestPath), before)
+  assert.equal(JSON.parse(await readFile(path.join(f.packageRoot, 'package.json'), 'utf8')).version, '1.0.0')
+  assert.equal(await readFile(path.join(f.packageRoot, 'src/Demo/Demo.h'), 'utf8'), '#pragma once\n')
+  assert.equal(f.commands.length, 2)
+})
+
+test('a rollback failure preserves original error and manifest recovery bytes', async t => {
+  const f = await fixture(t)
+  const before = await readFile(f.manifestPath)
+  await assert.rejects(installCoderLibrary({ ...f.options, runNpmCommand: async input => {
+    await f.options.runNpmCommand(input)
+    await rm(f.manifestPath)
+    await mkdir(f.manifestPath)
+    throw Object.assign(new Error('original install failure'), { code: 'EPERM' })
+  } }), error => {
+    assert.equal(error.message, 'original install failure')
+    assert.equal(error.details.recovery.rollback, 'failed')
+    assert.equal(error.details.recovery.retryable, false)
+    assert.equal(error.details.recovery.manifestsSaved, true)
+    return true
+  })
+  const [backup] = (await readdir(f.workspaceRoot)).filter(name => name.startsWith('.aily-library-transaction-'))
+  assert.ok(backup)
+  const snapshots = JSON.parse(await readFile(path.join(f.workspaceRoot, backup, 'manifests.json'), 'utf8'))
+  assert.deepEqual(Buffer.from(snapshots.find(item => item.name === 'package.json').base64, 'base64'), before)
 })
 
 test('a failed npm removal restores the package, prepared source and root dependency', async t => {
