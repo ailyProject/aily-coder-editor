@@ -48,7 +48,13 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
-            "default": 25
+            "default": 8
+          },
+          "detail": {
+            "type": "string",
+            "enum": ["summary", "full"],
+            "default": "summary",
+            "description": "Summary keeps identity, compatibility, dependencies and usable paths. Use full with an exact name for all metadata; use offset/limit to page. Descriptions are not truncated."
           },
           "forceRefresh": {
             "type": "boolean",
@@ -70,7 +76,7 @@
     },
     {
       "name": "coder_library_install",
-      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true under the explicit named-library confirmation policy; if confirmation times out, is skipped, or is unavailable, follow the user's still-authoritative explicit named-library request and disclose the warning. Aily and Arduino official packages share npm installation and safely expand src.7z beside the archive into node_modules/<package>/src. Their deepest continuous src wrapper and its library roots are mapped for the compiler and Aily View; installation does not copy source to sketch/libraries. Require ready=true, packageJsonLinked=true, sourceLayout=package-local and non-empty libraryRoots. Never edit returned package-local paths directly; call coder_library_localize first when customization is required.",
+      "description": "Install one exact result from coder_library_search. Incompatible libraries are rejected unless allowIncompatible=true under the explicit named-library confirmation policy; if confirmation times out, is skipped, or is unavailable, follow the user's still-authoritative explicit named-library request and disclose the warning. Aily and Arduino official packages share npm installation and safely expand src.7z beside the archive into node_modules/<package>/src. Require ready=true, packageJsonLinked=true, sourceLayout=package-local and non-empty libraryRoots. sourceReady alone does not prove dependencies are complete: resolve dependencyIssues before building; dependencyStatus=unknown means legacy sources lack metadata. No compilation is performed. Never edit returned package-local paths directly; call coder_library_localize first when customization is required.",
       "rpc": {
         "method": "coder.library.install"
       },

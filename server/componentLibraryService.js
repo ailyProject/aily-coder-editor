@@ -32,6 +32,8 @@ import {
 } from './coderLibraryRegistry.js'
 
 import { CODER_LIBRARY_PACKAGE, loadCoderPackageCatalog } from './coderPackageCatalog.js'
+import { checkArduinoDependencies, readArduinoDependencyMetadata } from './arduinoLibraryDependencies.js'
+import { publishLibraryDirectory } from './libraryDirectoryPublication.js'
 
 const SAFE_LIBRARY_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u
 const COMPONENT_LIBRARY_RECEIPT = '.aily-component-library.json'
@@ -1523,6 +1525,44 @@ async function assertUnmodifiedBlocklyRoots(roots) {
   }
 }
 
+// One metadata inventory per operation. Source preparation and dependency
+// verification remain separate: read-only search never installs or extracts.
+function createDependencyInspector(projectRoot, options) {
+  let inventory
+  return async roots => {
+    inventory ??= (async () => {
+      const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+      const directories = new Set(roots)
+      for (const name of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.optionalDependencies }).filter(isSafeBlocklyLibraryPackageName)) {
+        const directory = packagePath(projectRoot, name)
+        const installed = await readJson(path.join(directory, 'package.json'), 'library package').catch(() => null)
+        if (!installed) continue
+        const packages = await collectBlocklySourcePackages(projectRoot, directory, installed, false).catch(() => [])
+        for (const sourcePackage of packages) {
+          const prepared = await packageLocalRoots(projectRoot, sourcePackage, options, false)
+          for (const root of prepared.roots) directories.add(root.sourcePath)
+        }
+      }
+      const local = path.join(projectRoot, 'sketch', 'libraries')
+      for (const entry of await readdir(local, { withFileTypes: true }).catch(() => [])) {
+        if (entry.isDirectory()) directories.add(path.join(local, entry.name))
+      }
+      const appDataRoot = await resolveAppDataRoot(options.appDataPath)
+      for (const sdk of await resolveSdkRoots(projectRoot, appDataRoot).catch(() => [])) {
+        for (const library of await listSdkLibraries(sdk, local)) directories.add(library.sourcePath)
+      }
+      return Promise.all([...directories].map(readArduinoDependencyMetadata))
+    })()
+    return checkArduinoDependencies(roots, await inventory)
+  }
+}
+
+async function withDependencyReadiness(projectRoot, result, inspect) {
+  const report = await inspect(result.libraryRoots.map(root => path.resolve(projectRoot, root)))
+  return { ...result, sourceReady: result.ready, ready: result.ready && report.dependenciesReady !== false, ...report,
+    ...(report.dependencyIssues.length ? { guidance: 'Install or resolve the reported named dependencies before building; ready=false is not a compiler failure.' } : {}) }
+}
+
 async function inspectPackageInstallation(projectRoot, projectManifest, packageName) {
   const dependency = directDependencySpec(projectManifest, packageName)
   if (!dependency) return { managed: false, ready: false, version: '', roots: [] }
@@ -1598,6 +1638,7 @@ export async function searchBlocklyLibraryPackages(options) {
   }
   const indexed = new Map(index.map(item => [toBlocklyPackageName(item.name), item]))
   const tokens = String(options.query ?? '').normalize('NFKC').trim().toLocaleLowerCase('en').split(/[\s,，]+/u).filter(Boolean)
+  const exactQuery = String(options.query ?? '').normalize('NFKC').trim().toLocaleLowerCase('en')
   const libraries = []
   for (const item of catalog) {
     const packageName = toBlocklyPackageName(item.name)
@@ -1606,30 +1647,29 @@ export async function searchBlocklyLibraryPackages(options) {
     const scored = scoreCatalogItem({ ...item, ...metadata }, tokens,
       [...BLOCKLY_INDEX_LIBRARY_FIELDS, ...BLOCKLY_LEGACY_LIBRARY_FIELDS])
     const identity = packageLibraryIdentity(packageName)
-    const exactPackage = tokens.length === 1 && [packageName.toLocaleLowerCase('en'), identity.libraryRef.toLocaleLowerCase('en')].includes(tokens[0])
+    const exactPackage = [packageName, identity.libraryRef, item.nickname, metadata.displayName]
+      .some(value => value?.normalize('NFKC').toLocaleLowerCase('en') === exactQuery)
     if (exactPackage) scored.totalScore += 1000
+    if (tokens.length && scored.totalScore <= 0) continue
+    if (options.category && (metadata.category || item.category || '') !== options.category) continue
+    if (options.type && !item.types?.includes(options.type)) continue
     const architectures = metadata.supportedCores ?? item.architectures ?? item.compatibility?.core ?? []
     const compatibility = compatibilityDetails({ architectures }, activeArchitectures)
-    const packageState = await inspectPackageInstallation(projectRoot, projectManifest, packageName)
-    const roots = packageState.roots
-    const installedVersion = packageState.version
-    const installed = packageState.managed
+    const installed = Boolean(directDependencySpec(projectManifest, packageName))
     const description = String(item.description ?? metadata.description ?? '')
     libraries.push({
       ...identity, packageName,
       tier: 'preferred', name: item.nickname || metadata.displayName || packageName,
-      version: String(item.version), versions: [...new Set([installedVersion, String(item.version)].filter(Boolean))],
+      version: String(item.version), versions: [String(item.version)],
       description, sentence: description, paragraph: '', author: typeof item.author === 'string' ? item.author : item.author?.name || '',
       category: metadata.category || item.category || '',
       url: item.homepage || item.url || (typeof item.repository === 'string' ? item.repository : item.repository?.url) || '',
       architectures, types: item.types ?? [], license: item.license || '',
       dependencies: item.dependencies ?? {}, providesIncludes: item.providesIncludes ?? [],
+      dependencyStatus: 'unknown', dependenciesReady: null,
       compatible: compatibility.compatible, compatibility,
-      installed, ready: packageState.ready, installedVersion, managed: packageState.managed,
-      folderName: roots[0]?.folderName ?? '',
-      sourceDirectory: packageSourceDirectory(projectRoot, packageName, roots),
-      libraryRoots: roots.map(root => relativeProjectPath(projectRoot, root.sourcePath)),
-      localRoots: await localizedLibraryRoots(projectRoot, packageName),
+      installed,
+      exactMatch: exactPackage,
       score: scored.totalScore,
     })
   }
@@ -1644,7 +1684,8 @@ export async function searchBlocklyLibraryPackages(options) {
       name: receipt.name, version: installed.version, versions: [installed.version], installedVersion: installed.version,
       installed: true, managed: true, folderName: installed.folderName, architectures: [], score: 1 })
   }
-  libraries.sort((a, b) => Number(b.installed) - Number(a.installed) || b.score - a.score || a.name.localeCompare(b.name))
+  libraries.sort((a, b) => Number(Boolean(b.exactMatch)) - Number(Boolean(a.exactMatch))
+    || b.score - a.score || Number(b.installed) - Number(a.installed) || a.name.localeCompare(b.name))
   const offset = Math.max(0, Number(options.offset) || 0)
   const limit = Math.min(50, Math.max(1, Number(options.limit) || 25))
   const exact = libraries.find(item => [item.name, item.packageName, item.libraryRef].some(value => value?.toLocaleLowerCase('en') === String(options.query ?? '').trim().toLocaleLowerCase('en')))
@@ -1653,10 +1694,22 @@ export async function searchBlocklyLibraryPackages(options) {
   const matched = libraries.filter(item => (!tokens.length || item.score > 0)
     && (!options.category || item.category === options.category)
     && (!options.type || item.types?.includes(options.type)))
-  return { tier: 'preferred', libraries: matched.slice(offset, offset + limit), total: matched.length,
+  const inspectDependencies = createDependencyInspector(projectRoot, { ...options, appDataPath: appDataRoot })
+  const page = await Promise.all(matched.slice(offset, offset + limit).map(async item => {
+    if (!item.packageName) return item
+    const state = await inspectPackageInstallation(projectRoot, projectManifest, item.packageName)
+    const entry = { ...item, installed: state.managed, sourceReady: state.ready, ready: state.ready, installedVersion: state.version, managed: state.managed,
+      versions: [...new Set([state.version, item.version].filter(Boolean))],
+      folderName: state.roots[0]?.folderName ?? '', sourceDirectory: packageSourceDirectory(projectRoot, item.packageName, state.roots),
+      libraryRoots: state.roots.map(root => relativeProjectPath(projectRoot, root.sourcePath)),
+      localRoots: await localizedLibraryRoots(projectRoot, item.packageName) }
+    return state.ready ? withDependencyReadiness(projectRoot, entry, inspectDependencies) : entry
+  }))
+  return { tier: 'preferred', libraries: page, total: matched.length, returnedCount: page.length,
+    nextOffset: offset + page.length < matched.length ? offset + page.length : null,
     offset, limit, activeArchitectures: [...activeArchitectures], compatibleAlternatives, ...catalogState,
-    categories: [...new Set(libraries.map(item => item.category).filter(Boolean))].sort(),
-    types: [...new Set(libraries.flatMap(item => item.types ?? []))].sort() }
+    categories: [...new Set(catalog.map(item => indexed.get(toBlocklyPackageName(item.name))?.category || item.category).filter(Boolean))].sort(),
+    types: [...new Set(catalog.flatMap(item => item.types ?? []))].sort() }
 }
 
 async function ensureProjectDirectory(projectRoot, segments) {
@@ -1682,6 +1735,7 @@ async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
       throw error
     }) })))
   const previous = await lstat(packageRoot).catch(() => null)
+  let keepRecoveryFiles = false
   try {
     if (previous?.isSymbolicLink()) {
       throw new ComponentLibraryError('BLOCKLY_LIBRARY_PATH_CONFLICT', 'A linked library package must be unlinked before installation')
@@ -1690,17 +1744,49 @@ async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
     try {
       return await task(packageRoot)
     } catch (error) {
-      await rm(packageRoot, { recursive: true, force: true })
-      if (previous) await rename(path.join(temporaryRoot, 'package'), packageRoot)
-      for (const snapshot of snapshots) {
-        const target = path.join(projectRoot, snapshot.name)
-        if (snapshot.content === null) await rm(target, { force: true })
-        else await writeFile(target, snapshot.content)
+      try {
+        await rm(packageRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+        if (previous) await publishLibraryDirectory(path.join(temporaryRoot, 'package'), packageRoot)
+        for (const snapshot of snapshots) {
+          const target = path.join(projectRoot, snapshot.name)
+          if (snapshot.content === null) await rm(target, { force: true })
+          else await writeFile(target, snapshot.content)
+          const actual = await readFile(target).catch(failure => {
+            if (failure.code === 'ENOENT') return null
+            throw failure
+          })
+          if (snapshot.content === null ? actual !== null : !actual?.equals(snapshot.content)) {
+            throw new Error(`Rollback readback differs: ${snapshot.name}`)
+          }
+        }
+        error.details = { ...error.details, recovery: {
+          rollback: 'completed', scope: 'requested-package-and-project-manifests', packageName,
+          retryable: false,
+          nextAction: 'No directory probing is needed for rollback. Resolve the reported cause before retrying the exact install; do not repeat unchanged installs or infer a file-lock owner.',
+        } }
+      } catch (rollbackError) {
+        keepRecoveryFiles = true
+        // Preserve the original package backup and manifest bytes for recovery;
+        // a failed rollback must never be followed by deleting its only backup.
+        const manifestBackup = path.join(temporaryRoot, 'manifests.json')
+        let manifestsSaved = false
+        try {
+          await writeFile(manifestBackup, JSON.stringify(snapshots.map(({ name, content }) => ({
+            name, base64: content === null ? null : content.toString('base64'),
+          }))))
+          manifestsSaved = true
+        } catch { /* Report incomplete recovery evidence rather than conceal the original error. */ }
+        error.details = { ...error.details, recovery: {
+          rollback: 'failed', scope: 'requested-package-and-project-manifests', packageName,
+          retryable: false, backupDirectory: temporaryRoot, manifestsSaved,
+          error: String(rollbackError.message),
+          nextAction: 'Stop installation and repair the reported rollback failure. Preserve the recovery directory; do not delete it or retry npm automatically.',
+        } }
       }
       throw error
     }
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true })
+    if (!keepRecoveryFiles) await rm(temporaryRoot, { recursive: true, force: true })
   }
 }
 
@@ -1798,10 +1884,12 @@ async function preparePackageLocalSource(sourcePackage, options) {
       ? path.join(staging, 'src')
       : staging
     options.signal?.throwIfAborted()
-    await rename(nestedSource, sourceDirectory)
+    await publishLibraryDirectory(nestedSource, sourceDirectory, {
+      signal: options.signal, renameDirectory: options.renameSourceDirectory,
+    })
     return true
   } finally {
-    await rm(staging, { recursive: true, force: true })
+    await rm(staging, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
 }
 
@@ -1877,7 +1965,11 @@ export async function materializeCoderProjectLibraries(options) {
         compatibility: { compatible: true },
       }, options))
     }
-    return { ready: true, libraries, libraryRoots: [...new Set(libraries.flatMap(item => item.libraryRoots))] }
+    const inspect = createDependencyInspector(projectRoot, options)
+    const checked = await Promise.all(libraries.map(library => withDependencyReadiness(projectRoot, library, inspect)))
+    return { ready: checked.every(library => library.ready), sourceReady: checked.every(library => library.sourceReady), libraries: checked,
+      dependencyIssues: checked.flatMap(library => library.dependencyIssues),
+      libraryRoots: [...new Set(checked.flatMap(item => item.libraryRoots))] }
   })
 }
 
@@ -1898,8 +1990,11 @@ export async function installBlocklyLibraryPackage(options) {
     }
     const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
     const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
+    const inspect = createDependencyInspector(projectRoot, { ...options, appDataPath })
+    const prepare = async (root, installed) => withDependencyReadiness(projectRoot,
+      await materializeBlocklyLibraryPackage(projectRoot, root, installed, library, options), inspect)
     if (installedPackage?.name === packageName && installedPackage.version === version && directDependencySpec(manifest, packageName)) {
-      return materializeBlocklyLibraryPackage(projectRoot, packagePath(projectRoot, packageName), installedPackage, library, options)
+      return prepare(packagePath(projectRoot, packageName), installedPackage)
     }
     return withBlocklyPackageTransaction(projectRoot, packageName, async packageRoot => {
       await runNpmLibraryCommand(projectRoot, ['install', `${packageName}@${version}`, '--save', '--save-exact',
@@ -1909,7 +2004,7 @@ export async function installBlocklyLibraryPackage(options) {
       if (packageManifest.name !== packageName || packageManifest.version !== version || !directDependencySpec(linked, packageName)) {
         throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', 'Installed package identity/version or root dependency does not match the request')
       }
-      return materializeBlocklyLibraryPackage(projectRoot, packageRoot, packageManifest, library, options)
+      return prepare(packageRoot, packageManifest)
     })
   })
 }

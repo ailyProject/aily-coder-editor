@@ -49,6 +49,22 @@ test('rejects a Coder library call outside Coder mode', async () => {
   )
 })
 
+test('search validates paging and detail before calling the catalog', async () => {
+  let calls = 0
+  const router = createCoderAgentRpcRouter({ search: async input => {
+    calls++
+    assert.equal(input.limit, 8)
+    return { libraries: [] }
+  } })
+  for (const params of [{ limit: 0 }, { limit: 51 }, { limit: '8' }, { offset: -1 }, { offset: 1.5 }, { detail: 'invalid' }]) {
+    await assert.rejects(router.execute({ method: 'coder.library.search', context, params: { query: 'sensor', ...params } }),
+      { code: 'SUBAPP_TOOL_INPUT_INVALID' })
+  }
+  assert.equal(calls, 0)
+  await router.execute({ method: 'coder.library.search', context, params: { query: 'sensor' } })
+  assert.equal(calls, 1)
+})
+
 test('routes shared Aily searches and mutations by exact library reference', async () => {
   const calls = []
   const operation = name => async input => {

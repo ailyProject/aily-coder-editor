@@ -51,6 +51,53 @@ async function fixture(t) {
   return { options, appDataPath, workspaceRoot, manifestPath, packageRoot, catalog, requests, commands }
 }
 
+test('install, search and materialize report missing Arduino dependencies before compilation', async t => {
+  const f = await fixture(t)
+  const options = { ...f.options, extractArchive: async args => {
+    await f.options.extractArchive(args)
+    await writeFile(path.join(args.destination, 'src/Demo/library.properties'),
+      'name=Official Demo\nversion=1.0.0\ndepends=Adafruit Unified Sensor (>=1.1.0)\n')
+  } }
+  const installed = await installCoderLibrary(options)
+  assert.equal(installed.sourceReady, true)
+  assert.equal(installed.ready, false)
+  assert.equal(installed.dependenciesReady, false)
+  assert.equal(installed.dependencyIssues[0].name, 'Adafruit Unified Sensor')
+  assert.equal((await searchCoderLibraries({ ...options, source: 'registry', query: 'Official Demo' })).libraries[0].ready, false)
+  assert.equal((await materializeCoderProjectLibraries(options)).ready, false)
+  // A local library can satisfy the same contract. No special DHT/package-name mapping.
+  const sensor = path.join(f.workspaceRoot, 'sketch/libraries/Sensor')
+  await mkdir(sensor, { recursive: true })
+  await writeFile(path.join(sensor, 'library.properties'), 'name=Adafruit Unified Sensor\nversion=1.1.15\n')
+  const ready = await installCoderLibrary(options)
+  assert.equal(ready.ready, true)
+  assert.equal(ready.dependenciesReady, true)
+  assert.equal(f.commands.length, 1, 'readiness recheck must not reinstall the selected package')
+})
+
+test('exact official name outranks installed broad matches; Agent projects summaries without trimming descriptions', async t => {
+  const f = await fixture(t)
+  f.catalog.push({ name: '@aily-project-coder/lib-target', nickname: 'Adafruit Unified Sensor', version: '2.0.0',
+    architectures: ['*'], description: 'accurate '.repeat(100), customMetadata: { keep: true } })
+  f.catalog[0].description = 'Adafruit Unified Sensor compatible adapter'
+  await installCoderLibrary(f.options)
+  const options = { ...f.options, source: 'registry', query: 'Adafruit Unified Sensor', forceRefresh: true }
+  const result = await searchCoderLibraries(options)
+  assert.equal(result.libraries[0].packageName, '@aily-project-coder/lib-target')
+  const router = createCoderAgentRpcRouter({ search: input => searchCoderLibraries({ ...f.options, ...input }) })
+  const context = { actor: 'agent', actorId: 'subapp-agent-host', developmentMode: 'coder', workspaceRoot: f.workspaceRoot }
+  const summary = await router.execute({ method: 'coder.library.search', context, params: { query: options.query, source: 'registry', limit: 1 } })
+  assert.equal(summary.detail, 'summary')
+  assert.equal(summary.categories, undefined)
+  assert.equal(summary.libraries[0].description, f.catalog[1].description)
+  assert.equal(summary.libraries[0].sentence, undefined)
+  assert.equal(summary.nextOffset, 1)
+  const full = await router.execute({ method: 'coder.library.search', context, params: { query: options.query, source: 'registry', detail: 'full', limit: 1, offset: 1 } })
+  assert.ok(Array.isArray(full.categories))
+  assert.equal(full.libraries[0].packageName, packageName)
+  assert.equal(full.nextOffset, null)
+})
+
 test('official editor list and Agent use regional npm packages and the Aily install/remove lifecycle', async t => {
   const f = await fixture(t)
   const page = await searchArduinoComponentLibraries({ ...f.options, query: 'motor', category: 'Device Control' })
