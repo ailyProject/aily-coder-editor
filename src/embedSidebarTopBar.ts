@@ -1,6 +1,12 @@
 import * as vscode from 'vscode'
 import { resolveStyleHost } from './embedWorkbenchStyles'
-import { getHostEmbedContext, onHostEmbedContextChanged } from './hostEmbedContext.js'
+import {
+  getHostCoderEditorUpdateState,
+  getHostEmbedContext,
+  onHostCoderEditorUpdateStateChanged,
+  onHostEmbedContextChanged,
+  requestHostCoderEditorUpdate
+} from './hostEmbedContext.js'
 import { initialHostLanguage, workbenchUiStrings } from './features/ailyWorkbenchI18n.js'
 import { getCompletionStatus, onCompletionStatusChanged } from './features/completion/completionStatus'
 
@@ -38,6 +44,23 @@ const SIDEBAR_POLL_MS = 80
 let sidebarNavInstalled = false
 let mountedSidebarNav: HTMLElement | null = null
 
+function updateButtonCopy(language: unknown): {
+  update: string
+  updating: string
+  preparing: string
+  restart: string
+  retry: string
+} {
+  const normalized = String(language ?? '').trim().toLowerCase().replace(/-/g, '_')
+  if (normalized === 'zh_cn' || normalized === 'zh_hans' || normalized.startsWith('zh_cn_')) {
+    return { update: '更新', updating: '更新中', preparing: '准备更新', restart: '重启更新', retry: '重试更新' }
+  }
+  if (normalized === 'zh_hk' || normalized === 'zh_tw' || normalized === 'zh_hant') {
+    return { update: '更新', updating: '更新中', preparing: '準備更新', restart: '重啟更新', retry: '重試更新' }
+  }
+  return { update: 'Update', updating: 'Updating', preparing: 'Preparing', restart: 'Restart update', retry: 'Retry update' }
+}
+
 function updateSidebarNavLabels(nav: HTMLElement): void {
   const copy = workbenchUiStrings(
     getHostEmbedContext()?.meta?.lang ?? initialHostLanguage()
@@ -59,12 +82,45 @@ function updateSidebarNavLabels(nav: HTMLElement): void {
     const icon = completion.querySelector('span')
     if (icon) icon.className = `codicon codicon-${status.text.match(/\$\(([^)~]+)/)?.[1] ?? 'sparkle'}`
   }
+  const update = nav.querySelector<HTMLButtonElement>('[data-action-id="update"]')
+  if (update != null) {
+    const state = getHostCoderEditorUpdateState()
+    const labels = updateButtonCopy(getHostEmbedContext()?.meta?.lang ?? initialHostLanguage())
+    update.hidden = state?.visible !== true
+    update.disabled = state == null || !state.actionable
+    update.classList.toggle('is-busy', state?.busy === true)
+    const label = state?.state === 'restart-required'
+      ? labels.restart
+      : state?.state === 'failed'
+        ? labels.retry
+        : state?.busy
+          ? (state.state === 'available' || state.state === 'downloading'
+              ? labels.preparing
+              : labels.updating)
+          : labels.update
+    const version = state?.availableVersion ? ` v${state.availableVersion}` : ''
+    update.title = `${label}${version}`
+    update.setAttribute('aria-label', `${label}${version}`)
+    const text = update.querySelector<HTMLElement>('.aily-embed-sidebar-update__label')
+    if (text) text.textContent = state?.progress ? `${label} ${state.progress}%` : label
+    const icon = update.querySelector<HTMLElement>('.codicon')
+    if (icon) {
+      icon.className = state?.busy
+        ? 'codicon codicon-loading codicon-modifier-spin'
+        : state?.state === 'restart-required'
+          ? 'codicon codicon-refresh'
+          : 'codicon codicon-cloud-download'
+    }
+  }
 }
 
 onHostEmbedContextChanged(() => {
   if (mountedSidebarNav != null) updateSidebarNavLabels(mountedSidebarNav)
 })
 onCompletionStatusChanged(() => { if (mountedSidebarNav) updateSidebarNavLabels(mountedSidebarNav) })
+onHostCoderEditorUpdateStateChanged(() => {
+  if (mountedSidebarNav) updateSidebarNavLabels(mountedSidebarNav)
+})
 
 /**
  * 在 shadowRoot / workbench 内查找侧栏 Part。
@@ -171,6 +227,22 @@ function mountSidebarNav(sidebar: HTMLElement): void {
     })()
   })
   nav.append(completion)
+
+  const update = document.createElement('button')
+  update.type = 'button'
+  update.className = 'aily-embed-sidebar-update'
+  update.dataset.actionId = 'update'
+  update.hidden = true
+  const updateIcon = document.createElement('span')
+  updateIcon.className = 'codicon codicon-cloud-download'
+  updateIcon.setAttribute('aria-hidden', 'true')
+  const updateLabel = document.createElement('span')
+  updateLabel.className = 'aily-embed-sidebar-update__label'
+  update.append(updateIcon, updateLabel)
+  update.addEventListener('click', () => {
+    if (!update.disabled) requestHostCoderEditorUpdate()
+  })
+  nav.append(update)
 
   mountedSidebarNav = nav
   updateSidebarNavLabels(nav)

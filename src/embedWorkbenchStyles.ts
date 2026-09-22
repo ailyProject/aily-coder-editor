@@ -88,6 +88,50 @@ const EMBED_WORKBENCH_CSS = `
   outline-offset: 1px;
 }
 
+/* 与主软件子应用顶栏一致：仅发现更新时在右侧显示紧凑更新按钮。 */
+.aily-embed-sidebar-update {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 42px;
+  height: 20px;
+  margin: 0 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #007acc) 38%, transparent);
+  border-radius: 4px;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 10%, transparent);
+  font: inherit;
+  font-size: 10px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.aily-embed-sidebar-update[hidden] {
+  display: none !important;
+}
+
+.aily-embed-sidebar-update:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 58%, transparent);
+  background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 17%, transparent);
+}
+
+.aily-embed-sidebar-update:disabled {
+  cursor: wait;
+  opacity: 0.78;
+}
+
+.aily-embed-sidebar-update:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 1px;
+}
+
+.aily-embed-sidebar-update .codicon {
+  font-size: 12px;
+}
+
 `;
 
 /**

@@ -66,10 +66,31 @@ export type HostEmbedContextV1 = {
   meta?: Record<string, unknown> & { theme?: 'dark' | 'light'; lang?: string }
 }
 
+export type HostCoderEditorUpdateStateV1 = {
+  state: 'current' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed' | 'restart-required'
+  visible: boolean
+  busy: boolean
+  actionable: boolean
+  progress: number
+  installedVersion: string
+  availableVersion: string
+  error?: string
+}
+
 export const HOST_EMBED_CONTEXT_CHANNEL = 'aily-coder-editor-host-context'
 
 /** 子应用监听器就绪后主动向 Angular 宿主要最新快照。 */
 export const HOST_EMBED_CONTEXT_REQUEST_CHANNEL = 'aily-coder-editor-host-context-request'
+
+/** 宿主 → iframe：Aily Coder Editor 包更新状态。 */
+export const HOST_CODER_EDITOR_UPDATE_STATE_CHANNEL = 'aily-coder-editor-update-state'
+
+/** iframe → 宿主：索要最新更新状态，避免首次消息早于顶栏挂载。 */
+export const HOST_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL =
+  'aily-coder-editor-update-state-request'
+
+/** iframe → 宿主：用户点击顶栏更新按钮。 */
+export const HOST_CODER_EDITOR_UPDATE_REQUEST_CHANNEL = 'aily-coder-editor-update-request'
 
 /** iframe 主线程与 LocalProcess/Worker 扩展间同步宿主上下文。 */
 const HOST_EMBED_CONTEXT_BC = 'aily-embed-host-context'
@@ -211,6 +232,8 @@ export function requestHostClipboardWriteText(text: string): boolean {
 
 let snapshot: HostEmbedContextV1 | null = null
 const listeners = new Set<() => void>()
+let coderEditorUpdateSnapshot: HostCoderEditorUpdateStateV1 | null = null
+const coderEditorUpdateListeners = new Set<(state: HostCoderEditorUpdateStateV1) => void>()
 let hostContextBroadcastChannel: BroadcastChannel | null = null
 
 function setHostEmbedContextSnapshot(value: HostEmbedContextV1): void {
@@ -291,6 +314,35 @@ export function onHostEmbedContextChanged(cb: () => void): () => void {
   return () => listeners.delete(cb)
 }
 
+export function getHostCoderEditorUpdateState(): HostCoderEditorUpdateStateV1 | null {
+  return coderEditorUpdateSnapshot
+}
+
+export function onHostCoderEditorUpdateStateChanged(
+  cb: (state: HostCoderEditorUpdateStateV1) => void
+): () => void {
+  coderEditorUpdateListeners.add(cb)
+  return () => coderEditorUpdateListeners.delete(cb)
+}
+
+export function requestHostCoderEditorUpdate(): void {
+  if (typeof window === 'undefined' || window.parent == null || window.parent === window) return
+  try {
+    window.parent.postMessage({ channel: HOST_CODER_EDITOR_UPDATE_REQUEST_CHANNEL }, '*')
+  } catch {
+    /* ignore */
+  }
+}
+
+function requestHostCoderEditorUpdateState(): void {
+  if (typeof window === 'undefined' || window.parent == null || window.parent === window) return
+  try {
+    window.parent.postMessage({ channel: HOST_CODER_EDITOR_UPDATE_STATE_REQUEST_CHANNEL }, '*')
+  } catch {
+    /* ignore */
+  }
+}
+
 /** postMessage 不保留历史消息；初次启动或手动刷新时主动重取。 */
 export function requestHostEmbedContext(): void {
   if (typeof window === 'undefined' || window.parent == null || window.parent === window) {
@@ -317,6 +369,20 @@ function emitHostEmbedContextChanged(): void {
 export function installHostEmbedContextListener(): void {
   window.addEventListener('message', (ev: MessageEvent) => {
     const d = ev.data as { channel?: string; payload?: unknown }
+    if (d?.channel === HOST_CODER_EDITOR_UPDATE_STATE_CHANNEL) {
+      if (!window.parent || ev.source !== window.parent) return
+      const state = d.payload as HostCoderEditorUpdateStateV1
+      if (state?.state == null || typeof state.visible !== 'boolean') return
+      coderEditorUpdateSnapshot = state
+      for (const listener of coderEditorUpdateListeners) {
+        try {
+          listener(state)
+        } catch {
+          /* 一个顶栏监听器失败不影响其他宿主协议。 */
+        }
+      }
+      return
+    }
     if (d?.channel !== HOST_EMBED_CONTEXT_CHANNEL) {
       return
     }
@@ -334,4 +400,5 @@ export function installHostEmbedContextListener(): void {
     }
   })
   requestHostEmbedContext()
+  requestHostCoderEditorUpdateState()
 }
