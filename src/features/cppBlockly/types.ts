@@ -5,8 +5,21 @@ export interface PreviewBlock {
   inputs?: Record<string, { block: PreviewBlock }>
   next?: { block: PreviewBlock }
   extraState?: { count: number }
+  data?: string
   x?: number
   y?: number
+}
+
+export interface SourceSpan { start: number; end: number }
+export interface SourceSlot extends SourceSpan {
+  kind: 'value' | 'sequence' | 'body'
+  separator?: string
+}
+export interface SourceRecipe extends SourceSpan {
+  syntax: string
+  fields: Record<string, SourceSpan>
+  inputs: Record<string, SourceSlot>
+  arguments?: SourceSpan
 }
 
 export interface SourceLocation {
@@ -30,6 +43,7 @@ export interface CppPreview {
   blockCount: number
   preservedCount: number
   dataCount?: number
+  recipes?: Record<string, SourceRecipe>
 }
 
 export const MAX_SOURCE_LENGTH = 200_000

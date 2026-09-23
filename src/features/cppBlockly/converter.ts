@@ -1,7 +1,8 @@
 import type { Node, Parser } from 'web-tree-sitter'
+import { attachSourceRecipes } from './sourceRecipes.js'
 import { MAX_BLOCKS, MAX_SOURCE_LENGTH, previewError, type CppPreview, type PreviewBlock, type SourceLocation } from './types.js'
 
-// This is a read-only C++ syntax projection. Calls retain their actual spelling;
+// This is a source-preserving C++ syntax projection. Calls retain their actual spelling;
 // no hardware-library identity is guessed and no Arduino generator is executed.
 export function convertCpp(parser: Parser, source: string): CppPreview {
   if (source.length > MAX_SOURCE_LENGTH) return previewError('文件过大，请预览不超过 200,000 字符的 C++ 文件。')
@@ -30,6 +31,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     status: 'ready', blocks: { languageVersion: 0, blocks: [] }, locations: {},
     diagnostics: [], blockCount: 0, preservedCount: 0, dataCount: 0
   }
+  const sourceNodes = new Map<string, Node>()
   const location = (n: Node): SourceLocation => {
     // The grammar places class/enum terminators outside their named node.
     const end = n.nextSibling?.type === ';' ? n.nextSibling : n
@@ -42,14 +44,13 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
   const field = (n: Node, name: string): Node | null => n.childForFieldName(name)
   const raw = (n: Node): string => source.slice(n.startIndex, n.endIndex)
   const children = (n: Node): Node[] => n.namedChildren.filter(c => c.type !== 'comment')
-  const compact = (text: string): string => {
-    const line = text.replace(/\s+/g, ' ').trim()
-    return line.length > 110 ? `${line.slice(0, 107)}…` : line
-  }
+  // Editable fields carry the full spelling. Blockly truncates only rendering.
+  const compact = (text: string): string => text.trim()
   const block = (n: Node, type: string, fields: Record<string, string> = {}): PreviewBlock => {
     if (++result.blockCount > MAX_BLOCKS) throw new Error('积木数量超过 2,000，请缩小文件后预览。')
     const id = `cpp-${result.blockCount}`
     result.locations[id] = location(n)
+    sourceNodes.set(id, n)
     return { type: `cpp_preview_${type}`, id, fields }
   }
   const input = (b: PreviewBlock, name: string, child: PreviewBlock | undefined): void => {
@@ -58,7 +59,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
   const preserved = (n: Node, value = false): PreviewBlock => {
     result.preservedCount++
     result.diagnostics.push({ ...location(n), severity: 'preserved', message: `${n.type} 暂以原始 C++ 保留` })
-    return block(n, value ? 'raw_value' : 'raw', { TEXT: compact(location(n).text) })
+    return block(n, value ? 'raw_value' : 'raw', { TEXT: value ? raw(n) : location(n).text })
   }
   const expression = (n: Node | null, depth = 0): PreviewBlock | undefined => {
     if (!n) return undefined
@@ -68,7 +69,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     }
     if (n.type === 'raw_string_literal') {
       result.dataCount!++
-      return block(n, 'data', { TEXT: `原始字符串 · ${raw(n).length.toLocaleString('en-US')} 字符 · ${n.endPosition.row - n.startPosition.row + 1} 行` })
+      return block(n, 'data', { TEXT: `原始字符串 · ${raw(n).length.toLocaleString('en-US')} 字符 · ${n.endPosition.row - n.startPosition.row + 1} 行`, CODE: raw(n) })
     }
     if (n.type === 'initializer_list' || n.type === 'argument_list' || n.type === 'subscript_argument_list') {
       const items = children(n)
@@ -76,7 +77,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
       // independently rendered number blocks. Non-literal expressions expand.
       if (n.type === 'initializer_list' && items.length > 24 && items.every(c => ['number_literal', 'string_literal', 'char_literal', 'true', 'false'].includes(c.type))) {
         result.dataCount!++
-        return block(n, 'data', { TEXT: `常量数组 · ${items.length} 项 · ${compact(items.slice(0, 4).map(raw).join(', '))} …` })
+        return block(n, 'data', { TEXT: `常量数组 · ${items.length} 项 · ${compact(items.slice(0, 4).map(raw).join(', '))} …`, CODE: raw(n) })
       }
       const b = block(n, 'list', { OPEN: raw(n).slice(0, 1), CLOSE: raw(n).slice(-1) })
       b.extraState = { count: items.length }
@@ -143,7 +144,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
         const comments = args.namedChildren.filter(c => c.type === 'comment' && c.startIndex >= (argsWithoutComments[i - 1]?.endIndex ?? args.startIndex) && c.endIndex <= arg.startIndex)
         const value = expression(arg, depth + 1)
         if (comments.length) {
-          const annotated = block(arg, 'annotation', { TEXT: comments.map(raw).join(' ') })
+          const annotated = block(arg, 'annotation', { TEXT: source.slice(comments[0]!.startIndex, arg.startIndex).trimEnd() })
           input(annotated, 'VALUE', value); input(b, `ARG${i}`, annotated)
         } else input(b, `ARG${i}`, value)
       })
@@ -178,6 +179,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     if (depth > 70) return preserved(n)
     if (!['compound_statement', 'namespace_definition', 'class_specifier', 'struct_specifier', 'union_specifier', 'enum_specifier', 'template_declaration', 'preproc_if', 'preproc_ifdef', 'preproc_elif', 'preproc_else', 'case_statement'].includes(n.type) && n.namedChildren.some(c => c.type === 'comment')) return preserved(n)
     if (n.type === 'comment') return block(n, 'comment', { TEXT: compact(n.text) })
+    if (n.type === 'access_specifier') return block(n, 'directive', { TEXT: source.slice(n.startIndex, n.nextSibling?.type === ':' ? n.nextSibling.endIndex : n.endIndex) })
     if (['preproc_include', 'preproc_def', 'preproc_function_def', 'preproc_call', 'alias_declaration', 'using_declaration', 'access_specifier'].includes(n.type)) return block(n, 'directive', { TEXT: compact(raw(n)) })
     if (['namespace_definition', 'class_specifier', 'struct_specifier', 'union_specifier', 'enum_specifier'].includes(n.type)) {
       const content = field(n, 'body')
@@ -224,7 +226,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
         input(b, 'VALUE', expression(value, depth + 1)); return b
       }
       if (decls.length === 1) return binding(d, true)
-      const b = block(n, 'container', { HEADER: `声明 ${compact(source.slice(n.startIndex, d.startIndex))}`, FOOTER: '' })
+      const b = block(n, 'container', { HEADER: compact(source.slice(n.startIndex, d.startIndex)), FOOTER: '' })
       let last: PreviewBlock | undefined
       for (const item of decls) { const child = binding(item, false); if (last) last.next = { block: child }; else input(b, 'BODY', child); last = child }
       return b
@@ -303,6 +305,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
       else globals.push(n)
     }
     flushGlobals()
+    attachSourceRecipes(result, source, sourceNodes)
     result.status = result.preservedCount ? 'partial' : 'ready'
     return result
   } catch (error) {

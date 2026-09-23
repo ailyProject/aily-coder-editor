@@ -29,3 +29,15 @@
 .cpp-blockly-diagnostics { margin: 0; padding: 0; list-style: none; }
 .cpp-blockly-diagnostics button { text-align: left; border: 0; width: 100%; }
 .cpp-blockly-empty { position: absolute; inset: 0; display: grid; place-content: center; color: var(--vscode-descriptionForeground); pointer-events: none; }
+.cpp-blockly-actions { flex: 1 0 100%; flex-wrap: wrap; margin-left: 0; gap: 5px; }
+.cpp-blockly-preview button:disabled { opacity: .45; cursor: default; }
+.cpp-blockly-preview button[hidden] { display: none; }
+.cpp-blockly-preview .cpp-blockly-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); margin-left: auto; }
+.cpp-blockly-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; padding: 6px 0; }
+.cpp-blockly-fields label { display: flex; flex: 1 1 140px; gap: 4px; flex-direction: column; color: var(--vscode-descriptionForeground); }
+.cpp-blockly-fields textarea, .cpp-blockly-code { box-sizing: border-box; width: 100%; resize: vertical; padding: 6px; font: 12px/1.4 var(--vscode-editor-font-family, monospace); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); }
+.cpp-blockly-fields textarea:focus, .cpp-blockly-code:focus { outline: 1px solid var(--vscode-focusBorder); }
+.cpp-blockly-code { height: 130px; white-space: pre; }
+.cpp-blockly-code-error { color: var(--vscode-errorForeground); }
+.cpp-blockly-canvas .blocklyTreeRow { padding: 5px 8px 5px 3px; height: auto; }
+.cpp-blockly-canvas .blocklyTreeLabel { font: 12px var(--vscode-font-family, sans-serif); }
