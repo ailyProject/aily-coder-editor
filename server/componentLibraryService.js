@@ -1973,6 +1973,28 @@ export async function materializeCoderProjectLibraries(options) {
   })
 }
 
+/** Explicit npm installation transfers this dependency from board-template ownership to the user. */
+async function retainExplicitCoderLibraryDependency(projectRoot, packageName) {
+  const manifestPath = path.join(projectRoot, 'package.json')
+  const manifest = await readJson(manifestPath, 'package.json')
+  const receipt = manifest.coderBoardTemplateDependencies
+  if (manifest.type !== 'coder' || receipt?.schemaVersion !== 1
+    || !receipt.dependencies || typeof receipt.dependencies !== 'object' || Array.isArray(receipt.dependencies)
+    || !Object.prototype.hasOwnProperty.call(receipt.dependencies, packageName)) return
+  const dependencies = { ...receipt.dependencies }
+  delete dependencies[packageName]
+  manifest.coderBoardTemplateDependencies = { ...receipt, dependencies }
+  const staging = await mkdtemp(path.join(projectRoot, '.aily-library-ownership-'))
+  try {
+    const stagedManifest = path.join(staging, 'package.json')
+    const mode = (await stat(manifestPath)).mode & 0o777
+    await writeFile(stagedManifest, `${JSON.stringify(manifest, null, 2)}\n`, { mode })
+    await rename(stagedManifest, manifestPath)
+  } finally {
+    await rm(staging, { recursive: true, force: true })
+  }
+}
+
 export async function installBlocklyLibraryPackage(options) {
   const { packageName, version } = options
   if (!isSafeBlocklyLibraryPackageName(packageName) || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u.test(version)) {
@@ -1991,8 +2013,14 @@ export async function installBlocklyLibraryPackage(options) {
     const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
     const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
     const inspect = createDependencyInspector(projectRoot, { ...options, appDataPath })
-    const prepare = async (root, installed) => withDependencyReadiness(projectRoot,
-      await materializeBlocklyLibraryPackage(projectRoot, root, installed, library, options), inspect)
+    const prepare = async (root, installed) => {
+      const result = await withDependencyReadiness(projectRoot,
+        await materializeBlocklyLibraryPackage(projectRoot, root, installed, library, options), inspect)
+      // Keep this inside explicit install, including its same-version fast path.
+      // Background/template materialization must retain the board's receipt.
+      await retainExplicitCoderLibraryDependency(projectRoot, packageName)
+      return result
+    }
     if (installedPackage?.name === packageName && installedPackage.version === version && directDependencySpec(manifest, packageName)) {
       return prepare(packagePath(projectRoot, packageName), installedPackage)
     }

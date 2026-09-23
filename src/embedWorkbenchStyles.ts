@@ -6,9 +6,7 @@ const EMBED_WORKBENCH_STYLES_ATTR = "data-aily-embed-workbench-styles";
 
 const EMBED_WORKBENCH_CSS = `
 
-.monaco-workbench .part.editor > .content .editor-group-container > .title .editor-actions {
-  display: none !important;
-}
+/* Keep contextual editor actions visible (Markdown and C++ Blockly preview). */
 
 /* Activity Bar 已在配置中 hidden，DOM 仍可能存在，彻底不占位 */
 .monaco-workbench .part.activitybar {

@@ -108,7 +108,8 @@
     "test:native-search": "tsx --test src/features/nativeTextSearchProvider.test.ts",
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
-    "lsp-proxy": "tsx server/lspWsProxy.ts"
+    "lsp-proxy": "tsx server/lspWsProxy.ts",
+    "test:cpp-blockly": "tsx --test src/features/cppBlockly/converter.test.ts"
   },
   "overrides": {
     "monaco-languageclient": {
@@ -350,6 +351,9 @@
     "vite": "~8.0.3",
     "vscode": "npm:@codingame/monaco-vscode-extension-api@^31.0.1",
     "ws": "^8.20.0",
-    "yauzl": "^3.3.0"
+    "yauzl": "^3.3.0",
+    "blockly": "13.3.0",
+    "web-tree-sitter": "0.26.11",
+    "tree-sitter-cpp": "0.23.4"
   }
 }

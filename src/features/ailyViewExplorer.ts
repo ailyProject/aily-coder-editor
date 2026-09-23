@@ -403,6 +403,7 @@ type FsTreeElement = {
   /** Library 下一级库的来源；用于库图标与根节点菜单。 */
   readonly librarySource?: LibraryTreeSource
   readonly libraryRemovalTarget?: LibraryRemovalTarget
+  readonly description?: string
 }
 
 // 提供给 TreeDataProvider：蓝图静态节点 + node_modules 动态节点
@@ -822,7 +823,8 @@ async function listInstalledLibraryChildren(
   vscodeApi: typeof vscode
 ): Promise<FsTreeElement[]> {
   const projections = await listAilyLibraryProjections(
-    relPath => readProjectDirectoryEntries(vscodeApi, relPath)
+    relPath => readProjectDirectoryEntries(vscodeApi, relPath),
+    relPath => readOptionalProjectTextFile(vscodeApi, relPath)
   )
   return projections.map(projection => ({
     kind: 'fs',
@@ -831,6 +833,7 @@ async function listInstalledLibraryChildren(
     isDirectory: true,
     isTopLevelPackage: true,
     librarySource: projection.source,
+    description: projection.description,
     libraryRemovalTarget: packageLibraryRemovalTarget(projection.packageName)
   }))
 }
@@ -972,6 +975,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       : `${element.librarySource != null ? 'library-root' : 'fs'}-${fsContextSuffix(element.relPath)}`
         + (element.libraryRemovalTarget != null ? ':uninstallable' : '')
     item.contextValue = `aily.${nodeType}:${contextId}`
+    item.description = element.description
     item.tooltip = [element.label, element.relPath].join('\n')
 
     const root = vs.workspace.workspaceFolders?.[0]?.uri
@@ -2187,7 +2191,13 @@ void getApi().then((vscode) => {
     projectPackageWatcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(root, 'package.json')
     )
-    projectPackageWatcher.onDidChange(() => refreshUserViewGroup())
+    const refreshProjectLibraries = (): void => {
+      refreshUserViewGroup()
+      provider.refresh(getStableBlueprintElement('library'))
+    }
+    projectPackageWatcher.onDidChange(refreshProjectLibraries)
+    projectPackageWatcher.onDidCreate(refreshProjectLibraries)
+    projectPackageWatcher.onDidDelete(refreshProjectLibraries)
   }
   setupProjectPackageWatcher()
 

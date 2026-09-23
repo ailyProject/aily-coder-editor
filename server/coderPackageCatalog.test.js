@@ -124,7 +124,11 @@ test('official editor list and Agent use regional npm packages and the Aily inst
   assert.equal(JSON.parse(await readFile(f.manifestPath, 'utf8')).dependencies[packageName], '1.0.0')
   assert.equal(await readFile(path.join(f.packageRoot, 'src.7z'), 'utf8'), 'archive')
   assert.equal(await readFile(path.join(f.packageRoot, 'src/Demo/src/Demo.h'), 'utf8'), '#pragma once\n')
+  const templateManifest = JSON.parse(await readFile(f.manifestPath, 'utf8'))
+  templateManifest.coderBoardTemplateDependencies = { schemaVersion: 1, boardPackageName: '@aily-project/board-demo', dependencies: { [packageName]: '1.0.0' } }
+  await writeFile(f.manifestPath, JSON.stringify(templateManifest))
   assert.equal((await installArduinoComponentLibrary({ ...f.options, libraryId: libraryRef })).alreadyInstalled, true)
+  assert.deepEqual(JSON.parse(await readFile(f.manifestPath, 'utf8')).coderBoardTemplateDependencies.dependencies, {})
   assert.equal(f.commands.length, 1)
   assert.equal((await searchCoderLibraries({ ...f.options, query: '' })).libraries.some(item => item.packageName === packageName), false)
   const state = (await searchArduinoComponentLibraries({ ...f.options, query: 'Official' })).libraries[0]

@@ -1,0 +1,31 @@
+.cpp-blockly-preview {
+  height: 100%; width: 100%; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  color: var(--vscode-foreground); background: var(--vscode-editor-background);
+  font: 12px var(--vscode-font-family, sans-serif);
+}
+.cpp-blockly-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0;
+}
+.cpp-blockly-toolbar strong { font-weight: 600; margin-right: 5px; }
+.cpp-blockly-badge { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.cpp-blockly-actions { margin-left: auto; display: flex; gap: 6px; }
+.cpp-blockly-scope { min-width: 150px; max-width: 300px; flex: 1; font: inherit; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border); padding: 5px; border-radius: 4px; }
+.cpp-blockly-preview button {
+  font: inherit; color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, transparent);
+  border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 5px 9px; cursor: pointer;
+}
+.cpp-blockly-preview button:hover { background: var(--vscode-list-hoverBackground); }
+.cpp-blockly-preview button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.cpp-blockly-status { padding: 8px 14px; color: var(--vscode-descriptionForeground); line-height: 1.6; flex-shrink: 0; }
+.cpp-blockly-status[data-state="error"] { color: var(--vscode-errorForeground); }
+.cpp-blockly-canvas { flex: 1; min-height: 120px; width: 100%; position: relative; }
+.cpp-blockly-canvas .blocklySvg { background: transparent; }
+.cpp-blockly-inspector { flex-shrink: 0; max-height: 35%; overflow: auto; border-top: 1px solid var(--vscode-panel-border); padding: 8px 14px; }
+.cpp-blockly-inspector summary { cursor: pointer; line-height: 24px; }
+.cpp-blockly-inspector pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--vscode-editor-font-family, monospace); margin: 8px 0; }
+.cpp-blockly-outline { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 0; }
+.cpp-blockly-diagnostics { margin: 0; padding: 0; list-style: none; }
+.cpp-blockly-diagnostics button { text-align: left; border: 0; width: 100%; }
+.cpp-blockly-empty { position: absolute; inset: 0; display: grid; place-content: center; color: var(--vscode-descriptionForeground); pointer-events: none; }

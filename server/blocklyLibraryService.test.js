@@ -82,6 +82,42 @@ test('installs npm source beside src.7z and reports package-local library roots'
   assert.deepEqual(JSON.parse(await readFile(f.manifestPath, 'utf8')).dependencies, {})
 })
 
+test('explicit installs release only the requested template dependency, including the same-version fast path', async t => {
+  for (const alreadyInstalled of [false, true]) {
+    await t.test(alreadyInstalled ? 'same-version installed package' : 'fresh npm install', async t => {
+      const f = await fixture(t)
+      if (alreadyInstalled) await installCoderLibrary(f.options)
+      const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'))
+      manifest.dependencies[packageName] = '^1.0.0'
+      manifest.coderBoardTemplateDependencies = { schemaVersion: 1, boardPackageName: '@aily-project/board-demo',
+        dependencies: { [packageName]: '^1.0.0', '@aily-project/lib-other': '^2.0.0' } }
+      manifest.userSetting = 'preserved'
+      await writeFile(f.manifestPath, JSON.stringify(manifest))
+      f.commands.length = 0
+      const result = await installCoderLibrary(f.options)
+      const after = JSON.parse(await readFile(f.manifestPath, 'utf8'))
+      assert.equal(result.ready, true)
+      assert.equal(f.commands.length, alreadyInstalled ? 0 : 1)
+      assert.equal(after.dependencies[packageName], alreadyInstalled ? '^1.0.0' : '1.0.0')
+      assert.equal(after.userSetting, 'preserved')
+      assert.deepEqual(after.coderBoardTemplateDependencies, { schemaVersion: 1, boardPackageName: '@aily-project/board-demo',
+        dependencies: { '@aily-project/lib-other': '^2.0.0' } })
+    })
+  }
+})
+
+test('explicit install rejects a non-Coder project without rewriting template metadata', async t => {
+  const f = await fixture(t)
+  await installCoderLibrary(f.options)
+  const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'))
+  manifest.type = 'blockly'
+  manifest.coderBoardTemplateDependencies = { schemaVersion: 1, boardPackageName: '@aily-project/board-demo', dependencies: { [packageName]: '1.0.0' } }
+  const before = JSON.stringify(manifest)
+  await writeFile(f.manifestPath, before)
+  await assert.rejects(installCoderLibrary(f.options), { code: 'CODER_PROJECT_REQUIRED' })
+  assert.equal(await readFile(f.manifestPath, 'utf8'), before)
+})
+
 test('prepares npm-installed template dependencies offline without changing manifests', async t => {
   const f = await fixture(t)
   await f.options.runNpmCommand({ args: ['install', `${packageName}@1.0.0`] })
@@ -91,6 +127,7 @@ test('prepares npm-installed template dependencies offline without changing mani
   assert.equal(unprepared.ready, false)
   const manifest = JSON.parse(await readFile(f.manifestPath, 'utf8'))
   manifest.dependencies[packageName] = '^1.0.0'
+  manifest.coderBoardTemplateDependencies = { schemaVersion: 1, boardPackageName: '@aily-project/board-demo', dependencies: { [packageName]: '^1.0.0' } }
   await writeFile(f.manifestPath, JSON.stringify(manifest))
   const lockPath = path.join(f.workspaceRoot, 'package-lock.json')
   await writeFile(lockPath, 'existing lockfile')
@@ -234,12 +271,16 @@ test('prepared packages remain searchable and removable while the catalog is off
 test('archive validation failure rolls back npm metadata and previous package version', async t => {
   const f = await fixture(t)
   await installCoderLibrary(f.options)
+  const before = JSON.parse(await readFile(f.manifestPath, 'utf8'))
+  before.coderBoardTemplateDependencies = { schemaVersion: 1, boardPackageName: '@aily-project/board-demo', dependencies: { [packageName]: '1.0.0' } }
+  await writeFile(f.manifestPath, JSON.stringify(before))
   f.catalog[0].version = '2.0.0'
   await f.writeCatalog()
   await assert.rejects(installCoderLibrary({ ...f.options, version: '2.0.0', extractArchive: async ({ destination }) => {
     await mkdir(path.join(destination, 'src'), { recursive: true })
     await symlink(f.workspaceRoot, path.join(destination, 'src', 'Escape'), process.platform === 'win32' ? 'junction' : 'dir')
   } }), { code: 'BLOCKLY_LIBRARY_ARCHIVE_UNSAFE' })
+  assert.deepEqual(JSON.parse(await readFile(f.manifestPath, 'utf8')), before)
   assert.equal(JSON.parse(await readFile(path.join(f.packageRoot, 'package.json'), 'utf8')).version, '1.0.0')
   assert.equal(await readFile(path.join(f.packageRoot, 'src/Demo/Demo.h'), 'utf8'), '#pragma once\n')
 })
