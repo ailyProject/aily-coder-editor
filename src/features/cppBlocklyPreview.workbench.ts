@@ -10,11 +10,15 @@ import { applySource } from './cppBlockly/applySource.js'
 import { isCppPreviewFile, type CppPreview, type SourceLocation } from './cppBlockly/types.js'
 import { discoverProjectLibraries, readLibraryHeaders, type LibraryFileSystem } from './cppBlockly/libraryCatalog.js'
 import { IEditorGroupsService, GroupDirection } from '@codingame/monaco-vscode-api/services'
+import { cppBlocklyPreviewEnabled } from './cppBlockly/devGate.js'
 
 const COMMAND = 'aily.cpp.showBlocklyPreview'
+const viteDev = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true
+const linkedDev = document.querySelector('meta[name="aily-coder-dev-runtime"]')?.getAttribute('content') === 'true'
+const previewEnabled = cppBlocklyPreviewEnabled(window.location.search, viteDev, linkedDev)
 const savedSnapshots = new Map<string, string>()
 const savedSnapshotChanges = new Emitter<vscode.Uri>()
-const { getApi } = registerExtension({
+const extension = previewEnabled ? registerExtension({
   name: 'aily-cpp-blockly-preview', publisher: 'aily', version: '1.0.0', engines: { vscode: '*' },
   contributes: {
     commands: [{ command: COMMAND, title: 'C++：打开 Blockly 转换预览', icon: '$(open-preview)' }],
@@ -23,7 +27,11 @@ const { getApi } = registerExtension({
       commandPalette: [{ command: COMMAND, when: "resourceExtname =~ /\\.(cpp|cc|cxx|ino|h|hpp|hh|hxx)$/i && resourceScheme != aily-cpp-preview" }]
     }
   }
-}, ExtensionHostKind.LocalProcess, { system: true })
+}, ExtensionHostKind.LocalProcess, { system: true }) : undefined
+const getApi = () => {
+  if (!extension) throw new Error('Blockly 转换预览仅在开发模式可用。')
+  return extension.getApi()
+}
 
 class CppPreviewInput extends SimpleEditorInput {
   readonly session = createCppSession()
@@ -96,7 +104,7 @@ class CppPreviewInput extends SimpleEditorInput {
     const current = await this.readDocument()
     if (current.text === this.savedText) await this.closeDraftDiff()
   }
-  async syncDraft(code: string, revision: number): Promise<void> {
+  async syncDraft(code: string, revision: number): Promise<CppPreview | undefined> {
     if (this.applying) return
     const result = await parseCppAsync(code).promise
     if (revision !== this.session.revision || this.applying) return
@@ -109,6 +117,7 @@ class CppPreviewInput extends SimpleEditorInput {
     this.lastDraft = { text: model.getValue(), version: model.getVersionId(), dirty: true }
     this.lastDraftResult = result
     await this.showDraftDiff()
+    return result
   }
   async readDocument(): Promise<PreviewDocument> {
     const api = await getApi(), doc = await api.workspace.openTextDocument(api.Uri.parse(this.source.toString()))
@@ -270,52 +279,54 @@ class CppPreviewPane extends SimpleEditorPane {
   }
 }
 
-registerEditorPane('aily-cpp-blockly-preview-pane', 'Blockly 转换预览', CppPreviewPane, [CppPreviewInput])
-registerEditorSerializer(CppPreviewPane.ID, class implements IEditorSerializer {
-  canSerialize(editor: EditorInput): boolean { return editor instanceof CppPreviewInput }
-  serialize(editor: CppPreviewInput): string { return JSON.stringify({ source: editor.source.toJSON() }) }
-  deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
-    try {
-      const { source: serializedSource } = JSON.parse(serializedEditor) as { source?: ReturnType<URI['toJSON']> }
-      const source = URI.revive(serializedSource)
-      return source && isCppPreviewFile(source.path) ? instantiationService.createInstance(CppPreviewInput, source) : undefined
-    } catch { return undefined }
-  }
-})
-
-void getApi().then(api => {
-  api.workspace.registerTextDocumentContentProvider('aily-cpp-saved', {
-    onDidChange: savedSnapshotChanges.event,
-    provideTextDocumentContent: uri => savedSnapshots.get(uri.toString()) ?? ''
-  })
-  api.commands.registerCommand(COMMAND, async (resource?: vscode.Uri) => {
-    const source = resource?.scheme ? resource : api.window.activeTextEditor?.document.uri
-    if (!source || !isCppPreviewFile(source.path)) {
-      await api.window.showInformationMessage('请先打开一个 C++ 源文件或头文件（.cpp、.cc、.cxx、.ino、.h、.hpp、.hh、.hxx）。')
-      return
+if (previewEnabled) {
+  registerEditorPane('aily-cpp-blockly-preview-pane', 'Blockly 转换预览', CppPreviewPane, [CppPreviewInput])
+  registerEditorSerializer(CppPreviewPane.ID, class implements IEditorSerializer {
+    canSerialize(editor: EditorInput): boolean { return editor instanceof CppPreviewInput }
+    serialize(editor: CppPreviewInput): string { return JSON.stringify({ source: editor.source.toJSON() }) }
+    deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
+      try {
+        const { source: serializedSource } = JSON.parse(serializedEditor) as { source?: ReturnType<URI['toJSON']> }
+        const source = URI.revive(serializedSource)
+        return source && isCppPreviewFile(source.path) ? instantiationService.createInstance(CppPreviewInput, source) : undefined
+      } catch { return undefined }
     }
-    try {
-      const editorService = StandaloneServices.get(IEditorService)
-      const groups = StandaloneServices.get(IEditorGroupsService)
-      const existing = editorService.editors.find(editor => editor instanceof CppPreviewInput && editor.source.toString() === source.toString())
-      const input = existing ?? await createInstance(CppPreviewInput, URI.parse(source.toString()))
-      // Use explicit RIGHT rather than SIDE_GROUP, which follows the user's
-      // unrelated split-down preference. Reopening reuses the existing pair.
-      const previewGroup = existing && groups.groups.find(group => group.contains(existing))
-      const visibleSource = editorService.visibleEditorPanes.find(pane => pane.input?.resource?.toString() === source.toString())?.group
-      const activePreview = groups.activeGroup.activeEditor instanceof CppPreviewInput ? groups.activeGroup : undefined
-      const leftOfPreview = previewGroup || activePreview
-      const sourceGroup = visibleSource ?? (leftOfPreview ? groups.findGroup({ direction: GroupDirection.LEFT }, leftOfPreview) : undefined) ?? groups.activeGroup
-      ;(input as CppPreviewInput).sourceGroupId = sourceGroup.id
-      const right = groups.findGroup({ direction: GroupDirection.RIGHT }, sourceGroup)
-      const target = right ?? groups.addGroup(sourceGroup, GroupDirection.RIGHT)
-      await editorService.openEditor({ resource: URI.parse(source.toString()), options: { pinned: true, preserveFocus: true } }, sourceGroup)
-      if (previewGroup && previewGroup.id !== target.id) previewGroup.moveEditor(input, target)
-      await editorService.openEditor(input, { pinned: true }, target)
-      if (!right) {
-        const sourceSize = groups.getSize(sourceGroup), targetSize = groups.getSize(target)
-        groups.setSize(sourceGroup, { width: Math.max(300, Math.round((sourceSize.width + targetSize.width) * 0.36)), height: sourceSize.height })
-      }
-    } catch (error) { await api.window.showErrorMessage(`无法打开 Blockly 预览：${String(error)}`) }
   })
-})
+
+  void getApi().then(api => {
+    api.workspace.registerTextDocumentContentProvider('aily-cpp-saved', {
+      onDidChange: savedSnapshotChanges.event,
+      provideTextDocumentContent: uri => savedSnapshots.get(uri.toString()) ?? ''
+    })
+    api.commands.registerCommand(COMMAND, async (resource?: vscode.Uri) => {
+      const source = resource?.scheme ? resource : api.window.activeTextEditor?.document.uri
+      if (!source || !isCppPreviewFile(source.path)) {
+        await api.window.showInformationMessage('请先打开一个 C++ 源文件或头文件（.cpp、.cc、.cxx、.ino、.h、.hpp、.hh、.hxx）。')
+        return
+      }
+      try {
+        const editorService = StandaloneServices.get(IEditorService)
+        const groups = StandaloneServices.get(IEditorGroupsService)
+        const existing = editorService.editors.find(editor => editor instanceof CppPreviewInput && editor.source.toString() === source.toString())
+        const input = existing ?? await createInstance(CppPreviewInput, URI.parse(source.toString()))
+        // Use explicit RIGHT rather than SIDE_GROUP, which follows the user's
+        // unrelated split-down preference. Reopening reuses the existing pair.
+        const previewGroup = existing && groups.groups.find(group => group.contains(existing))
+        const visibleSource = editorService.visibleEditorPanes.find(pane => pane.input?.resource?.toString() === source.toString())?.group
+        const activePreview = groups.activeGroup.activeEditor instanceof CppPreviewInput ? groups.activeGroup : undefined
+        const leftOfPreview = previewGroup || activePreview
+        const sourceGroup = visibleSource ?? (leftOfPreview ? groups.findGroup({ direction: GroupDirection.LEFT }, leftOfPreview) : undefined) ?? groups.activeGroup
+        ;(input as CppPreviewInput).sourceGroupId = sourceGroup.id
+        const right = groups.findGroup({ direction: GroupDirection.RIGHT }, sourceGroup)
+        const target = right ?? groups.addGroup(sourceGroup, GroupDirection.RIGHT)
+        await editorService.openEditor({ resource: URI.parse(source.toString()), options: { pinned: true, preserveFocus: true } }, sourceGroup)
+        if (previewGroup && previewGroup.id !== target.id) previewGroup.moveEditor(input, target)
+        await editorService.openEditor(input, { pinned: true }, target)
+        if (!right) {
+          const sourceSize = groups.getSize(sourceGroup), targetSize = groups.getSize(target)
+          groups.setSize(sourceGroup, { width: Math.max(300, Math.round((sourceSize.width + targetSize.width) * 0.36)), height: sourceSize.height })
+        }
+      } catch (error) { await api.window.showErrorMessage(`无法打开 Blockly 预览：${String(error)}`) }
+    })
+  })
+}

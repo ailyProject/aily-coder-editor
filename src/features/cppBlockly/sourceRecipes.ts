@@ -43,6 +43,7 @@ export function attachSourceRecipes(result: CppPreview, source: string, nodes: M
       r.inputs[name] = { start: childRange.start, end: childRange.end, kind: 'value' }
     }
     if (['value', 'choice', 'text', 'raw_value', 'raw', 'comment', 'directive', 'flow'].includes(type)) r.fields.TEXT = { start: r.start, end: r.end }
+    if (type === 'variable') r.fields.NAME = { start: r.start, end: r.end }
     if (type === 'data') r.fields.CODE = span(n)
     if (type === 'definition') {
       const spelling = b.fields?.TEXT ?? ''

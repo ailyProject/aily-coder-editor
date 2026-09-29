@@ -86,7 +86,9 @@ async function serveFile(request, response, filePath) {
   }
   if (reloadUrl) {
     const reloadScript = `<script>(()=>{const source=new EventSource(${JSON.stringify(reloadUrl)});source.addEventListener('reload',()=>location.reload());source.onerror=()=>source.close()})()</script>`
-    const html = readFileSync(indexPath, 'utf8').replace(/<\/body>/i, `${reloadScript}</body>`)
+    const html = readFileSync(indexPath, 'utf8')
+      .replace(/<\/head>/i, '<meta name="aily-coder-dev-runtime" content="true"></head>')
+      .replace(/<\/body>/i, `${reloadScript}</body>`)
     response.end(html)
     return
   }

@@ -27,6 +27,16 @@ export function loadCppSession(session: CppEditSession, source: PreviewDocument,
   session.source = source; session.original = result; session.roots = structuredClone(result.blocks.blocks)
   session.view = undefined; session.dirty = false; session.revision++
 }
+
+/** A source undo can replace a draft already projected into the left editor. */
+export function cppSourceChangeAction(session: CppEditSession, current: PreviewDocument, synchronizedDraft: boolean, liveSynced: boolean): 'synced' | 'reload' | 'conflict' | 'same' {
+  if (synchronizedDraft) return 'synced'
+  if (session.dirty) {
+    if (liveSynced) return 'reload'
+    return current.text !== session.source?.text || current.version !== session.source?.version ? 'conflict' : 'same'
+  }
+  return current.text !== session.source?.text ? 'reload' : 'same'
+}
 export async function applyCppSession(session: CppEditSession, parse: (code: string) => Promise<CppPreview>, write: (code: string, expected: PreviewDocument, stillCurrent: () => boolean) => Promise<PreviewDocument>): Promise<void> {
   const revision = session.revision, source = session.source!
   const code = sessionCode(session)

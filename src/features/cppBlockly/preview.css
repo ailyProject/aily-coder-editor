@@ -7,7 +7,7 @@
   --cpp-search-bg: #2b2d30;
   --cpp-toolbox-width: 164px;
   --cpp-border: var(--vscode-panel-border, #454545);
-  height: 100%; width: 100%; min-height: 0; overflow: hidden;
+  height: 100%; width: 100%; min-height: 0; overflow: hidden; position: relative;
   display: flex; flex-direction: column; container: cpp-editor / inline-size;
   color: var(--vscode-foreground); background: var(--vscode-editor-background);
   font: 12px var(--vscode-font-family, sans-serif);
@@ -70,6 +70,11 @@
 .cpp-blockly-fields textarea:focus, .cpp-blockly-code:focus { outline: 1px solid var(--vscode-focusBorder); }
 .cpp-blockly-code { height: 130px; white-space: pre; }
 .cpp-blockly-code-error { color: var(--vscode-errorForeground); }
+.cpp-blockly-variable-rename { position: absolute; z-index: 120; top: 52px; right: 12px; box-sizing: border-box; width: min(340px, calc(100% - 24px)); padding: 14px; display: grid; gap: 10px; border: 1px solid var(--cpp-border); border-radius: 7px; background: var(--vscode-editorWidget-background, var(--cpp-toolbox-bg)); box-shadow: 0 8px 28px #0006; }
+.cpp-blockly-variable-rename[hidden] { display: none; }
+.cpp-blockly-variable-rename strong { font-weight: 500; }
+.cpp-blockly-variable-rename input { width: 100%; box-sizing: border-box; padding: 7px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--cpp-border)); border-radius: 4px; }
+.cpp-blockly-variable-rename > div { display: flex; justify-content: flex-end; gap: 7px; }
 /* Aily toolbox: icon + label, 40px rows, neutral full-row selection. */
 .cpp-blockly-canvas .blocklyToolbox { width: var(--cpp-toolbox-width); box-sizing: border-box; padding: 50px 0 0; background: var(--cpp-toolbox-bg); border-right: 1px solid var(--cpp-border); scrollbar-width: thin; scrollbar-color: #7777 transparent; overflow-x: hidden; }
 .cpp-blockly-canvas .blocklyToolboxCategoryGroup { padding: 0; }

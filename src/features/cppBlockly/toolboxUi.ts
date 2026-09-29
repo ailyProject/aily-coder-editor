@@ -2,6 +2,8 @@ import { Blockly } from './blocks.js'
 import { cppIcon, type CppIcon } from './icons.js'
 import { cppToolbox } from './toolbox.js'
 import { filterCppCategories } from './libraryToolbox.js'
+import { cppVariableCategory } from './variableToolbox.js'
+import type { CppVariable } from './types.js'
 
 const categoryIcons: Record<string, CppIcon> = { 逻辑: 'control', 循环: 'refresh', 数学: 'math', 文字: 'text', 数组: 'array', 变量: 'variable', 自定义函数: 'function', 'I/O引脚': 'chip', 时间: 'time', 串口: 'serial', 中断: 'flag', 自定义代码: 'source' }
 let registered = false
@@ -18,11 +20,12 @@ export function registerCppToolbox(): void {
   Blockly.registry.register(Blockly.registry.Type.TOOLBOX_ITEM, 'cppCategory', CppCategory)
 }
 
-export function mountToolboxSearch(canvas: HTMLElement, workspace: Blockly.WorkspaceSvg): { update(categories: Blockly.utils.toolbox.StaticCategoryInfo[]): void; dispose(): void } {
+export function mountToolboxSearch(canvas: HTMLElement, workspace: Blockly.WorkspaceSvg, renameVariable: (variable: CppVariable) => void): { update(categories: Blockly.utils.toolbox.StaticCategoryInfo[]): void; updateVariables(variables: CppVariable[]): void; dispose(): void } {
   const parent = canvas.querySelector('.blocklyToolbox')
-  if (!parent) return { update() {}, dispose() {} }
+  if (!parent) return { update() {}, updateVariables() {}, dispose() {} }
   const base = (cppToolbox as Blockly.utils.toolbox.ToolboxInfo).contents as Blockly.utils.toolbox.StaticCategoryInfo[]
-  let categories = base, timer: ReturnType<typeof setTimeout> | undefined, disposed = false
+  let libraries: Blockly.utils.toolbox.StaticCategoryInfo[] = [], variables: CppVariable[] = [], timer: ReturnType<typeof setTimeout> | undefined, disposed = false
+  const registeredRenames = new Set<string>()
   const pages = new Map<string, number>()
   const label = document.createElement('label'); label.className = 'cpp-toolbox-search'
   label.append(cppIcon('search'))
@@ -37,12 +40,14 @@ export function mountToolboxSearch(canvas: HTMLElement, workspace: Blockly.Works
     if (disposed) return
     if (workspace.isDragging() || Blockly.WidgetDiv.isVisible() || Blockly.DropDownDiv.getOwner()) { clearTimeout(timer); timer = setTimeout(() => render(fromSearch), 100); return }
     const query = input.value.trim().toLowerCase()
+    const categories = [...base.map(category => category.name === '变量' ? cppVariableCategory(category, variables) : category), ...libraries]
     const contents = filterCppCategories(categories, query).map(category => {
-      if (!category.id?.startsWith('cpp-library:')) return category
+      if (!category.id?.startsWith('cpp-library:') && category.id !== 'cpp-variables') return category
       // Build at most 40 SVG blocks in one flyout. Search still covers every API.
       const groups: Blockly.utils.toolbox.ToolboxItemInfo[][] = [], prefix: Blockly.utils.toolbox.ToolboxItemInfo[] = []
       let pending: Blockly.utils.toolbox.ToolboxItemInfo[] = []
       for (const item of category.contents) {
+        if (item.kind === 'button' && groups.length && !pending.length) { groups.at(-1)!.push(item); continue }
         pending.push(item)
         if (item.kind === 'block') { groups.push(pending); pending = [] }
       }
@@ -70,5 +75,30 @@ export function mountToolboxSearch(canvas: HTMLElement, workspace: Blockly.Works
     parent.scrollTop = scrollTop
   }
   input.oninput = () => { pages.clear(); render(true) }
-  return { update(libraries) { categories = [...base, ...libraries]; render() }, dispose() { disposed = true; clearTimeout(timer); label.remove(); empty.remove() } }
+  return {
+    update(next) { libraries = next; render() },
+    updateVariables(next) {
+      variables = next
+      const active = new Set(variables.map(variable => variable.id))
+      for (const id of registeredRenames) {
+        if (active.has(id)) continue
+        workspace.removeButtonCallback(`cpp-rename:${id}`)
+        registeredRenames.delete(id)
+      }
+      for (const variable of variables) {
+        if (registeredRenames.has(variable.id)) continue
+        registeredRenames.add(variable.id)
+        workspace.registerButtonCallback(`cpp-rename:${variable.id}`, () => {
+          const current = variables.find(item => item.id === variable.id)
+          if (current) renameVariable(current)
+        })
+      }
+      render()
+    },
+    dispose() {
+      disposed = true; clearTimeout(timer)
+      for (const id of registeredRenames) workspace.removeButtonCallback(`cpp-rename:${id}`)
+      label.remove(); empty.remove()
+    }
+  }
 }

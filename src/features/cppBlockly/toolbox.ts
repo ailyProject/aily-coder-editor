@@ -6,6 +6,7 @@ const block = (type: string, fields = {}, inputs = {}, extraState?: { count: num
 const callBlock = (name: string, args: string[]) => block(coreCall(name, args.length) ? 'action' : 'call', { NAME: name }, Object.fromEntries(args.map((arg, i) => [`ARG${i}`, value(arg)])), { count: args.length })
 const call = (name: string, args: string[]) => block('statement', {}, { VALUE: { block: callBlock(name, args) } })
 const binary = (OP: string, left = '0', right = '1') => block('binary', { OP }, { LEFT: value(left), RIGHT: value(right) })
+const operation = (type: string, fields: Record<string, string>, inputs: Record<string, string> = {}) => block(type, fields, Object.fromEntries(Object.entries(inputs).map(([name, text]) => [name, value(text)])))
 // Names follow lib-core-*/toolbox.json and i18n/zh_cn.json. Templates use only
 // C++ projection blocks: no Blockly-mode generator or implicit initialization.
 export const cppToolbox: utils.toolbox.ToolboxDefinition = {
@@ -35,18 +36,60 @@ export const cppToolbox: utils.toolbox.ToolboxDefinition = {
       block('scope')
     ] },
     { kind: 'cppCategory', name: '数学', colour: '#557da7', contents: [
-      note('数值可以直接修改；加减乘除用下拉框选择'),
-      block('value', { TEXT: '0' }), binary('+'),
-      block('group', {}, { VALUE: value('0') }),
-      callBlock('abs', ['-1']), callBlock('min', ['0', '1']), callBlock('max', ['0', '1']),
-      callBlock('constrain', ['value', '0', '255']), callBlock('map', ['value', '0', '1023', '0', '255']), callBlock('random', ['0', '100'])
+      note('数字与运算'),
+      block('value', { TEXT: '0' }), operation('number_base', { BASE: 'HEX', DIGITS: 'FF' }),
+      operation('number_base', { BASE: 'BIN', DIGITS: '1010' }),
+      binary('+'), binary('-', '5', '3'), binary('*', '6', '7'), binary('/', '8', '2'), binary('%', '7', '3'),
+      callBlock('pow', ['2', '3']), block('group', {}, { VALUE: value('0') }),
+      note('数值处理与比较'),
+      operation('math_unary', { OP: 'ABS' }, { NUM: '-1' }),
+      operation('math_unary', { OP: 'ROOT' }, { NUM: '9' }),
+      operation('math_unary', { OP: 'ROUND' }, { NUM: '3.6' }),
+      operation('math_round_decimal', {}, { NUM: '3.14159', DECIMALS: '2' }),
+      callBlock('min', ['0', '1']), callBlock('max', ['0', '1']),
+      callBlock('constrain', ['value', '0', '255']), callBlock('map', ['value', '0', '1023', '0', '255']),
+      operation('math_property', { OP: 'EVEN' }, { NUM: '4', DIVISOR: '2' }),
+      operation('math_property', { OP: 'PRIME' }, { NUM: '7', DIVISOR: '2' }),
+      note('角度、常量与随机数'),
+      operation('math_unary', { OP: 'SIN' }, { NUM: '90' }),
+      operation('math_atan2', {}, { X: '1', Y: '1' }),
+      operation('math_constant', { CONST: 'PI' }),
+      operation('math_random_int', {}, { FROM: '0', TO: '99' }),
+      operation('math_random_float', {}),
+      note('位运算'),
+      operation('math_bit_not', {}, { NUM: '0' }),
+      binary('&', '5', '3'), binary('|', '5', '3'), binary('^', '5', '3'),
+      binary('<<', '8', '2'), binary('>>', '8', '2'),
+      operation('math_bit', { OP: 'READ' }, { NUM: '5', BIT: '1' }),
+      operation('math_bit_write', {}, { NUM: '5', BIT: '1', VALUE: '1' }),
+      operation('math_extract_bits', { OP: 'HIGH_BYTE' }, { NUM: '1234' }),
+      operation('math_combine_bits', { OP: 'MAKE_WORD' }, { HIGH: '4', LOW: '210' })
     ] },
     { kind: 'cppCategory', name: '文字', colour: '#54835e', contents: [
-      note('直接输入文字，不用自己加引号'),
-      block('text', { TEXT: '你好' }),
-      callBlock('String', ['123']), binary('+', 'String("Hello")', '" world"'),
-      note('字符及 String 对象方法（进阶）'), block('value', { TEXT: "'a'" }),
-      callBlock('text.length', []), callBlock('text.substring', ['0', '3']), callBlock('text.toInt', [])
+      note('文字、字符与拼接'),
+      block('text', { TEXT: '你好' }), block('text_char', { CHAR: 'A' }),
+      operation('text_concat', {}, { LEFT: '"Hello"', RIGHT: '" world"' }),
+      callBlock('String', ['123']),
+      operation('text_code', { OP: 'CHAR' }, { INPUT: '65' }),
+      operation('text_code', { OP: 'ASCII' }, { INPUT: "'A'" }),
+      operation('text_code', { OP: 'STRING' }, { INPUT: '123' }),
+      note('长度、查找与截取'),
+      operation('text_unary', { OP: 'LENGTH' }, { TEXT: '"Hello"' }),
+      operation('text_unary', { OP: 'EMPTY' }, { TEXT: '"Hello"' }),
+      operation('text_binary', { OP: 'STARTS' }, { TEXT: '"Hello"', ARG: '"He"' }),
+      operation('text_binary', { OP: 'ENDS' }, { TEXT: '"Hello"', ARG: '"lo"' }),
+      operation('text_binary', { OP: 'INDEX' }, { TEXT: '"Hello"', ARG: '"l"' }),
+      operation('text_binary', { OP: 'CHAR_AT' }, { TEXT: '"Hello"', ARG: '0' }),
+      operation('text_binary', { OP: 'COUNT' }, { TEXT: '"Hello"', ARG: '"l"' }),
+      operation('text_slice', {}, { TEXT: '"Hello"', START: '0', END: '3' }),
+      note('转换与修改文字'),
+      operation('text_unary', { OP: 'TO_INT' }, { TEXT: '"123"' }),
+      operation('text_unary', { OP: 'TO_FLOAT' }, { TEXT: '"3.14"' }),
+      operation('text_unary', { OP: 'UPPER' }, { TEXT: '"Hello"' }),
+      operation('text_unary', { OP: 'LOWER' }, { TEXT: '"Hello"' }),
+      operation('text_unary', { OP: 'TRIM' }, { TEXT: '" Hello "' }),
+      operation('text_unary', { OP: 'REVERSE' }, { TEXT: '"Hello"' }),
+      operation('text_replace', {}, { TEXT: '"Hello"', FROM: '"l"', TO: '"r"' })
     ] },
     { kind: 'cppCategory', name: '数组', colour: '#03a9f4', contents: [
       note('数组保存一组数据；下标从 0 开始'),
@@ -55,7 +98,7 @@ export const cppToolbox: utils.toolbox.ToolboxDefinition = {
       block('subscript', {}, { OBJECT: value('values'), INDEX: { block: block('list', { OPEN: '[', CLOSE: ']' }, { ARG0: value('0') }, { count: 1 }) } })
     ] },
     { kind: 'cppCategory', name: '变量', colour: '#b16a37', contents: [
-      note('先创建变量；之后可读取、设值或增加数值'),
+      note('可创建新变量；源码中的变量会自动列在下方'),
       block('declaration', { TYPE: 'int', DECL: 'count', INIT: '=' }, { VALUE: value('0') }),
       block('definition', { TYPE: 'int', TEXT: 'count' }), block('value', { TEXT: 'count' }),
       block('statement', {}, { VALUE: { block: binary('=', 'count', '1') } }),

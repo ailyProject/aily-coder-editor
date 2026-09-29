@@ -17,7 +17,7 @@ export function chainBlocks(first?: PreviewBlock): PreviewBlock[] {
   for (let b = first; b; b = b.next?.block) list.push(b)
   return list
 }
-const expressions = new Set(['binary', 'group', 'unary', 'not', 'value', 'choice', 'text', 'raw_value', 'call', 'library_call', 'action', 'invoke', 'list', 'lambda', 'data', 'annotation', 'member', 'subscript', 'ternary'])
+const expressions = new Set(['binary', 'group', 'unary', 'not', 'value', 'variable', 'choice', 'text', 'raw_value', 'call', 'library_call', 'action', 'invoke', 'list', 'lambda', 'data', 'annotation', 'member', 'subscript', 'ternary', 'text_char', 'text_concat', 'text_unary', 'text_binary', 'text_slice', 'text_replace', 'text_code', 'number_base', 'math_unary', 'math_constant', 'math_property', 'math_random_int', 'math_random_float', 'math_atan2', 'math_round_decimal', 'math_bit_not', 'math_bit', 'math_bit_write', 'math_extract_bits', 'math_combine_bits'])
 const kind = (b: PreviewBlock): string => b.type.replace('cpp_preview_', '')
 function quoteCppText(value: string): string {
   return '"' + Array.from(value, char => {
@@ -25,6 +25,14 @@ function quoteCppText(value: string): string {
     const code = char.charCodeAt(0)
     return code < 32 || code === 127 ? '\\' + code.toString(8).padStart(3, '0') : char
   }).join('') + '"'
+}
+function quoteCppChar(value: string): string {
+  if (/^\\[ntr0\\'"]$/.test(value)) return `'${value}'`
+  if (Array.from(value).length !== 1) throw new Error('字符积木只能填写一个字符。')
+  if (value.codePointAt(0)! > 127) throw new Error('字符积木目前仅支持 ASCII 字符。')
+  if (value === "'" || value === '\\') return `'\\${value}'`
+  const code = value.charCodeAt(0)
+  return code < 32 || code === 127 ? `'\\${code.toString(8).padStart(3, '0')}'` : `'${value}'`
 }
 
 /** Merge a scoped canvas back into the file without touching surrounding units. */
@@ -74,7 +82,130 @@ export function generateCpp(source: string, original: CppPreview, roots: Preview
     const type = kind(b)
     switch (type) {
       case 'value': case 'choice': return recipe(b)?.syntax === 'type_descriptor' ? f('TEXT') : atom(f('TEXT'))
+      case 'variable': return atom(f('NAME'))
       case 'text': return quoteCppText(f('TEXT'))
+      case 'text_char': return quoteCppChar(f('CHAR'))
+      case 'text_concat': return `(String(${v('LEFT')}) + String(${v('RIGHT')}))`
+      case 'text_unary': {
+        const content = `String(${v('TEXT')})`
+        switch (f('OP')) {
+          case 'LENGTH': return `${content}.length()`
+          case 'EMPTY': return `(${content}.length() == 0)`
+          case 'TO_INT': return `${content}.toInt()`
+          case 'TO_LONG': return `atol(${content}.c_str())`
+          case 'TO_FLOAT': return `${content}.toFloat()`
+          case 'TO_DOUBLE': return `atof(${content}.c_str())`
+          case 'FIRST': return `${content}.charAt(0)`
+          case 'LAST': return `([](String s) { return s.length() ? s.charAt(s.length() - 1) : '\\0'; })(${content})`
+          case 'UPPER': case 'LOWER': case 'TRIM': {
+            const method = { UPPER: 'toUpperCase', LOWER: 'toLowerCase', TRIM: 'trim' }[f('OP') as 'UPPER' | 'LOWER' | 'TRIM']
+            return `([](String s) { s.${method}(); return s; })(${content})`
+          }
+          case 'REVERSE': return `([](String s) { String out; for (int i = s.length() - 1; i >= 0; --i) out += s.charAt(i); return out; })(${content})`
+        }
+        throw new Error('未知文字处理方式。')
+      }
+      case 'text_binary': {
+        const content = `String(${v('TEXT')})`, arg = v('ARG')
+        switch (f('OP')) {
+          case 'STARTS': return `${content}.startsWith(String(${arg}))`
+          case 'ENDS': return `${content}.endsWith(String(${arg}))`
+          case 'INDEX': return `${content}.indexOf(String(${arg}))`
+          case 'LAST_INDEX': return `${content}.lastIndexOf(String(${arg}))`
+          case 'CHAR_AT': return `${content}.charAt(${arg})`
+          case 'COUNT': return `([](String s, String part) { if (!part.length()) return 0; int count = 0; int at = 0; while ((at = s.indexOf(part, at)) >= 0) { ++count; at += part.length(); } return count; })(${content}, String(${arg}))`
+        }
+        throw new Error('未知文字查找方式。')
+      }
+      case 'text_slice': return `String(${v('TEXT')}).substring(${v('START')}, ${v('END')})`
+      case 'text_replace': return `([](String s, String from, String to) { if (from.length()) s.replace(from, to); return s; })(String(${v('TEXT')}), String(${v('FROM')}), String(${v('TO')}))`
+      case 'text_code': {
+        const input = v('INPUT')
+        switch (f('OP')) {
+          case 'CHAR': return `static_cast<char>(${input})`
+          case 'ASCII': return `static_cast<int>(${input})`
+          case 'STRING': return `String(${input})`
+        }
+        throw new Error('未知字符编码转换。')
+      }
+      case 'number_base': {
+        const digits = f('DIGITS').trim()
+        switch (f('BASE')) {
+          case 'DEC': if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(digits)) return digits; break
+          case 'HEX': if (/^(?:0[xX])?[\da-fA-F]+$/.test(digits)) return `0x${digits.replace(/^0[xX]/, '')}`; break
+          case 'BIN': if (/^(?:0[bB])?[01]+$/.test(digits)) return `0b${digits.replace(/^0[bB]/, '')}`; break
+        }
+        throw new Error('进制数字与所选进制不匹配。')
+      }
+      case 'math_unary': {
+        const num = v('NUM')
+        switch (f('OP')) {
+          case 'ABS': return `abs(${num})`
+          case 'NEG': return `(-(${num}))`
+          case 'ROOT': return `sqrt(${num})`
+          case 'LN': return `log(${num})`
+          case 'LOG10': return `log10(${num})`
+          case 'EXP': return `exp(${num})`
+          case 'POW10': return `pow(10, ${num})`
+          case 'ROUND': return `round(${num})`
+          case 'CEIL': return `ceil(${num})`
+          case 'FLOOR': return `floor(${num})`
+          case 'SIN': case 'COS': case 'TAN': return `${f('OP').toLowerCase()}(((${num}) * PI) / 180.0)`
+          case 'ASIN': case 'ACOS': case 'ATAN': return `(${f('OP').toLowerCase()}(${num}) * 180.0 / PI)`
+        }
+        throw new Error('未知数学运算。')
+      }
+      case 'math_constant': {
+        const constants: Record<string, string> = { PI: 'PI', E: '2.718281828459045', GOLDEN: '1.618033988749895', SQRT2: '1.4142135623730951', SQRT_HALF: '0.7071067811865476', INFINITY: 'INFINITY' }
+        if (constants[f('CONST')]) return constants[f('CONST')]!
+        throw new Error('未知数学常量。')
+      }
+      case 'math_property': {
+        const num = v('NUM')
+        switch (f('OP')) {
+          case 'EVEN': return `((${num}) % 2 == 0)`
+          case 'ODD': return `((${num}) % 2 != 0)`
+          case 'WHOLE': return `(floor(${num}) == (${num}))`
+          case 'POSITIVE': return `((${num}) > 0)`
+          case 'NEGATIVE': return `((${num}) < 0)`
+          case 'DIVISIBLE': return `(fmod((${num}), (${v('DIVISOR')})) == 0)`
+          case 'PRIME': return `([](long n) { if (n < 2) return false; for (long i = 2; i <= n / i; ++i) if (n % i == 0) return false; return true; })(static_cast<long>(${num}))`
+        }
+        throw new Error('未知数值判断。')
+      }
+      case 'math_random_int': return `random(${v('FROM')}, (${v('TO')}) + 1)`
+      case 'math_random_float': return `(random(0, 1000000) / 1000000.0)`
+      case 'math_atan2': return `(atan2(${v('Y')}, ${v('X')}) * 180.0 / PI)`
+      case 'math_round_decimal': return `(round((${v('NUM')}) * pow(10, ${v('DECIMALS')})) / pow(10, ${v('DECIMALS')}))`
+      case 'math_bit_not': return `(~(${v('NUM')}))`
+      case 'math_bit': {
+        const num = v('NUM'), bit = v('BIT')
+        switch (f('OP')) {
+          case 'READ': return `bitRead(${num}, ${bit})`
+          case 'SET': return `((${num}) | (1UL << (${bit})))`
+          case 'CLEAR': return `((${num}) & ~(1UL << (${bit})))`
+        }
+        throw new Error('未知位运算。')
+      }
+      case 'math_bit_write': return `(${v('VALUE')} ? ((${v('NUM')}) | (1UL << (${v('BIT')}))) : ((${v('NUM')}) & ~(1UL << (${v('BIT')}))))`
+      case 'math_extract_bits': {
+        const num = v('NUM')
+        switch (f('OP')) {
+          case 'HIGH_BYTE': return `highByte(${num})`
+          case 'LOW_BYTE': return `lowByte(${num})`
+          case 'HIGH_WORD': return `(((${num}) >> 16) & 0xFFFF)`
+          case 'LOW_WORD': return `((${num}) & 0xFFFF)`
+        }
+        throw new Error('未知位段提取方式。')
+      }
+      case 'math_combine_bits': {
+        const high = v('HIGH'), low = v('LOW')
+        switch (f('OP')) {
+          case 'MAKE_WORD': return `word(${high}, ${low})`
+          case 'MAKE_DWORD': return `((static_cast<uint32_t>(${high}) << 16) | (${low}))`
+        }
+        throw new Error('未知位段组合方式。')
+      }
       case 'raw_value': case 'raw': case 'directive': case 'comment': case 'flow': return f('TEXT')
       case 'data': if (!f('CODE')) throw new Error('数据块缺少完整原文。'); return f('CODE')
       case 'definition': return declarationText(b.fields, 'TEXT').replace(/;?\s*$/, ';')

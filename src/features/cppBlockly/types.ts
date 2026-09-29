@@ -11,6 +11,17 @@ export interface PreviewBlock {
 }
 
 export interface SourceSpan { start: number; end: number }
+export interface CppVariable {
+  id: string
+  name: string
+  dataType: string
+  scope: string
+  scopeKind: 'global' | 'local' | 'parameter'
+  scopeStart: number
+  scopeEnd: number
+  declaration: SourceSpan
+  references: SourceSpan[]
+}
 export interface SourceSlot extends SourceSpan {
   kind: 'value' | 'sequence' | 'body'
   separator?: string
@@ -45,6 +56,7 @@ export interface CppPreview {
   preservedCount: number
   dataCount?: number
   recipes?: Record<string, SourceRecipe>
+  variables?: CppVariable[]
 }
 
 export const MAX_SOURCE_LENGTH = 200_000

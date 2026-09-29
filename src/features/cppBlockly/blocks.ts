@@ -22,6 +22,7 @@ export function registerCppPreviewBlocks(): void {
   Blockly.fieldRegistry.register('field_cpp_signature', CppSignatureField)
   Blockly.fieldRegistry.register('field_cpp_text', CppTextField)
   const choice = (name: string, cppKind: string) => ({ type: 'field_cpp_options', name, cppKind })
+  const dropdown = (name: string, options: Array<[string, string]>) => ({ type: 'field_dropdown', name, options })
   const label = (name: string, text = '') => ({ type: 'field_cpp_text', name, text, spellcheck: false })
   const rawLabel = (name: string) => ({ type: 'field_label_serializable', name, text: '' })
   const value = (name: string) => ({ type: 'input_value', name })
@@ -34,8 +35,29 @@ export function registerCppPreviewBlocks(): void {
     { type: 'group', message0: '( %1 )', args0: [value('VALUE')], output: null, colour: '#557da7' },
     { type: 'unary', message0: '%1 %2 %3', args0: [label('BEFORE'), value('VALUE'), label('AFTER')], inputsInline: true, output: null, colour: '#557da7' },
     { type: 'value', message0: '%1', args0: [label('TEXT')], output: null, colour: '#54835e' },
+    { type: 'variable', message0: '变量 %1', args0: [label('NAME', 'count')], output: null, colour: '#b16a37' },
     { type: 'choice', message0: '%1', args0: [choice('TEXT', 'constant')], output: null, colour: '#8872ae' },
     { type: 'text', message0: '文字 %1', args0: [label('TEXT')], output: null, colour: '#54835e' },
+    { type: 'text_char', message0: '字符 %1', args0: [label('CHAR', 'A')], output: null, colour: '#54835e' },
+    { type: 'text_concat', message0: '拼接文字 %1 和 %2', args0: [value('LEFT'), value('RIGHT')], inputsInline: true, output: null, colour: '#54835e' },
+    { type: 'text_unary', message0: '文字 %1 内容 %2', args0: [dropdown('OP', [['长度', 'LENGTH'], ['是否为空', 'EMPTY'], ['转整数', 'TO_INT'], ['转长整数', 'TO_LONG'], ['转小数', 'TO_FLOAT'], ['转双精度', 'TO_DOUBLE'], ['第一个字符', 'FIRST'], ['最后一个字符', 'LAST'], ['转大写', 'UPPER'], ['转小写', 'LOWER'], ['去两端空格', 'TRIM'], ['反转', 'REVERSE']]), value('TEXT')], output: null, colour: '#54835e' },
+    { type: 'text_binary', message0: '文字 %1 内容 %2 参数 %3', args0: [dropdown('OP', [['以此开头', 'STARTS'], ['以此结尾', 'ENDS'], ['首次出现位置', 'INDEX'], ['末次出现位置', 'LAST_INDEX'], ['取指定字符', 'CHAR_AT'], ['出现次数', 'COUNT']]), value('TEXT'), value('ARG')], inputsInline: true, output: null, colour: '#54835e' },
+    { type: 'text_slice', message0: '截取文字 %1', args0: [value('TEXT')], message1: '从 %1 到 %2（不含）', args1: [value('START'), value('END')], inputsInline: true, output: null, colour: '#54835e' },
+    { type: 'text_replace', message0: '替换文字 %1', args0: [value('TEXT')], message1: '查找 %1 替换成 %2', args1: [value('FROM'), value('TO')], inputsInline: true, output: null, colour: '#54835e' },
+    { type: 'text_code', message0: '转换 %1 内容 %2', args0: [dropdown('OP', [['编码转字符', 'CHAR'], ['字符转编码', 'ASCII'], ['数字转文字', 'STRING']]), value('INPUT')], output: null, colour: '#54835e' },
+    { type: 'number_base', message0: '进制 %1 数字 %2', args0: [dropdown('BASE', [['十进制', 'DEC'], ['十六进制', 'HEX'], ['二进制', 'BIN']]), label('DIGITS', '42')], output: null, colour: '#557da7' },
+    { type: 'math_unary', message0: '数学 %1 数值 %2', args0: [dropdown('OP', [['绝对值', 'ABS'], ['取负', 'NEG'], ['平方根', 'ROOT'], ['自然对数', 'LN'], ['常用对数', 'LOG10'], ['指数 e 的幂', 'EXP'], ['10 的幂', 'POW10'], ['四舍五入', 'ROUND'], ['向上取整', 'CEIL'], ['向下取整', 'FLOOR'], ['正弦（角度）', 'SIN'], ['余弦（角度）', 'COS'], ['正切（角度）', 'TAN'], ['反正弦（角度）', 'ASIN'], ['反余弦（角度）', 'ACOS'], ['反正切（角度）', 'ATAN']]), value('NUM')], output: null, colour: '#557da7' },
+    { type: 'math_constant', message0: '数学常量 %1', args0: [dropdown('CONST', [['圆周率 π', 'PI'], ['自然常数 e', 'E'], ['黄金比例', 'GOLDEN'], ['根号 2', 'SQRT2'], ['二分之一根号 2', 'SQRT_HALF'], ['无穷大', 'INFINITY']])], output: null, colour: '#557da7' },
+    { type: 'math_property', message0: '判断 %1 数值 %2', args0: [dropdown('OP', [['偶数', 'EVEN'], ['奇数', 'ODD'], ['整数', 'WHOLE'], ['正数', 'POSITIVE'], ['负数', 'NEGATIVE'], ['可整除', 'DIVISIBLE'], ['质数', 'PRIME']]), value('NUM')], message1: '除数（可整除时） %1', args1: [value('DIVISOR')], output: null, colour: '#557da7' },
+    { type: 'math_random_int', message0: '随机整数 从 %1 到 %2（含）', args0: [value('FROM'), value('TO')], inputsInline: true, output: null, colour: '#557da7' },
+    { type: 'math_random_float', message0: '随机小数 0 至 1', output: null, colour: '#557da7' },
+    { type: 'math_atan2', message0: '两点夹角 X %1 Y %2（角度）', args0: [value('X'), value('Y')], inputsInline: true, output: null, colour: '#557da7' },
+    { type: 'math_round_decimal', message0: '保留小数 数值 %1 位数 %2', args0: [value('NUM'), value('DECIMALS')], inputsInline: true, output: null, colour: '#557da7' },
+    { type: 'math_bit_not', message0: '按位取反 %1', args0: [value('NUM')], output: null, colour: '#557da7' },
+    { type: 'math_bit', message0: '位运算 %1 数值 %2 位 %3', args0: [dropdown('OP', [['读取', 'READ'], ['置为 1', 'SET'], ['清零', 'CLEAR']]), value('NUM'), value('BIT')], inputsInline: true, output: null, colour: '#557da7' },
+    { type: 'math_bit_write', message0: '写入位 数值 %1 位 %2 值 %3', args0: [value('NUM'), value('BIT'), value('VALUE')], inputsInline: true, output: null, colour: '#557da7' },
+    { type: 'math_extract_bits', message0: '提取 %1 数值 %2', args0: [dropdown('OP', [['高字节', 'HIGH_BYTE'], ['低字节', 'LOW_BYTE'], ['高 16 位', 'HIGH_WORD'], ['低 16 位', 'LOW_WORD']]), value('NUM')], output: null, colour: '#557da7' },
+    { type: 'math_combine_bits', message0: '组合 %1 高位 %2 低位 %3', args0: [dropdown('OP', [['16 位', 'MAKE_WORD'], ['32 位', 'MAKE_DWORD']]), value('HIGH'), value('LOW')], inputsInline: true, output: null, colour: '#557da7' },
     { type: 'not', message0: '条件不成立 %1', args0: [value('VALUE')], output: null, colour: '#8872ae' },
     { type: 'raw_value', message0: 'C++ %1', args0: [rawLabel('TEXT')], output: null, colour: '#ad7530' },
     { type: 'raw', message0: '保留 C++ %1', args0: [rawLabel('TEXT')], colour: '#ad7530', ...statement },

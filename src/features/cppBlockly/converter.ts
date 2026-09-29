@@ -4,6 +4,7 @@ import { MAX_BLOCKS, MAX_SOURCE_LENGTH, previewError, type CppPreview, type Prev
 import { coreCall, isSimpleConstant } from './beginnerCatalog.js'
 import { simplePointerNameStart } from './declarationTypes.js'
 import { functionSignature } from './functionSignature.js'
+import { collectCppVariables } from './variables.js'
 
 // This is a source-preserving C++ syntax projection. Calls retain their actual spelling;
 // no hardware-library identity is guessed and no Arduino generator is executed.
@@ -30,9 +31,11 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     tree.delete(); tree = parser.parse(normalized)
     if (!tree) return previewError('C++ 解析未完成，请重试。')
   }
+  const variableCatalog = collectCppVariables(tree.rootNode, source)
   const result: CppPreview = {
     status: 'ready', blocks: { languageVersion: 0, blocks: [] }, locations: {},
-    diagnostics: [], blockCount: 0, preservedCount: 0, dataCount: 0
+    diagnostics: [], blockCount: 0, preservedCount: 0, dataCount: 0,
+    variables: variableCatalog.variables
   }
   const sourceNodes = new Map<string, Node>()
   const location = (n: Node): SourceLocation => {
@@ -72,6 +75,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     }
     if (['identifier', 'number_literal', 'string_literal', 'char_literal', 'true', 'false', 'null', 'nullptr', 'qualified_identifier', 'this', 'concatenated_string'].includes(n.type)) {
       const text = compact(raw(n))
+      if (n.type === 'identifier' && variableCatalog.bindings.has(n.startIndex)) return block(n, 'variable', { NAME: text })
       return block(n, isSimpleConstant(text) ? 'choice' : 'value', { TEXT: text })
     }
     if (n.type === 'raw_string_literal') {

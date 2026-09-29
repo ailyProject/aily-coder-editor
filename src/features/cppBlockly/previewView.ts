@@ -1,7 +1,7 @@
 import { Blockly, registerCppPreviewBlocks, updateFunctionDisplay } from './blocks.js'
 import { indexBlocks, mergeScope } from './generator.js'
-import { loadCppSession, parseCppAsync, sessionCode, sessionRoots, type CppEditSession, type CppViewport, type PreviewDocument } from './editorSession.js'
-import { previewError, type PreviewBlock, type SourceLocation } from './types.js'
+import { cppSourceChangeAction, loadCppSession, parseCppAsync, sessionCode, sessionRoots, type CppEditSession, type CppViewport, type PreviewDocument } from './editorSession.js'
+import { previewError, type CppPreview, type CppVariable, type PreviewBlock, type SourceLocation } from './types.js'
 import { cppQuickActions } from './quickItems.js'
 import { cppToolbox } from './toolbox.js'
 import { registerCppToolbox, mountToolboxSearch } from './toolboxUi.js'
@@ -16,6 +16,7 @@ import { onCppFieldFocus } from './fieldFocus.js'
 import { fieldSourceLocation, parsedBlockId } from './fieldLocation.js'
 import { annotateLibraryCalls, setLibraryEntries, type LibraryEntry } from './librarySelection.js'
 import { rebaseProjection } from './rebaseProjection.js'
+import { renameCppVariable, variableAtSpan } from './variables.js'
 
 export interface PreviewHost {
   name: string
@@ -23,7 +24,7 @@ export interface PreviewHost {
   read(): Promise<PreviewDocument>
   apply(): Promise<void>
   save(): Promise<boolean>
-  syncDraft(code: string, revision: number): Promise<void>
+  syncDraft(code: string, revision: number): Promise<CppPreview | undefined>
   isSyncedDraft(document: PreviewDocument): boolean
   resetDraft(): void
   changed(dirty: boolean): void
@@ -88,7 +89,26 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     move: { drag: true, wheel: true, scrollbars: true },
     zoom: { controls: false, wheel: true, startScale: 0.85, maxScale: 1.5, minScale: 0.25, scaleSpeed: 1.15 }
   })
-  const toolboxSearch = mountToolboxSearch(canvas, workspace)
+  const toolboxSearch = mountToolboxSearch(canvas, workspace, variable => openVariableRename(variable))
+  const renameForm = element('form', 'cpp-blockly-variable-rename'); renameForm.hidden = true
+  const renameTitle = element('strong')
+  const renameInput = element('input'); renameInput.type = 'text'; renameInput.setAttribute('aria-label', '新变量名'); renameInput.spellcheck = false
+  const renameActions = element('div')
+  const renameCancel = button(renameActions, '取消', () => { renameForm.hidden = true }); renameCancel.type = 'button'
+  const renameConfirm = button(renameActions, '重命名全部引用', () => {}); renameConfirm.type = 'submit'
+  renameActions.append(renameCancel, renameConfirm); renameForm.append(renameTitle, renameInput, renameActions); container.append(renameForm)
+  let renameTarget: CppVariable | undefined
+  function openVariableRename(variable: CppVariable): void {
+    if (loading || conflict) return
+    Blockly.hideChaff()
+    renameTarget = variable; renameTitle.textContent = `${variable.scope} · ${variable.name} · ${Math.max(0, variable.references.length - 1)} 处使用`
+    renameInput.value = variable.name; renameForm.hidden = false; renameInput.focus(); renameInput.select()
+  }
+  renameForm.onkeydown = event => {
+    if (event.metaKey || event.ctrlKey) return
+    event.stopPropagation()
+    if (event.key === 'Escape') { renameForm.hidden = true; event.preventDefault() }
+  }
   let disposed = false, loading = false, applying = false, conflict = false, revision = 0, liveSynced = false, syncedCode: string | undefined
   let libraryRevision = 0, libraryParse: ReturnType<typeof parseLibraryAsync> | undefined, libraryTimer: ReturnType<typeof setTimeout> | undefined
   let annotationTimer: ReturnType<typeof setTimeout> | undefined
@@ -244,8 +264,8 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     try { currentCode = sessionCode(session) } catch(error) { fail(error); return }
     syncTimer = setTimeout(() => {
       syncTimer = undefined
-      void host.syncDraft(currentCode, currentRevision).then(() => {
-        if (!disposed && currentRevision === session.revision) { syncedCode = currentCode; liveSynced = true; summary(); const focused = activeField && workspace.getBlockById(activeField.blockId); if (focused && activeField) highlightField(focused, activeField.name) }
+      void host.syncDraft(currentCode, currentRevision).then(result => {
+        if (!disposed && currentRevision === session.revision && result) { syncedCode = currentCode; liveSynced = true; toolboxSearch.updateVariables(result.variables ?? []); summary(); const focused = activeField && workspace.getBlockById(activeField.blockId); if (focused && activeField) highlightField(focused, activeField.name) }
       }).catch(error => { if (!disposed && currentRevision === session.revision) fail(error) })
     }, 150)
   }
@@ -299,6 +319,11 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     for (const action of cppQuickActions(block)) {
       const control = button(fields, action.label, () => { action.run(); capture(); showProperties(block) })
       control.disabled = !action.enabled
+    }
+    if (block.type === 'cpp_preview_variable') {
+      const recipe = session.original?.recipes?.[sourceId(block.id)]
+      const variable = recipe && variableAtSpan(session.original?.variables ?? [], recipe)
+      if (variable) button(fields, `批量重命名 ${variable.name}`, () => openVariableRename(variable))
     }
   }
   const highlightBlock = (block?: Blockly.Block): void => {
@@ -385,6 +410,7 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     Blockly.svgResize(workspace)
     if (viewport) { workspace.setScale(viewport.scale); workspace.scroll(viewport.x, viewport.y) }
     else if (!session.view) { workspace.zoomToFit(); if (workspace.scale < 0.65) { workspace.setScale(0.85); workspace.scroll(0, 0) } }
+    toolboxSearch.updateVariables(session.original?.status === 'error' ? [] : session.original?.variables ?? [])
     summary(); if (generated.open) previewCode()
   }
   const rebaseVisible = (): boolean => {
@@ -420,6 +446,7 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     lastCapturedCode = session.source.text
     workspace.clearUndo()
     if (selectedId) selectedLocation = session.original.locations[sourceId(selectedId)]
+    toolboxSearch.updateVariables(session.original.variables ?? [])
     summary(); if (generated.open) previewCode()
     const selected = selectedId && workspace.getBlockById(selectedId)
     const focused = activeField && workspace.getBlockById(activeField.blockId)
@@ -482,16 +509,50 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     } catch(error) { if (!disposed && revision === id) { loadCppSession(session, {text:'',version:0,dirty:false}, previewError(String(error))); show() } }
     finally { if (revision === id) loading = false }
   }
+  renameForm.onsubmit = event => {
+    event.preventDefault(); event.stopPropagation()
+    const target = renameTarget, nextName = renameInput.value.trim()
+    if (!target || renameConfirm.disabled) return
+    renameConfirm.disabled = true
+    void (async () => {
+      if (syncTimer) { clearTimeout(syncTimer); syncTimer = undefined }
+      capture()
+      const currentRevision = ++session.revision
+      const currentCode = sessionCode(session)
+      const current = currentCode === session.source?.text ? session.original! : await parseCppAsync(currentCode).promise
+      if (current.status === 'error') throw new Error('当前积木尚未生成有效的 C++，请先修正后重命名。')
+      const direct = currentCode === session.source?.text ? current.variables?.find(variable => variable.id === target.id && variable.name === target.name && variable.scope === target.scope) : undefined
+      const candidates = current.variables?.filter(variable => variable.name === target.name && variable.scope === target.scope && variable.scopeKind === target.scopeKind) ?? []
+      const variable = direct ?? (candidates.length === 1 ? candidates[0] : undefined)
+      if (!variable) throw new Error('无法确认当前变量的作用域，请先应用更改后重试。')
+      const renamed = renameCppVariable(currentCode, current.variables ?? [], variable.id, nextName)
+      if (renamed === currentCode) { renameForm.hidden = true; return }
+      const checked = await parseCppAsync(renamed).promise
+      if (checked.status === 'error') throw new Error('重命名后的 C++ 语法检查未通过，源码未修改。')
+      if (session.revision !== currentRevision) throw new Error('积木在重命名期间发生变化，请重试。')
+      const updated = await host.syncDraft(renamed, currentRevision)
+      if (!updated) throw new Error('积木在重命名期间发生变化，请重试。')
+      renameForm.hidden = true
+      await refresh()
+    })().catch(fail).finally(() => { renameConfirm.disabled = false })
+  }
   const subscription = host.onChange(() => {
     if (applying || disposed) return
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       void host.read().then(current => {
         if (disposed) return
-        if (host.isSyncedDraft(current)) { conflict = false; summary(); return }
-        if (session.dirty) { conflict = current.text !== session.source?.text || current.version !== session.source?.version; if (conflict) host.highlight(); summary() }
-        else if (current.text !== session.source?.text) void refresh()
-        else { session.source = current; summary() }
+        const action = cppSourceChangeAction(session, current, host.isSyncedDraft(current), liveSynced)
+        if (action === 'synced') { conflict = false; summary(); return }
+        if (action === 'reload') {
+          if (syncTimer) { clearTimeout(syncTimer); syncTimer = undefined }
+          session.revision++
+          conflict = false
+          void refresh()
+          return
+        }
+        if (action === 'conflict') { conflict = true; host.highlight(); summary(); return }
+        session.source = current; summary()
       }).catch(fail)
     }, 200)
   })

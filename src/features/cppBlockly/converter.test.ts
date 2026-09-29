@@ -7,7 +7,7 @@ import { Language, Parser } from 'web-tree-sitter'
 import { convertCpp } from './converter.js'
 import { generateCpp, indexBlocks, mergeScope } from './generator.js'
 import { applySource } from './applySource.js'
-import { applyCppSession, createCppSession, loadCppSession, sessionCode } from './editorSession.js'
+import { applyCppSession, cppSourceChangeAction, createCppSession, loadCppSession, sessionCode } from './editorSession.js'
 import { cppToolbox } from './toolbox.js'
 import { Blockly, registerCppPreviewBlocks } from './blocks.js'
 import { cppTypeOptions, declarationText } from './declarationTypes.js'
@@ -17,6 +17,9 @@ import { codeOptions } from './beginnerCatalog.js'
 import { filterCppCategories } from './libraryToolbox.js'
 import { fieldSourceLocation } from './fieldLocation.js'
 import { rebaseProjection } from './rebaseProjection.js'
+import { renameCppVariable } from './variables.js'
+import { cppVariableCategory } from './variableToolbox.js'
+import { cppBlocklyPreviewEnabled } from './devGate.js'
 import { isCppPreviewFile, MAX_SOURCE_LENGTH, type CppPreview, type PreviewBlock } from './types.js'
 
 let parser: Parser
@@ -27,6 +30,14 @@ before(async () => {
   registerCppPreviewBlocks()
 })
 after(() => parser.delete())
+
+test('Blockly conversion preview is available only in development', () => {
+  assert.equal(cppBlocklyPreviewEnabled('', false, false), false)
+  assert.equal(cppBlocklyPreviewEnabled('?blocklyPreviewDev=false', false, false), false)
+  assert.equal(cppBlocklyPreviewEnabled('?blocklyPreviewDev=true', false, false), true)
+  assert.equal(cppBlocklyPreviewEnabled('', true, false), true)
+  assert.equal(cppBlocklyPreviewEnabled('', false, true), true)
+})
 
 test('function signature fields expose qualifiers, return type, name and parameters with exact source spans', () => {
   const source = 'static String escJson(const char* s) { return s; }'
@@ -50,6 +61,79 @@ test('function signature fields expose qualifiers, return type, name and paramet
     assert.equal(code, 'const static char* escape(const char* s, int size) { return s; }')
     assert.equal(convertCpp(parser, code).status, 'ready')
   } finally { workspace.dispose() }
+})
+
+test('source variables populate draggable toolbox entries and scoped batch rename changes only their references', () => {
+  const source = 'int count = 1;\nvoid f(int count) { int next = count; { int count = next; count += 1; } count += next; }\nvoid g() { count += 2; const char* text = "count"; }\n'
+  const result = convertCpp(parser, source)
+  const variables = result.variables ?? []
+  const counts = variables.filter(variable => variable.name === 'count')
+  assert.equal(counts.length, 3)
+  const global = counts.find(variable => variable.scopeKind === 'global')!
+  const parameter = counts.find(variable => variable.scopeKind === 'parameter')!
+  const inner = counts.find(variable => variable.scopeKind === 'local')!
+  assert.equal(global.references.length, 2)
+  assert.equal(parameter.references.length, 3)
+  assert.equal(inner.references.length, 2)
+  const renamedParameter = renameCppVariable(source, variables, parameter.id, 'index')
+  assert.equal(renamedParameter, source.replace('void f(int count) { int next = count;', 'void f(int index) { int next = index;').replace('} count += next; }', '} index += next; }'))
+  const renamedGlobal = renameCppVariable(source, variables, global.id, 'total')
+  assert.equal(renamedGlobal, source.replace('int count = 1;', 'int total = 1;').replace('void g() { count += 2;', 'void g() { total += 2;'))
+  assert.equal(renameCppVariable(source, variables, inner.id, 'countInner').includes('int countInner = next; countInner += 1;'), true)
+  assert.throws(() => renameCppVariable(source, variables, global.id, 'next'), /已存在/)
+  assert.throws(() => renameCppVariable(source, variables, global.id, 'for'), /有效/)
+  const category = ((cppToolbox as Blockly.utils.toolbox.ToolboxInfo).contents as Blockly.utils.toolbox.StaticCategoryInfo[]).find(item => item.name === '变量')!
+  const flyout = cppVariableCategory(category, variables)
+  assert.ok(flyout.contents.some(item => item.kind === 'block' && (item as Blockly.utils.toolbox.BlockInfo).type === 'cpp_preview_variable' && (item as Blockly.utils.toolbox.BlockInfo).fields?.NAME === 'count'))
+  assert.ok(flyout.contents.some(item => item.kind === 'button' && (item as Blockly.utils.toolbox.ButtonInfo).callbackkey === `cpp-rename:${parameter.id}`))
+  assert.ok(flyout.contents.some(item => item.kind === 'label' && (item as Blockly.utils.toolbox.LabelInfo).text.includes('const char*')))
+  const mutableSetter = flyout.contents.find(item => item.kind === 'block' && (item as Blockly.utils.toolbox.BlockInfo).type === 'cpp_preview_statement') as Blockly.utils.toolbox.BlockInfo
+  assert.ok(mutableSetter)
+  const setterWorkspace = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({ blocks: { languageVersion: 0, blocks: [{ ...mutableSetter, id: 'setter' }] } }, setterWorkspace)
+    const setter = Blockly.serialization.workspaces.save(setterWorkspace).blocks!.blocks as PreviewBlock[]
+    assert.match(generateCpp('', convertCpp(parser, ''), setter), /count\s*=\s*1/)
+  } finally { setterWorkspace.dispose() }
+  const textLabel = flyout.contents.findIndex(item => item.kind === 'label' && (item as Blockly.utils.toolbox.LabelInfo).text.startsWith('text ·'))
+  assert.ok(textLabel > 0)
+  assert.equal(flyout.contents.slice(textLabel + 1).some(item => item.kind === 'block' && (item as Blockly.utils.toolbox.BlockInfo).type === 'cpp_preview_statement'), false)
+  const workspace = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({ blocks: result.blocks }, workspace)
+    assert.ok(workspace.getAllBlocks(false).some(block => block.type === 'cpp_preview_variable'))
+    assert.equal(generateCpp(source, result, Blockly.serialization.workspaces.save(workspace).blocks!.blocks as PreviewBlock[]), source)
+  } finally { workspace.dispose() }
+})
+
+test('range loop and structured binding variables are available without stealing the range expression', () => {
+  const source = 'int item = 4;\nvoid f() { auto [first, second] = pair(); for (const auto& item : items(item)) { use(item, first, second); } use(item); }\n'
+  const variables = convertCpp(parser, source).variables ?? []
+  const range = variables.find(variable => variable.name === 'item' && variable.scopeKind === 'local')!
+  const global = variables.find(variable => variable.name === 'item' && variable.scopeKind === 'global')!
+  const first = variables.find(variable => variable.name === 'first')!
+  const second = variables.find(variable => variable.name === 'second')!
+  assert.ok(range)
+  assert.ok(first)
+  assert.ok(second)
+  assert.equal(range.dataType, 'const auto&')
+  assert.equal(first.dataType, 'auto')
+  assert.equal(second.dataType, 'auto')
+  assert.equal(range.references.length, 2)
+  assert.equal(global.references.length, 3)
+  assert.equal(renameCppVariable(source, variables, range.id, 'element').includes('for (const auto& element : items(item)) { use(element, first, second); }'), true)
+  assert.equal(renameCppVariable(source, variables, first.id, 'one').includes('auto [one, second] = pair(); for'), true)
+})
+
+test('batch rename includes explicitly qualified global and namespace references', () => {
+  const source = 'int count = 0; namespace ns { int count = 1; } void f() { ++::count; ++ns::count; }'
+  const variables = convertCpp(parser, source).variables ?? []
+  const global = variables.find(variable => variable.scope === '全局' && variable.name === 'count')!
+  const namespaced = variables.find(variable => variable.scope === '命名空间 ns' && variable.name === 'count')!
+  assert.equal(global.references.length, 2)
+  assert.equal(namespaced.references.length, 2)
+  assert.match(renameCppVariable(source, variables, global.id, 'total'), /\+\+::total; \+\+ns::count;/)
+  assert.match(renameCppVariable(source, variables, namespaced.id, 'total'), /\+\+::count; \+\+ns::total;/)
 })
 
 test('saved field edits rebase visible block ids onto the new source without rebuilding', () => {
@@ -400,6 +484,23 @@ test('session drafts survive view disposal, validate before write, and reject ed
   assert.equal(writes,1); assert.equal(session.dirty,false); assert.equal(session.source!.text,source.replace('500','750'))
 })
 
+test('undoing a synchronized source diff reloads Blockly while an unsynchronized block draft stays protected', () => {
+  const source = 'void f() { int value = 1; }'
+  const expanded = 'void f() { int value = 1; value++; }'
+  const session = createCppSession()
+  loadCppSession(session, { text: source, version: 1, dirty: false }, convertCpp(parser, source))
+  session.dirty = true
+  const projected = { text: expanded, version: 2, dirty: true }
+  const undone = { text: source, version: 3, dirty: true }
+  assert.equal(cppSourceChangeAction(session, projected, true, true), 'synced')
+  assert.equal(cppSourceChangeAction(session, undone, false, true), 'reload')
+  assert.equal(cppSourceChangeAction(session, undone, false, false), 'conflict')
+  loadCppSession(session, undone, convertCpp(parser, undone.text))
+  assert.equal(session.dirty, false)
+  assert.equal(sessionCode(session), source)
+  assert.equal(cppSourceChangeAction(session, projected, false, false), 'reload')
+})
+
 test('every toolbox template loads with editable fields and connected default values', () => {
   const ws = new Blockly.Workspace()
   try {
@@ -410,6 +511,45 @@ test('every toolbox template loads with editable fields and connected default va
       if (b.type === 'cpp_preview_call') assert.equal(b.getField('NAME')?.isCurrentlyEditable(), true)
     }
   } finally {ws.dispose()}
+})
+
+test('math and text toolbox operations generate parseable C++ for every dropdown choice', () => {
+  const categories = (cppToolbox as { contents: Array<{ name: string; contents: Blockly.serialization.blocks.State[] }> }).contents
+  const types = new Set(['text_char', 'text_concat', 'text_unary', 'text_binary', 'text_slice', 'text_replace', 'text_code', 'number_base', 'math_unary', 'math_constant', 'math_property', 'math_random_int', 'math_random_float', 'math_atan2', 'math_round_decimal', 'math_bit_not', 'math_bit', 'math_bit_write', 'math_extract_bits', 'math_combine_bits'])
+  const original = convertCpp(parser, '')
+  for (const category of categories.filter(item => ['数学', '文字'].includes(item.name))) {
+    const templates = category.contents.filter(item => types.has(item.type?.replace('cpp_preview_', '') ?? ''))
+    assert.ok(templates.length >= 15, `${category.name} should expose a useful range of operations`)
+    for (const template of templates) {
+      const workspace = new Blockly.Workspace()
+      try {
+        const block = Blockly.serialization.blocks.append(template, workspace)!
+        const choices = (['OP', 'CONST', 'BASE'].find(name => block.getField(name)) ? block.getField(['OP', 'CONST', 'BASE'].find(name => block.getField(name))!) as Blockly.FieldDropdown : undefined)?.getOptions(false).map(([, value]) => String(value)) ?? ['']
+        for (const choice of choices) {
+          const field = ['OP', 'CONST', 'BASE'].find(name => block.getField(name))
+          if (field) block.setFieldValue(choice, field)
+          if (field === 'BASE') block.setFieldValue({ DEC: '42', HEX: '2A', BIN: '101010' }[choice]!, 'DIGITS')
+          const expression = Blockly.serialization.blocks.save(block) as PreviewBlock
+          const roots: PreviewBlock[] = [{ type: 'cpp_preview_function', id: 'test-function', fields: { MODE: 'structured', TYPE: 'void', NAME: 'setup', PARAMETERS: '' }, inputs: { BODY: { block: { type: 'cpp_preview_declaration', id: 'test-variable', fields: { TYPE: 'auto', DECL: 'sample', INIT: '=' }, inputs: { VALUE: { block: expression } } } } } }]
+          const code = generateCpp('', original, roots)
+          assert.equal(convertCpp(parser, code).status, 'ready', `${category.name}/${block.type}/${choice}: ${code}`)
+        }
+      } finally { workspace.dispose() }
+    }
+  }
+})
+
+test('new math and text blocks update existing source through the Blockly projection', () => {
+  const source = '#include <Arduino.h>\nvoid setup() { int sample = 0; String message = "x"; }\n'
+  const original = convertCpp(parser, source), roots = serialized(original)
+  const values = [...indexBlocks(roots).values()].filter(block => block.type === 'cpp_preview_declaration')
+  assert.equal(values.length, 2)
+  values[0]!.inputs!.VALUE = { block: { type: 'cpp_preview_math_unary', id: 'math-added', fields: { OP: 'ROOT' }, inputs: { NUM: { block: { type: 'cpp_preview_value', id: 'nine', fields: { TEXT: '9' } } } } } }
+  values[1]!.inputs!.VALUE = { block: { type: 'cpp_preview_text_concat', id: 'text-added', inputs: { LEFT: { block: { type: 'cpp_preview_text', id: 'hello', fields: { TEXT: 'Hello' } } }, RIGHT: { block: { type: 'cpp_preview_text', id: 'world', fields: { TEXT: ' world' } } } } } }
+  const code = generateCpp(source, original, roots)
+  assert.match(code, /int sample = sqrt\(9\);/)
+  assert.match(code, /String message = \(String\("Hello"\) \+ String\(" world"\)\);/)
+  assert.equal(convertCpp(parser, code).status, 'ready')
 })
 
 test('reparented and copied expressions preserve C++ precedence', () => {
