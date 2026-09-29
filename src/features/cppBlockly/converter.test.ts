@@ -10,6 +10,12 @@ import { applySource } from './applySource.js'
 import { applyCppSession, createCppSession, loadCppSession, sessionCode } from './editorSession.js'
 import { cppToolbox } from './toolbox.js'
 import { Blockly, registerCppPreviewBlocks } from './blocks.js'
+import { cppTypeOptions, declarationText } from './declarationTypes.js'
+import { blockAtPosition } from './sourceSelection.js'
+import { cppQuickActions } from './quickItems.js'
+import { codeOptions } from './beginnerCatalog.js'
+import { filterCppCategories } from './libraryToolbox.js'
+import { fieldSourceLocation } from './fieldLocation.js'
 import { isCppPreviewFile, MAX_SOURCE_LENGTH, type CppPreview, type PreviewBlock } from './types.js'
 
 let parser: Parser
@@ -20,6 +26,37 @@ before(async () => {
   registerCppPreviewBlocks()
 })
 after(() => parser.delete())
+
+test('function signature fields expose qualifiers, return type, name and parameters with exact source spans', () => {
+  const source = 'static String escJson(const char* s) { return s; }'
+  const result = convertCpp(parser, source)
+  const functionBlock = result.blocks.blocks[0]!
+  assert.equal(functionBlock.type, 'cpp_preview_function')
+  assert.deepEqual(Object.fromEntries(['QUALIFIERS', 'TYPE', 'NAME', 'PARAMETERS'].map(key => [key, functionBlock.fields?.[key]])),
+    { QUALIFIERS: 'static', TYPE: 'String', NAME: 'escJson', PARAMETERS: 'const char* s' })
+  assert.equal(fieldSourceLocation(source, result, functionBlock.id, 'TYPE')?.text, 'String')
+  assert.equal(fieldSourceLocation(source, result, functionBlock.id, 'PARAMETERS')?.text, 'const char* s')
+  const workspace = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({ blocks: result.blocks }, workspace)
+    const block = workspace.getBlockById(functionBlock.id)!
+    assert.ok(block.getField('TYPE') instanceof Blockly.FieldDropdown)
+    block.getField('QUALIFIERS')!.setValue('const static')
+    block.getField('TYPE')!.setValue('char*')
+    block.getField('NAME')!.setValue('escape')
+    block.getField('PARAMETERS')!.setValue('const char* s, int size')
+    const code = generateCpp(source, result, Blockly.serialization.workspaces.save(workspace).blocks!.blocks as PreviewBlock[])
+    assert.equal(code, 'const static char* escape(const char* s, int size) { return s; }')
+    assert.equal(convertCpp(parser, code).status, 'ready')
+  } finally { workspace.dispose() }
+})
+
+const settleEvents = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 15))
+function quick(block: Blockly.Block, id: string): void {
+  const action = cppQuickActions(block).find(a => a.id === id)
+  assert.ok(action?.enabled, `quick action ${id} is enabled`)
+  action.run()
+}
 
 function flatten(result: CppPreview): PreviewBlock[] {
   const list: PreviewBlock[] = []
@@ -40,7 +77,7 @@ test('Blink creates connected Blockly blocks without ABS or implicit initializat
   const source = '#include <Arduino.h>\nconst int LED = 13;\nvoid setup() { pinMode(LED, OUTPUT); }\nvoid loop() { digitalWrite(LED, HIGH); delay(500); digitalWrite(LED, LOW); delay(500); }'
   const result = convertCpp(parser, source)
   assert.equal(result.status, 'ready')
-  const calls = flatten(result).filter(b => b.type === 'cpp_preview_call')
+  const calls = flatten(result).filter(b => b.type === 'cpp_preview_action')
   assert.deepEqual(calls.map(b => b.fields?.NAME), ['pinMode', 'digitalWrite', 'delay', 'digitalWrite', 'delay'])
   assert.equal(flatten(result).length, result.blockCount)
   const workspace = new Blockly.Workspace()
@@ -62,11 +99,13 @@ test('keeps nested conditionals, calls, expression precedence and else chains', 
 })
 
 test('loops retain exact comparison, dynamic step, types and do-while suffix', () => {
-  const result = convertCpp(parser, 'void loop(){ for(unsigned long i=0;i<=n;i+=step()) { work(i); } do { x++; } while(x<4); while(ready()) break; }')
+  const source = 'void loop(){ for(unsigned long i=0;i<=n;i+=step()) { work(i); } do { x++; } while(x<4); while(ready()) break; }'
+  const result = convertCpp(parser, source)
   const loops = flatten(result).filter(b => b.type === 'cpp_preview_loop')
   assert.equal(result.status, 'ready')
   assert.equal(loops[0]?.fields?.HEADER, 'for(unsigned long i=0;i<=n;i+=step())')
-  assert.equal(loops[1]?.fields?.FOOTER, 'while(x<4);')
+  assert.deepEqual(flatten(result).filter(b => b.type === 'cpp_preview_while').map(b => b.fields?.MODE), ['do', 'while'])
+  assert.equal(generateCpp(source, result, serialized(result)), source)
 })
 
 test('classes, templates, lambdas and conditional compilation expose nested executable blocks', () => {
@@ -90,7 +129,7 @@ test('keeps volatile, uninitialized declarations and direct initialization disti
   const result = convertCpp(parser, 'volatile unsigned long ticks;\nint count = 0;\nWidget widget(42);\nint values[]{1,2};')
   const declarations = flatten(result).filter(b => b.type === 'cpp_preview_declaration')
   assert.equal(result.status, 'ready')
-  assert.ok(flatten(result).some(b => b.fields?.TEXT === 'volatile unsigned long ticks'))
+  assert.ok(flatten(result).some(b => declarationText(b.fields, 'TEXT') === 'volatile unsigned long ticks'))
   assert.equal(declarations[0]?.fields?.INIT, '=')
   assert.equal(declarations[1]?.fields?.INIT, '')
   assert.equal(declarations[1]?.inputs?.VALUE?.block.fields?.OPEN, '(')
@@ -111,11 +150,12 @@ test('Unicode, CRLF, comments, escaping and HTML remain source text, with accura
   const source = '// 中文🙂\r\nvoid loop(){\r\n  Serial.println("<script> & \\"hi\\"");\r\n}\r\n'
   const result = convertCpp(parser, source)
   assert.equal(result.status, 'ready')
-  const call = flatten(result).find(b => b.type === 'cpp_preview_call')!
+  const call = flatten(result).find(b => b.type === 'cpp_preview_action')!
   assert.equal(result.locations[call.id]?.line, 3)
   assert.equal(result.locations[call.id]?.column, 3)
   const literal = flatten(result).find(b => b.fields?.TEXT?.includes('<script>'))!
-  assert.equal(literal.fields?.TEXT, '"<script> & \\"hi\\""')
+  assert.equal(literal.fields?.TEXT, '<script> & "hi"')
+  assert.equal(generateCpp(source, result, serialized(result)), source)
 })
 
 test('inline comments and if-init are preserved instead of silently lost', () => {
@@ -141,11 +181,11 @@ test('PROGMEM declarations retain raw strings and storage annotations without ma
   assert.equal(result.status, 'ready')
   assert.equal(result.dataCount, 1)
   const declaration = flatten(result).find(b => b.fields?.DECL?.includes('PAGE'))!
-  assert.equal(declaration.fields?.DECL, 'static const char PAGE[] PROGMEM')
+  assert.equal(declarationText(declaration.fields, 'DECL'), 'static const char PAGE[] PROGMEM')
   const data = declaration.inputs!.VALUE!.block
   assert.equal(result.locations[data.id]?.text, 'R"HTML(<script>PROGMEM [] =</script>)HTML"')
   assert.equal(result.locations[declaration.id]?.line, 2)
-  assert.ok(flatten(result).some(b => b.fields?.DECL === 'int PROGMEM'))
+  assert.ok(flatten(result).some(b => declarationText(b.fields, 'DECL') === 'int PROGMEM'))
   assertLoads(result)
   assert.equal(convertCpp(parser, 'const char x[] PROGMEM = "x";\nvoid f(){oops(}').status, 'error')
 })
@@ -169,7 +209,7 @@ test('namespaces, class members, templates and arrays retain their children and 
   const result = convertCpp(parser, source)
   assert.equal(result.status, 'ready')
   const all = flatten(result)
-  assert.ok(all.some(b => b.fields?.DECL === 'static constexpr int RED' && b.inputs?.VALUE?.block.fields?.TEXT === '0xF800'))
+  assert.ok(all.some(b => declarationText(b.fields, 'DECL') === 'static constexpr int RED' && b.inputs?.VALUE?.block.fields?.TEXT === '0xF800'))
   assert.equal(all.filter(b => b.type === 'cpp_preview_subscript').length, 4)
   assert.equal(all.filter(b => b.type === 'cpp_preview_function').length, 2)
   assert.ok(all.some(b => b.type === 'cpp_preview_ternary'))
@@ -343,6 +383,7 @@ test('every toolbox template loads with editable fields and connected default va
   const ws = new Blockly.Workspace()
   try {
     for (const category of (cppToolbox as {contents:Array<{contents:Blockly.serialization.blocks.State[]}>}).contents) for (const item of category.contents) {
+      if (!item.type) continue
       const b = Blockly.serialization.blocks.append(item,ws)
       assert.ok(b); assert.ok(b.isEditable())
       if (b.type === 'cpp_preview_call') assert.equal(b.getField('NAME')?.isCurrentlyEditable(), true)
@@ -385,4 +426,343 @@ test('class access labels keep their colon when members are added and new commen
     assert.equal(convertCpp(parser,code).status,'ready',code)
     if (source.startsWith('class')) assert.ok(code.includes('public:'))
   }
+})
+
+test('quick else-if insertion keeps the old else, repeated branches, and single-step undo/redo', async () => {
+  const source = 'void f(){ if(x) first(); else if(y) second(); else { /* retained */ last(); } after(); }'
+  const result = convertCpp(parser, source), ws = new Blockly.Workspace()
+  const code = () => generateCpp(source, result, Blockly.serialization.workspaces.save(ws).blocks.blocks)
+  try {
+    Blockly.serialization.workspaces.load({blocks:result.blocks}, ws)
+    await settleEvents(); ws.clearUndo()
+    const owner = ws.getAllBlocks(false).find(b => b.type === 'cpp_preview_if')!
+    assert.equal(cppQuickActions(owner).find(a => a.id === 'else')?.enabled, false)
+    quick(owner, 'else-if'); await settleEvents()
+    const generated = code()
+    assert.match(generated, /else if \(false\)/)
+    assert.ok(generated.includes('/* retained */ last();'))
+    assert.ok(generated.endsWith('after(); }'))
+    assert.equal(convertCpp(parser, generated).status, 'ready')
+    ws.undo(false); await settleEvents(); assert.equal(code(), source)
+    ws.undo(true); await settleEvents(); assert.equal(code(), generated)
+    quick(owner, 'else-if'); await settleEvents()
+    assert.equal((code().match(/else if \(false\)/g) ?? []).length, 2)
+    const saved = Blockly.serialization.workspaces.save(ws)
+    const restored = new Blockly.Workspace()
+    try {
+      Blockly.serialization.workspaces.load(saved, restored)
+      assert.equal(generateCpp(source, result, Blockly.serialization.workspaces.save(restored).blocks.blocks), code())
+    } finally {restored.dispose()}
+  } finally {ws.dispose()}
+})
+
+test('quick else mutation is undoable and never removes a populated alternative', async () => {
+  const source = 'void f(){if(x){run();}}', result = convertCpp(parser, source), ws = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({blocks:result.blocks}, ws)
+    await settleEvents(); ws.clearUndo()
+    const owner = ws.getAllBlocks(false).find(b => b.type === 'cpp_preview_if')!
+    quick(owner, 'else'); await settleEvents()
+    assert.ok(owner.getInput('ELSE'))
+    assert.equal(cppQuickActions(owner).find(a => a.id === 'else')?.enabled, false)
+    quick(owner, 'remove-else'); await settleEvents(); assert.equal(owner.getInput('ELSE'), null)
+    ws.undo(false); await settleEvents(); assert.ok(owner.getInput('ELSE'))
+    const body = Blockly.serialization.blocks.append({type:'cpp_preview_flow',fields:{TEXT:'return;'}}, ws)
+    owner.getInput('ELSE')!.connection!.connect(body.previousConnection!)
+    const remove = cppQuickActions(owner).find(a => a.id === 'remove-else')!
+    assert.equal(remove.enabled, false); remove.run()
+    assert.equal(owner.getInputTargetBlock('ELSE'), body)
+  } finally {ws.dispose()}
+})
+
+test('quick switch branches preserve fallthrough/default order and restore byte-for-byte on undo', async () => {
+  const source = 'void f(int x){switch(x){case 0x0: a(); case 01: b(); default: /* keep */ c();} after();}'
+  const result = convertCpp(parser, source), ws = new Blockly.Workspace()
+  const code = () => generateCpp(source, result, Blockly.serialization.workspaces.save(ws).blocks.blocks)
+  try {
+    Blockly.serialization.workspaces.load({blocks:result.blocks}, ws)
+    await settleEvents(); ws.clearUndo()
+    const owner = ws.getAllBlocks(false).find(b => b.type === 'cpp_preview_switch')!
+    quick(owner, 'case'); await settleEvents()
+    const generated = code()
+    assert.ok(generated.includes('case 0x0: a(); case 01: b(); default: /* keep */ c();'))
+    assert.match(generated, /c\(\);\s*case 2:\s*break;/)
+    assert.equal(cppQuickActions(owner).find(a => a.id === 'default')?.enabled, false)
+    cppQuickActions(owner).find(a => a.id === 'default')!.run()
+    assert.equal(code(), generated)
+    assert.equal(convertCpp(parser, generated).status, 'ready')
+    ws.undo(false); await settleEvents(); assert.equal(code(), source)
+    ws.undo(true); await settleEvents(); assert.equal(code(), generated)
+    quick(owner, 'case'); await settleEvents(); assert.ok(code().includes('case 3:'))
+  } finally {ws.dispose()}
+})
+
+test('default belongs to the nearest switch and nested labels cannot bypass duplicate prevention', () => {
+  for (const source of ['void f(){switch(x){case 1: switch(y){default: break;}}}', 'void f(){switch(x){case 1: {default: break;}}}']) {
+    const result = convertCpp(parser, source), ws = new Blockly.Workspace()
+    try {
+      Blockly.serialization.workspaces.load({blocks:result.blocks}, ws)
+      const owner = ws.getAllBlocks(false).find(b => b.type === 'cpp_preview_switch')!
+      const add = cppQuickActions(owner).find(a => a.id === 'default')!
+      assert.equal(add.enabled, source.includes('switch(y)'))
+      if (add.enabled) {
+        add.run()
+        assert.equal(cppQuickActions(owner).find(a => a.id === 'default')?.enabled, false)
+        assert.equal(convertCpp(parser, generateCpp(source, result, Blockly.serialization.workspaces.save(ws).blocks.blocks)).status, 'ready')
+      }
+    } finally {ws.dispose()}
+  }
+})
+
+test('quick argument/list items come connected and undo removes the entire addition', async () => {
+  const source = 'void f(){run(1); int xs[]={2,3};}', result = convertCpp(parser, source), ws = new Blockly.Workspace()
+  const code = () => generateCpp(source, result, Blockly.serialization.workspaces.save(ws).blocks.blocks)
+  try {
+    Blockly.serialization.workspaces.load({blocks:result.blocks}, ws)
+    await settleEvents(); ws.clearUndo()
+    for (const type of ['cpp_preview_call', 'cpp_preview_list']) {
+      const owner = ws.getAllBlocks(false).find(b => b.type === type)!
+      const count = owner.saveExtraState!().count
+      quick(owner, 'argument'); await settleEvents()
+      assert.equal(owner.getInputTargetBlock(`ARG${count}`)?.getFieldValue('TEXT'), '0')
+      assert.equal(ws.getTopBlocks(false).length, 1)
+      assert.equal(convertCpp(parser, code()).status, 'ready')
+      ws.undo(false); await settleEvents(); assert.equal(code(), source)
+    }
+  } finally {ws.dispose()}
+})
+
+test('new switch/case blocks generate complete C++ and detached case labels are rejected', () => {
+  const source = 'void f(){}', result = convertCpp(parser, source), roots = serialized(result)
+  const label: PreviewBlock = {type:'cpp_preview_case',id:'case',fields:{HEADER:'case 1:'},inputs:{BODY:{block:{type:'cpp_preview_flow',id:'break',fields:{TEXT:'break;'}}}}}
+  roots[0]!.inputs = {BODY:{block:{type:'cpp_preview_switch',id:'switch',fields:{HEADER:'switch (value)',FOOTER:''},inputs:{BODY:{block:label}}}}}
+  assert.equal(convertCpp(parser, generateCpp(source, result, roots)).status, 'ready')
+  roots[0]!.inputs = {BODY:{block:label}}
+  assert.throws(() => generateCpp(source, result, roots), /必须放在 switch/)
+})
+
+test('type dropdown keeps canonical values and edits only the AST type span', async () => {
+  const source = 'static const char* page = "hi";\r\nvolatile unsigned long ticks;\r\nuint8_t bytes[2] PROGMEM = {1,2};\r\nDevice::Value item{42};\r\nstd::array<int, 2> data;'
+  const original = convertCpp(parser, source)
+  assert.equal(original.status, 'ready')
+  const ws = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({ blocks: original.blocks }, ws)
+    const save = () => Blockly.serialization.workspaces.save(ws).blocks!.blocks as PreviewBlock[]
+    assert.equal(generateCpp(source, original, save()), source)
+    const page = ws.getAllBlocks(false).find(b => b.getFieldValue('DECL') === 'page')!
+    assert.ok(page.getField('TYPE') instanceof Blockly.FieldDropdown)
+    assert.equal(page.getFieldValue('TYPE'), 'char*')
+    assert.equal(page.getFieldValue('QUALIFIERS'), 'static const')
+    assert.deepEqual(page.inputList[0]!.fieldRow.filter(field => field.name).map(field => field.name), ['QUALIFIERS', 'TYPE', 'DECL'])
+    const custom = ws.getAllBlocks(false).find(b => b.getFieldValue('TYPE') === 'Device::Value')!
+    assert.equal(custom.getField('TYPE')!.getText(), '源码类型 (Device::Value)')
+    assert.ok((custom.getField('TYPE') as Blockly.FieldDropdown).getOptions(false).some(o => Array.isArray(o) && o[1] === 'Device::Value'))
+    assert.ok(ws.getAllBlocks(false).some(b => b.getFieldValue('TYPE') === 'std::array<int, 2>'))
+    await settleEvents(); ws.clearUndo()
+    page.setFieldValue('uint8_t*', 'TYPE')
+    await settleEvents()
+    assert.equal(generateCpp(source, original, save()), source.replace('char*', 'uint8_t*'))
+    ws.undo(false); await settleEvents()
+    assert.equal(generateCpp(source, original, save()), source)
+    ws.undo(true); await settleEvents()
+    assert.equal(page.getFieldValue('TYPE'), 'uint8_t*')
+    const bytes = ws.getAllBlocks(false).find(b => b.getFieldValue('DECL') === 'bytes[2] PROGMEM')!
+    bytes.setFieldValue('uint16_t', 'TYPE')
+    const ticks = ws.getAllBlocks(false).find(b => b.getFieldValue('TEXT') === 'ticks')!
+    ticks.setFieldValue('uint32_t', 'TYPE')
+    const expected = source.replace('char*', 'uint8_t*').replace('unsigned long ticks', 'uint32_t ticks').replace('uint8_t bytes', 'uint16_t bytes')
+    assert.equal(generateCpp(source, original, save()), expected)
+    assert.equal(convertCpp(parser, expected).status, 'ready')
+    assert.equal(new Set(cppTypeOptions.map(o => o[1])).size, cppTypeOptions.length)
+    assert.ok(cppTypeOptions.every(([, value]) => /^[\w *]+$/.test(value)))
+  } finally { ws.dispose() }
+})
+
+test('qualifier dropdown translates common combinations without changing C++ values', () => {
+  assert.deepEqual(codeOptions('qualifiers', 'static const').find(([, value]) => value === 'static const'), ['静态常量', 'static const'])
+  assert.deepEqual(codeOptions('qualifiers', 'const static').find(([, value]) => value === 'const static'), ['常量静态存储', 'const static'])
+  assert.deepEqual(codeOptions('qualifiers', 'thread_local const').find(([, value]) => value === 'thread_local const'), ['线程局部存储 · 常量 (thread_local const)', 'thread_local const'])
+})
+
+test('pointer type and edited fields can repeatedly update the source buffer without losing the baseline', () => {
+  const source = 'static const char* page = "old";\nint untouched = 1;'
+  const original = convertCpp(parser, source)
+  const ws = new Blockly.Workspace()
+  let text = source, version = 1
+  const model = { getValue: () => text, getVersionId: () => version, isDisposed: () => false, pushStackElement: () => {}, getFullModelRange: () => ({ startLineNumber: 1, startColumn: 1, endLineNumber: 2, endColumn: 19 }), pushEditOperations: (_before: null, edits: Array<{text:string}>) => { text = edits[0]!.text; version++ } }
+  try {
+    Blockly.serialization.workspaces.load({ blocks: original.blocks }, ws)
+    const page = ws.getAllBlocks(false).find(block => block.getFieldValue('DECL') === 'page')!
+    const code = () => generateCpp(source, original, Blockly.serialization.workspaces.save(ws).blocks!.blocks as PreviewBlock[])
+    const sync = () => { const expected = { text, version, dirty: true }; applySource(model, expected, code()); assert.equal(convertCpp(parser, text).status, 'ready') }
+    assert.equal(page.getFieldValue('TYPE'), 'char*')
+    page.setFieldValue('uint8_t*', 'TYPE'); sync()
+    assert.equal(text, source.replace('char* page', 'uint8_t* page'))
+    page.setFieldValue('buffer', 'DECL'); sync()
+    assert.equal(text, source.replace('char* page', 'uint8_t* buffer'))
+    page.getInputTargetBlock('VALUE')!.setFieldValue('new', 'TEXT'); sync()
+    assert.equal(text, 'static const uint8_t* buffer = "new";\nint untouched = 1;')
+    page.setFieldValue('char', 'TYPE'); sync()
+    assert.equal(text, 'static const char buffer = "new";\nint untouched = 1;')
+    const stale = { text, version, dirty: true }
+    const externalEdit = () => { text += '\n// external'; version++ }
+    externalEdit()
+    assert.throws(() => applySource(model, stale, code()), /源码已变化/)
+  } finally { ws.dispose() }
+})
+
+test('declaration types preserve references, function pointers, multiple declarators and whitespace', () => {
+  const source = 'int a=1, *b=nullptr;\nint &ref = a;\nvoid (*handler)(int);\nunsigned   long time = 0;\nconst int\n count = 2;'
+  const result = convertCpp(parser, source)
+  assert.equal(result.status, 'ready')
+  const roots = serialized(result)
+  assert.equal(generateCpp(source, result, roots), source)
+  const ref = [...indexBlocks(roots).values()].find(b => b.fields?.DECL === '&ref')!
+  ref.fields!.TYPE = 'long'
+  assert.equal(generateCpp(source, result, roots), source.replace('int &ref', 'long &ref'))
+  const spaced = 'char * page;'
+  const pointer = convertCpp(parser, spaced), pointerRoots = serialized(pointer)
+  assert.equal(pointerRoots[0]?.fields?.TYPE, 'char*')
+  assert.equal(pointerRoots[0]?.fields?.TEXT, 'page')
+  pointerRoots[0]!.fields!.TYPE = 'void*'
+  assert.equal(generateCpp(spaced, pointer, pointerRoots), 'void* page;')
+})
+
+test('source focus resolves innermost blocks and does not cross into the next line', () => {
+  const source = 'void f(){\n  delay(10); delay(20);\n}\n\nvoid g(){\n  digitalWrite(2, HIGH);\n}'
+  const result = convertCpp(parser, source)
+  const locate = (line: number, column: number) => result.locations[blockAtPosition(result.locations, {line,column}) ?? '']?.text
+  assert.equal(locate(2, 9), '10')
+  assert.equal(locate(2, 1), 'delay(10)')
+  assert.equal(locate(2, 16), 'delay(20)')
+  assert.equal(locate(6, 3), 'digitalWrite(2, HIGH)')
+  assert.equal(locate(4, 1), undefined)
+  assert.equal(locate(20, 1), undefined)
+})
+
+test('base categories use C++ templates without Blockly-mode generator side effects', () => {
+  const categories = (cppToolbox as {contents:Array<{name:string;contents:Blockly.serialization.blocks.State[]}>}).contents
+  assert.deepEqual(categories.map(c => c.name), ['逻辑','循环','数学','文字','数组','变量','自定义函数','I/O引脚','时间','串口','中断','自定义代码'])
+  const empty = convertCpp(parser, '')
+  for (const name of ['I/O引脚', '时间', '串口', '中断', '变量', '数组']) {
+    for (const template of categories.find(c => c.name === name)!.contents) {
+      if (!template.type) continue
+      const ws = new Blockly.Workspace()
+      try {
+        const block = Blockly.serialization.blocks.append(template, ws)
+        if (!block.previousConnection || block.type === 'cpp_preview_value') continue
+        const roots = Blockly.serialization.workspaces.save(ws).blocks!.blocks as PreviewBlock[]
+        const code = generateCpp('', empty, roots)
+        assert.equal(convertCpp(parser, `void f(){${code}}`).status, 'ready', code)
+        if (name === 'I/O引脚' && code.includes('digitalWrite')) assert.ok(!code.includes('pinMode'))
+        if (name === '串口' && code.includes('Serial.print')) assert.ok(!code.includes('Serial.begin'))
+      } finally { ws.dispose() }
+    }
+  }
+})
+
+test('beginner dropdowns preserve C++ values, update labels, and undo the actual source edits', async () => {
+  const source = 'void setup(){pinMode(2, OUTPUT);}\nvoid loop(){if(count < 10 && true){digitalWrite(2,HIGH);delay(500);Serial.println("hi");}}'
+  const result = convertCpp(parser, source), ws = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({ blocks: result.blocks }, ws)
+    const blocks = ws.getAllBlocks(false), code = () => generateCpp(source, result, Blockly.serialization.workspaces.save(ws).blocks!.blocks as PreviewBlock[])
+    const setup = blocks.find(block => block.getFieldValue('SIGNATURE') === 'void setup()')!
+    assert.equal(setup.getField('SIGNATURE')!.getText(), '开机时执行一次')
+    const delay = blocks.find(block => block.getFieldValue('NAME') === 'delay')!
+    assert.equal(delay.getField('NAME')!.getText(), '等待（毫秒）')
+    assert.equal(delay.getFieldValue('LABEL0'), '时长')
+    assert.equal(delay.getFieldValue('SUFFIX'), '毫秒')
+    assert.equal(code(), source)
+    await settleEvents(); ws.clearUndo()
+    Blockly.Events.setGroup(true)
+    blocks.find(block => block.getFieldValue('TEXT') === 'OUTPUT')!.setFieldValue('INPUT_PULLUP', 'TEXT')
+    blocks.find(block => block.getFieldValue('TEXT') === 'HIGH')!.setFieldValue('LOW', 'TEXT')
+    blocks.find(block => block.getFieldValue('OP') === '<')!.setFieldValue('>=', 'OP')
+    delay.setFieldValue('delayMicroseconds', 'NAME')
+    Blockly.Events.setGroup(false)
+    await settleEvents()
+    assert.equal(delay.getFieldValue('SUFFIX'), '微秒')
+    assert.equal(delay.getField('NAME')!.getText(), '等待（微秒）')
+    assert.match(code(), /pinMode\(2, INPUT_PULLUP\)/)
+    assert.match(code(), /digitalWrite\(2,LOW\)/)
+    assert.match(code(), /count >= 10/)
+    assert.match(code(), /delayMicroseconds\(500\)/)
+    assert.equal(convertCpp(parser, code()).status, 'ready')
+    ws.undo(false); await settleEvents()
+    assert.equal(code(), source)
+    assert.equal(delay.getFieldValue('SUFFIX'), '毫秒')
+    ws.undo(true); await settleEvents()
+    assert.match(code(), /delayMicroseconds\(500\)/)
+  } finally { Blockly.Events.setGroup(false); ws.dispose() }
+})
+
+test('repeat blocks edit only exact counting loops; other iterator semantics remain advanced', () => {
+  const source = 'void f(){for(int index=0; index<10; ++index) { use(index); }\nfor(unsigned long i=0;i<10;i++)use(i);\nfor(int j=1;j<=10;j+=2)use(j);}'
+  const result = convertCpp(parser, source), roots = serialized(result), blocks = [...indexBlocks(roots).values()]
+  const repeat = blocks.find(block => block.type === 'cpp_preview_repeat')!
+  assert.ok(repeat)
+  assert.equal(repeat.fields?.COUNTER, 'index')
+  assert.equal(blocks.filter(block => block.type === 'cpp_preview_repeat').length, 1)
+  assert.equal(blocks.filter(block => block.type === 'cpp_preview_loop').length, 2)
+  assert.equal(generateCpp(source, result, roots), source)
+  repeat.inputs!.TIMES!.block.fields!.TEXT = '4'
+  assert.equal(generateCpp(source, result, roots), source.replace('index<10', 'index<4'))
+})
+
+test('condition loop modes preserve bodies and produce while, until and do-while semantics', () => {
+  const source = 'void f(){while (ready()) { /* keep */ run(); } after();}'
+  const result = convertCpp(parser, source), roots = serialized(result)
+  const loop = [...indexBlocks(roots).values()].find(block => block.type === 'cpp_preview_while')!
+  assert.equal(generateCpp(source, result, roots), source)
+  loop.fields!.MODE = 'until'
+  const until = generateCpp(source, result, roots)
+  assert.match(until, /while \(!\(/)
+  assert.ok(until.includes('/* keep */'))
+  assert.ok(until.endsWith(' after();}'))
+  assert.equal(convertCpp(parser, until).status, 'ready')
+  loop.fields!.MODE = 'do'
+  const once = generateCpp(source, result, roots)
+  assert.match(once, /do \{/)
+  assert.match(once, /\} while \(/)
+  assert.equal(convertCpp(parser, once).status, 'ready')
+  const declaration = convertCpp(parser, 'void f(){while (int x = read()) use(x);}')
+  assert.ok(!flatten(declaration).some(block => block.type === 'cpp_preview_while'))
+})
+
+test('plain text blocks escape quotes, backslashes and control characters when generating C++', () => {
+  const source = 'void loop(){Serial.println("hello");}'
+  const result = convertCpp(parser, source), roots = serialized(result)
+  const text = [...indexBlocks(roots).values()].find(block => block.type === 'cpp_preview_text')!
+  assert.equal(text.fields?.TEXT, 'hello')
+  text.fields!.TEXT = '中文 "quoted" \\ path\n\u0000f'
+  const code = generateCpp(source, result, roots)
+  assert.ok(code.includes('"中文 \\"quoted\\" \\\\ path\\012\\000f"'), code)
+  assert.equal(convertCpp(parser, code).status, 'ready')
+  const advanced = 'const char* a=u8"hello"; const char* b="\\x41\\0";'
+  const parsed = convertCpp(parser, advanced)
+  assert.equal(generateCpp(advanced, parsed, serialized(parsed)), advanced)
+})
+
+test('Chinese toolbox search finds beginner operations and connected templates generate valid C++', () => {
+  const categories = (cppToolbox as Blockly.utils.toolbox.ToolboxInfo).contents as Blockly.utils.toolbox.StaticCategoryInfo[]
+  assert.ok(filterCppCategories(categories, '等待').some(category => category.name === '时间'))
+  assert.ok(filterCppCategories(categories, '重复').some(category => category.name === '循环'))
+  assert.ok(filterCppCategories(categories, '换行').some(category => category.name === '串口'))
+  const original = convertCpp(parser, 'void loop(){}'), ws = new Blockly.Workspace()
+  try {
+    for (const category of categories) for (const item of category.contents) {
+      if (item.kind !== 'block' || !('type' in item) || typeof item.type !== 'string' || !['cpp_preview_repeat', 'cpp_preview_while'].includes(item.type)) continue
+      Blockly.serialization.workspaces.load({ blocks: original.blocks }, ws)
+      const loop = Blockly.serialization.blocks.append(item as Blockly.serialization.blocks.State, ws)
+      const body = Blockly.serialization.blocks.append({ type: 'cpp_preview_statement', inputs: { VALUE: { block: { type: 'cpp_preview_action', fields: { NAME: 'delay' }, extraState: { count: 1 }, inputs: { ARG0: { block: { type: 'cpp_preview_value', fields: { TEXT: '100' } } } } } } } }, ws)
+      ws.getBlockById(original.blocks.blocks[0]!.id)!.getInput('BODY')!.connection!.connect(loop.previousConnection!)
+      loop.getInput('BODY')!.connection!.connect(body.previousConnection!)
+      const code = generateCpp('void loop(){}', original, Blockly.serialization.workspaces.save(ws).blocks!.blocks as PreviewBlock[])
+      assert.ok(code.includes('delay(100);'))
+      assert.equal(convertCpp(parser, code).status, 'ready', code)
+      ws.clear()
+    }
+  } finally { ws.dispose() }
 })

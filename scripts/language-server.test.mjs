@@ -11,13 +11,16 @@ import { attachCoderAgentRpcServer } from '../server/agentRpcServer.js'
 import { attachCoderLanguageServer } from '../server/languageServer.js'
 
 test('managed runtime authenticates clangd, returns fresh diagnostics and definitions, releases sessions', { timeout: 20000 }, async t => {
-  if (spawnSync('clangd', ['--version']).status !== 0) { t.skip('clangd is not installed on this test host'); return }
+  const cleanAppData = process.env.AILY_LSP_TEST_APPDATA
+  if (!cleanAppData && spawnSync('clangd', ['--version']).status !== 0) { t.skip('clangd is not installed on this test host'); return }
   const root = await mkdtemp(path.join(tmpdir(), 'aily-clangd-runtime-'))
   const file = path.join(root, 'probe.cpp'); const uri = pathToFileURL(file).toString()
   const text = 'int add(int a, int b) { return a + b; }\nint main() { return add(1); }\n'
   await writeFile(file, text)
   const http = createServer(); const rpc = attachCoderAgentRpcServer(http, { additionalUpgradePaths: ['/lsp'] })
-  const lsp = attachCoderLanguageServer(http, rpc.token)
+  const lsp = attachCoderLanguageServer(http, rpc.token, cleanAppData ? {
+    appDataPath: cleanAppData, env: { ...process.env, PATH: '', AILY_CLANGD_PATH: '' },
+  } : {})
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve))
   const base = `ws://127.0.0.1:${http.address().port}/lsp?root=${encodeURIComponent(root)}`
   let socket
@@ -39,7 +42,9 @@ test('managed runtime authenticates clangd, returns fresh diagnostics and defini
     const send = message => socket.send(JSON.stringify({ jsonrpc: '2.0', ...message }))
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject) })
     send({ id: 1, method: 'initialize', params: { processId: null, rootUri: pathToFileURL(root).toString(), capabilities: {} } })
-    assert.ok((await until(message => message.id === 1)).result.capabilities.definitionProvider)
+    const initialized = (await until(message => message.id === 1)).result.capabilities
+    assert.ok(initialized.definitionProvider)
+    assert.equal(initialized.experimental.ailyCompilationDatabase, false)
     send({ method: 'initialized', params: {} })
     send({ method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'cpp', version: 1, text } } })
     const diagnostics = await until(message => message.method === 'textDocument/publishDiagnostics' && message.params.uri === uri && message.params.diagnostics.length)

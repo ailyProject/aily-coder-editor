@@ -5,12 +5,12 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import process from 'node:process'
 import { defaultAilyAppDataPath } from './componentLibraryService.js'
+import { resolveCoderLanguageCommand } from './clangdInstallation.js'
 
 const run = promisify(execFile)
 const exists = async file => { try { return (await stat(file)).isFile() } catch { return false } }
 const inside = (root, file) => { const relative = path.relative(root, file); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
 const COMPILATION_RULES = ['cpp_compile', 'c_compile', 'core_cpp_compile', 'core_c_compile']
-const ESP_CLANGD_VERSION = '21.1.3_20260408'
 
 /** Parse compiler arguments, never execute a shell command from build.ninja. */
 export function splitCompilerArguments(value) {
@@ -51,7 +51,8 @@ async function boundedRead(file, roots, maximum = 1024 * 1024) {
 /** Derive a language-service database from the builder's real, read-only Ninja
  * compilation records. It never changes the build database or build flags. */
 export async function resolveCoderLanguageConfig(root, options = {}) {
-  const fallback = { command: options.command || process.env.AILY_CLANGD_PATH || 'clangd', database: undefined, queryDrivers: [] }
+  const command = await resolveCoderLanguageCommand(options)
+  const fallback = { command, database: undefined, queryDrivers: [] }
   for (const directory of [path.join(root, '.build'), path.join(root, 'build'), root]) {
     if (await exists(path.join(directory, 'compile_commands.json'))) return { ...fallback, database: directory }
   }
@@ -74,9 +75,6 @@ export async function resolveCoderLanguageConfig(root, options = {}) {
     if (!/^(?:xtensa|riscv32)-.*-g\+\+(?:\.exe)?$/.test(variable('cpp_compiler') || '')) return fallback
     const compilerDirectory = await realpath(variable('compiler_path') || '')
     if (!inside(toolsRoot, compilerDirectory)) return fallback
-    const managed = path.join(toolsRoot, `esp-clangd@${ESP_CLANGD_VERSION}`, 'bin', process.platform === 'win32' ? 'clangd.exe' : 'clangd')
-    const command = options.command || process.env.AILY_CLANGD_PATH || managed
-    if (!await exists(command)) return fallback
     const executable = process.platform === 'win32' ? 'ninja.exe' : 'ninja'
     const ninjas = ['lib/node_modules', 'node_modules'].map(directory => path.join(appData, 'npm-global', directory, '@aily-project/aily-builder/ninja', executable))
     const ninja = (await Promise.all(ninjas.map(async file => await exists(file) ? file : undefined))).find(Boolean)

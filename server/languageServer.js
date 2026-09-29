@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer'
 import { timingSafeEqual } from 'node:crypto'
 import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
+import process from 'node:process'
 import { fileURLToPath, URL } from 'node:url'
 import { setTimeout, clearTimeout } from 'node:timers'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -12,6 +13,8 @@ const MAX_BYTES = 8 * 1024 * 1024
 export function attachCoderLanguageServer(server, token, options = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BYTES })
   const clients = new Map()
+  const preparingSockets = new Set()
+  let closed = false
   let preparing = 0
   const onUpgrade = async (request, socket, head) => {
     const url = new URL(request.url || '/', 'http://127.0.0.1')
@@ -29,17 +32,22 @@ export function attachCoderLanguageServer(server, token, options = {}) {
       socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return
     }
     preparing++
+    preparingSockets.add(socket)
     try {
       const config = await resolveCoderLanguageConfig(root, options)
-      if (!socket.destroyed) wss.handleUpgrade(request, socket, head, client => wss.emit('connection', client, root, config))
-    } catch { socket.destroy() }
-    finally { preparing-- }
+      if (!closed && !socket.destroyed) wss.handleUpgrade(request, socket, head, client => wss.emit('connection', client, root, config))
+      else socket.destroy()
+    } catch (error) {
+      process.stderr.write(`[Coder LSP] Failed to prepare clangd: ${error.message}\n`)
+      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+    }
+    finally { preparing--; preparingSockets.delete(socket) }
   }
   wss.on('connection', (socket, root, { command, database, queryDrivers }) => {
     const args = ['--background-index', '--header-insertion=iwyu', '--pch-storage=memory', '--limit-results=40',
       ...(database ? [`--compile-commands-dir=${database}`] : []),
       ...(queryDrivers.length ? [`--query-driver=${queryDrivers.join(',')}`] : [])]
-    const child = spawn(command, args, { cwd: root, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    const child = spawn(command, args, { cwd: root, env: options.env || process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     clients.set(socket, child)
     let data = Buffer.alloc(0); let initialized = false; let initializeId
     const stop = () => {
@@ -50,7 +58,10 @@ export function attachCoderLanguageServer(server, token, options = {}) {
     }
     socket.on('close', stop)
     socket.on('error', stop)
-    child.on('error', () => { socket.close(1011, 'clangd unavailable'); stop() })
+    child.on('error', error => {
+      process.stderr.write(`[Coder LSP] Cannot start ${command}: ${error.code || error.message}\n`)
+      socket.close(1011, 'clangd unavailable'); stop()
+    })
     child.on('exit', () => { socket.close(1011, 'clangd stopped'); stop() })
     child.stdin.on('error', () => { socket.close(1011, 'clangd input closed'); stop() })
     // Drain diagnostics from stderr, but never mix them into the JSON-RPC stream.
@@ -90,7 +101,9 @@ export function attachCoderLanguageServer(server, token, options = {}) {
   return {
     get activeCount() { return clients.size },
     async close() {
+      closed = true
       server.off('upgrade', onUpgrade)
+      for (const socket of preparingSockets) socket.destroy()
       for (const socket of clients.keys()) socket.terminate()
       await new Promise(resolve => wss.close(resolve))
     },

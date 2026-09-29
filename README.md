@@ -71,7 +71,7 @@ flowchart TB
 - **内嵌代码工作台**：基于 `@codingame/monaco-vscode-*` 的暗色 IDE 风格 UI，与 Aily Blockly 视觉规范对齐。
 - **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示根 `package.json`，`Library` 合并展示本地库与 Aily/Arduino npm 包最终 `src` 库根，详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
-- **语言服务桥接**：`monacoStdioLspClient` + `server/lspWsProxy.ts`，对接 clangd 等 LSP（需配合影子工作区 / `compile_commands`）。
+- **语言服务**：内嵌 Coder 使用 Runtime 的 `/lsp` 接口。优先使用 `AILY_CLANGD_PATH`、应用数据目录中已安装的 clangd 或系统 clangd；新电脑缺少工具时自动下载、校验并安装固定版本的 Espressif clangd，无需手动安装 LLVM 或配置 PATH。首次连接需要联网，后续可离线复用。Windows 使用系统 `tar.exe` 解压；安装发生在用户应用数据目录，无需管理员权限。工具准备不依赖项目是否已编译；完整的开发板诊断仍需要有效的编译配置。独立开发调试可使用 `server/lspWsProxy.ts`。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。
 
 ## 本仓库不提供什么

@@ -1,6 +1,9 @@
 import type { Node, Parser } from 'web-tree-sitter'
 import { attachSourceRecipes } from './sourceRecipes.js'
 import { MAX_BLOCKS, MAX_SOURCE_LENGTH, previewError, type CppPreview, type PreviewBlock, type SourceLocation } from './types.js'
+import { coreCall, isSimpleConstant } from './beginnerCatalog.js'
+import { simplePointerNameStart } from './declarationTypes.js'
+import { functionSignature } from './functionSignature.js'
 
 // This is a source-preserving C++ syntax projection. Calls retain their actual spelling;
 // no hardware-library identity is guessed and no Arduino generator is executed.
@@ -34,7 +37,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
   const sourceNodes = new Map<string, Node>()
   const location = (n: Node): SourceLocation => {
     // The grammar places class/enum terminators outside their named node.
-    const end = n.nextSibling?.type === ';' ? n.nextSibling : n
+    const end = ['class_specifier', 'struct_specifier', 'union_specifier', 'enum_specifier'].includes(n.type) && n.nextSibling?.type === ';' ? n.nextSibling : n
     return {
       line: n.startPosition.row + 1, column: n.startPosition.column + 1,
       endLine: end.endPosition.row + 1, endColumn: end.endPosition.column + 1,
@@ -64,8 +67,12 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
   const expression = (n: Node | null, depth = 0): PreviewBlock | undefined => {
     if (!n) return undefined
     if (depth > 70) return preserved(n, true)
+    if (n.type === 'string_literal' && raw(n).startsWith('"')) {
+      try { return block(n, 'text', { TEXT: JSON.parse(raw(n)) as string }) } catch { /* Preserve C++-specific prefixes and escapes. */ }
+    }
     if (['identifier', 'number_literal', 'string_literal', 'char_literal', 'true', 'false', 'null', 'nullptr', 'qualified_identifier', 'this', 'concatenated_string'].includes(n.type)) {
-      return block(n, 'value', { TEXT: compact(raw(n)) })
+      const text = compact(raw(n))
+      return block(n, isSimpleConstant(text) ? 'choice' : 'value', { TEXT: text })
     }
     if (n.type === 'raw_string_literal') {
       result.dataCount!++
@@ -135,8 +142,9 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
       const fn = field(n, 'function')
       if (!args || !fn) return preserved(n, true)
       const simpleName = ['identifier', 'qualified_identifier', 'template_function'].includes(fn.type) ||
-        (fn.type === 'field_expression' && field(fn, 'argument')?.type === 'identifier')
-      const b = block(n, simpleName ? 'call' : 'invoke', simpleName ? { NAME: compact(raw(fn)) } : {})
+        (fn.type === 'field_expression' && ['identifier', 'qualified_identifier'].includes(field(fn, 'argument')?.type ?? ''))
+      const name = compact(raw(fn))
+      const b = block(n, simpleName ? coreCall(name, children(args).length) ? 'action' : 'call' : 'invoke', simpleName ? { NAME: name } : {})
       if (!simpleName) input(b, 'FUNCTION', expression(fn, depth + 1))
       const argsWithoutComments = children(args)
       b.extraState = { count: argsWithoutComments.length }
@@ -153,7 +161,8 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     if (n.type === 'unary_expression' || n.type === 'update_expression' || n.type === 'pointer_expression') {
       const arg = field(n, 'argument')
       if (!arg) return preserved(n, true)
-      const b = block(n, 'unary', {
+      const simpleNot = source.slice(n.startIndex, arg.startIndex).trim() === '!' && !source.slice(arg.endIndex, n.endIndex).trim()
+      const b = block(n, simpleNot ? 'not' : 'unary', simpleNot ? {} : {
         BEFORE: source.slice(n.startIndex, arg.startIndex), AFTER: source.slice(arg.endIndex, n.endIndex)
       })
       input(b, 'VALUE', expression(arg, depth + 1))
@@ -209,7 +218,8 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     if (n.type === 'function_definition') {
       const content = field(n, 'body')
       if (!content || content.type !== 'compound_statement') return preserved(n)
-      const b = block(n, 'function', { SIGNATURE: compact(source.slice(n.startIndex, content.startIndex)) })
+      const signature = functionSignature(n, source)
+      const b = block(n, 'function', { SIGNATURE: compact(source.slice(n.startIndex, content.startIndex)), MODE: signature ? 'structured' : 'raw', ...signature?.fields })
       input(b, 'BODY', body(content, depth + 1))
       return b
     }
@@ -220,9 +230,13 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
       const binding = (declarator: Node, first: boolean): PreviewBlock => {
         const value = field(declarator, 'value') ?? (decls.length === 1 ? field(n, 'default_value') : null)
         const start = first ? n.startIndex : declarator.startIndex
-        if (!value) return block(decls.length === 1 ? n : declarator, 'definition', { TEXT: compact(source.slice(start, declarator.endIndex)) })
+        const type = decls.length === 1 ? field(n, 'type') : null
+        const pointerEnd = type && simplePointerNameStart(declarator)
+        const typed = { QUALIFIERS: type ? compact(source.slice(start, type.startIndex)) : '', TYPE: type ? compact(source.slice(type.startIndex, pointerEnd ?? type.endIndex)).replace(/\s+\*/g, '*') : '' }
+        const nameStart = pointerEnd ?? type?.endIndex ?? start
+        if (!value) return block(decls.length === 1 ? n : declarator, 'definition', { ...typed, TEXT: compact(source.slice(nameStart, declarator.endIndex)) })
         const before = source.slice(start, value.startIndex).trimEnd()
-        const b = block(decls.length === 1 ? n : declarator, 'declaration', { DECL: compact(before.replace(/=\s*$/, '')), INIT: before.endsWith('=') ? '=' : '' })
+        const b = block(decls.length === 1 ? n : declarator, 'declaration', { ...typed, DECL: compact(source.slice(nameStart, value.startIndex).replace(/=\s*$/, '')), INIT: before.endsWith('=') ? '=' : '' })
         input(b, 'VALUE', expression(value, depth + 1)); return b
       }
       if (decls.length === 1) return binding(d, true)
@@ -252,7 +266,29 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     if (['for_statement', 'for_range_loop', 'while_statement', 'do_statement', 'switch_statement'].includes(n.type)) {
       const content = field(n, 'body')
       if (!content) return preserved(n)
-      const b = block(n, 'loop', {
+      if (n.type === 'while_statement' || n.type === 'do_statement') {
+        const condition = field(n, 'condition')
+        // A declaration condition needs its scope and lifetime preserved.
+        if (condition && !condition.namedChildren.some(child => child.type === 'declaration')) {
+          const b = block(n, 'while', { MODE: n.type === 'do_statement' ? 'do' : 'while' })
+          input(b, 'CONDITION', expression(condition, depth + 1)); input(b, 'BODY', body(content, depth + 1)); return b
+        }
+      }
+      if (n.type === 'for_statement') {
+        const init = field(n, 'initializer'), condition = field(n, 'condition'), update = field(n, 'update')
+        const declarations = init?.childrenForFieldName('declarator') ?? [], binding = declarations[0]
+        const counter = binding && field(binding, 'declarator'), initial = binding && field(binding, 'value')
+        // Only this exact numeric counting form has the semantics of "repeat N".
+        // Other comparisons, steps, qualifiers and iterator types remain intact.
+        if (init?.type === 'declaration' && declarations.length === 1 && counter?.type === 'identifier' && initial?.text === '0'
+          && source.slice(init.startIndex, counter.startIndex).trim() === 'int'
+          && condition?.type === 'binary_expression' && field(condition, 'left')?.text === counter.text && field(condition, 'operator')?.text === '<'
+          && update?.type === 'update_expression' && field(update, 'argument')?.text === counter.text && field(update, 'operator')?.text === '++') {
+          const b = block(n, 'repeat', { COUNTER: counter.text })
+          input(b, 'TIMES', expression(field(condition, 'right'), depth + 1)); input(b, 'BODY', body(content, depth + 1)); return b
+        }
+      }
+      const b = block(n, n.type === 'switch_statement' ? 'switch' : 'loop', {
         HEADER: compact(source.slice(n.startIndex, content.startIndex)),
         FOOTER: compact(source.slice(content.endIndex, n.endIndex))
       })
@@ -273,7 +309,7 @@ export function convertCpp(parser: Parser, source: string): CppPreview {
     if (n.type === 'case_statement') {
       const colon = n.children.find(c => c.type === ':')
       if (!colon) return preserved(n)
-      const b = block(n, 'container', { HEADER: compact(source.slice(n.startIndex, colon.endIndex)), FOOTER: '' })
+      const b = block(n, 'case', { HEADER: compact(source.slice(n.startIndex, colon.endIndex)) })
       input(b, 'BODY', chain(n.namedChildren.filter(c => c.startIndex >= colon.endIndex), depth + 1)); return b
     }
     if (n.type === 'enumerator') return block(n, 'definition', { TEXT: raw(n) })

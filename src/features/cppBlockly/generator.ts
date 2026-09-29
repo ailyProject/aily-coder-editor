@@ -1,4 +1,6 @@
 import type { CppPreview, PreviewBlock, SourceRecipe, SourceSlot, SourceSpan } from './types.js'
+import { declarationText } from './declarationTypes.js'
+import { addLibraryIncludes } from './libraryToolbox.js'
 
 export function indexBlocks(roots: PreviewBlock[]): Map<string, PreviewBlock> {
   const result = new Map<string, PreviewBlock>()
@@ -15,8 +17,15 @@ export function chainBlocks(first?: PreviewBlock): PreviewBlock[] {
   for (let b = first; b; b = b.next?.block) list.push(b)
   return list
 }
-const expressions = new Set(['binary', 'group', 'unary', 'value', 'raw_value', 'call', 'invoke', 'list', 'lambda', 'data', 'annotation', 'member', 'subscript', 'ternary'])
+const expressions = new Set(['binary', 'group', 'unary', 'not', 'value', 'choice', 'text', 'raw_value', 'call', 'library_call', 'action', 'invoke', 'list', 'lambda', 'data', 'annotation', 'member', 'subscript', 'ternary'])
 const kind = (b: PreviewBlock): string => b.type.replace('cpp_preview_', '')
+function quoteCppText(value: string): string {
+  return '"' + Array.from(value, char => {
+    if (char === '"' || char === '\\') return '\\' + char
+    const code = char.charCodeAt(0)
+    return code < 32 || code === 127 ? '\\' + code.toString(8).padStart(3, '0') : char
+  }).join('') + '"'
+}
 
 /** Merge a scoped canvas back into the file without touching surrounding units. */
 export function mergeScope(roots: PreviewBlock[], scopeId: string, view: PreviewBlock[]): PreviewBlock[] {
@@ -35,8 +44,9 @@ export function mergeScope(roots: PreviewBlock[], scopeId: string, view: Preview
 export function generateCpp(source: string, original: CppPreview, roots: PreviewBlock[]): string {
   if (original.status === 'error') throw new Error('源码尚未成功转换。')
   const baseline = indexBlocks(original.blocks.blocks)
-  const byOrigin = new Map([...baseline.values()].filter(b => b.data).map(b => [b.data!, b]))
-  const origin = (b: PreviewBlock): PreviewBlock | undefined => b.data ? byOrigin.get(b.data) : undefined
+  const originKey = (data?: string): string | undefined => data && !data.startsWith('cpp-library-v1:') ? data.split('\ncpp-library-v1:')[0] : undefined
+  const byOrigin = new Map([...baseline.values()].filter(b => originKey(b.data)).map(b => [originKey(b.data)!, b]))
+  const origin = (b: PreviewBlock): PreviewBlock | undefined => byOrigin.get(originKey(b.data) ?? '')
   const recipe = (b: PreviewBlock): SourceRecipe | undefined => { const o = origin(b); return o && original.recipes?.[o.id] }
   const text = (s: SourceSpan): string => source.slice(s.start, s.end)
   const newline = source.includes('\r\n') ? '\r\n' : '\n'
@@ -63,24 +73,47 @@ export function generateCpp(source: string, original: CppPreview, roots: Preview
     const v = (name: string): string => required(b, name)
     const type = kind(b)
     switch (type) {
-      case 'value': return recipe(b)?.syntax === 'type_descriptor' ? f('TEXT') : atom(f('TEXT'))
+      case 'value': case 'choice': return recipe(b)?.syntax === 'type_descriptor' ? f('TEXT') : atom(f('TEXT'))
+      case 'text': return quoteCppText(f('TEXT'))
       case 'raw_value': case 'raw': case 'directive': case 'comment': case 'flow': return f('TEXT')
       case 'data': if (!f('CODE')) throw new Error('数据块缺少完整原文。'); return f('CODE')
-      case 'definition': return f('TEXT').replace(/;?\s*$/, ';')
-      case 'declaration': return `${f('DECL')} ${f('INIT')} ${v('VALUE')};`
+      case 'definition': return declarationText(b.fields, 'TEXT').replace(/;?\s*$/, ';')
+      case 'declaration': return `${declarationText(b.fields, 'DECL')} ${f('INIT')} ${v('VALUE')};`
       case 'statement': return `${v('VALUE')};`
       case 'return': return `return${b.inputs?.VALUE ? ` ${v('VALUE')}` : ''};`
-      case 'function': case 'lambda': return `${f('SIGNATURE')} ${braces(body(b, 'BODY'))}`
+      case 'function': {
+        const signature = f('MODE') === 'raw' || !f('NAME') ? f('SIGNATURE')
+          : `${[f('QUALIFIERS'), f('TYPE'), f('NAME')].filter(Boolean).join(' ')}(${f('PARAMETERS')})${f('SUFFIX') ? ` ${f('SUFFIX')}` : ''}`
+        return `${signature} ${braces(body(b, 'BODY'))}`
+      }
+      case 'lambda': return `${f('SIGNATURE')} ${braces(body(b, 'BODY'))}`
       case 'scope': return braces(body(b, 'BODY'))
-      case 'loop': return `${f('HEADER')} ${braces(body(b, 'BODY'))}${f('FOOTER') ? ` ${f('FOOTER')}` : ''}`
-      case 'if': return `if (${v('CONDITION')}) ${braces(body(b, 'THEN'))}${b.extraState?.count ? ` else ${braces(body(b, 'ELSE'))}` : ''}`
+      case 'case': return `${f('HEADER')}${newline}${body(b, 'BODY')}`
+      case 'switch': case 'loop': return `${f('HEADER')} ${braces(body(b, 'BODY'))}${f('FOOTER') ? ` ${f('FOOTER')}` : ''}`
+      case 'repeat': {
+        const counter = f('COUNTER') || 'i'
+        if (!/^[A-Za-z_]\w*$/.test(counter)) throw new Error('计数变量请使用字母、数字或下划线，且不要以数字开头。')
+        return `for (int ${counter} = 0; ${counter} < ${v('TIMES')}; ${counter}++) ${braces(body(b, 'BODY'))}`
+      }
+      case 'while': {
+        const condition = v('CONDITION'), content = braces(body(b, 'BODY'))
+        if (f('MODE') === 'do') return `do ${content} while (${condition});`
+        return `while (${f('MODE') === 'until' ? `!(${condition})` : condition}) ${content}`
+      }
+      case 'if': {
+        const alternatives = chainBlocks(b.inputs?.ELSE?.block)
+        const alternative = alternatives.length === 1 && ['if', 'scope'].includes(kind(alternatives[0]!))
+          ? node(alternatives[0]!) : braces(body(b, 'ELSE'))
+        return `if (${v('CONDITION')}) ${braces(body(b, 'THEN'))}${b.extraState?.count ? ` else ${alternative}` : ''}`
+      }
       case 'binary': return `(${v('LEFT')} ${f('OP')} ${v('RIGHT')})`
       case 'group': return `(${v('VALUE')})`
       case 'unary': return `(${f('BEFORE')}${v('VALUE')}${f('AFTER')})`
+      case 'not': return `(!${v('VALUE')})`
       case 'ternary': return `(${v('CONDITION')} ? ${v('THEN')} : ${v('ELSE')})`
       case 'member': return `${v('OBJECT')}${f('MEMBER')}`
       case 'subscript': return `${v('OBJECT')}${v('INDEX')}`
-      case 'call': return `${f('NAME')}(${argumentsOf(b)})`
+      case 'call': case 'library_call': case 'action': return `${f('NAME')}(${argumentsOf(b)})`
       case 'invoke': return `${v('FUNCTION')}(${argumentsOf(b)})`
       case 'list': return `${f('OPEN')}${argumentsOf(b)}${f('CLOSE')}`
       case 'annotation': return `${f('TEXT')}${newline}${v('VALUE')}`
@@ -123,13 +156,16 @@ export function generateCpp(source: string, original: CppPreview, roots: Preview
     const edits: Array<SourceSpan & { value: string }> = []
     const type = kind(b)
     const fieldChanges = Object.entries(b.fields ?? {}).filter(([key, value]) => old.fields?.[key] !== value)
+    if (type === 'function' && fieldChanges.some(([key]) => key === 'MODE')) return canonical(b)
+    if (type === 'function' && fieldChanges.some(([key]) => key === 'SIGNATURE') && fieldChanges.some(([key]) => ['QUALIFIERS', 'TYPE', 'NAME', 'PARAMETERS', 'SUFFIX'].includes(key))) return canonical(b)
     // Parentheses preserve the block tree if a new operator changes precedence.
-    if ((type === 'binary' || type === 'unary' || type === 'value') && fieldChanges.length) return canonical(b)
+    if (['binary', 'unary', 'value', 'text'].includes(type) && fieldChanges.length) return canonical(b)
     if (type === 'if' && b.extraState?.count !== old.extraState?.count) return canonical(b)
     for (const [key, value] of fieldChanges) {
+      if ((key === 'TYPE' || key === 'QUALIFIERS') && !value && !old.fields?.[key]) continue
       const slot = r.fields[key]
       if (!slot) return canonical(b)
-      edits.push({ ...slot, value })
+      edits.push({ ...slot, value: key === 'QUALIFIERS' && slot.start === slot.end && value ? `${value} ` : value })
     }
     const countChanged = r.arguments && b.extraState?.count !== old.extraState?.count
     if (countChanged) {
@@ -152,13 +188,23 @@ export function generateCpp(source: string, original: CppPreview, roots: Preview
       } else {
         const current = chainBlocks(after), prior = chainBlocks(before)
         value = sequence(current, prior, slot, slot.separator)
-        if (slot.kind === 'body' && (current.length !== 1 || origin(current[0]!)?.id !== prior[0]?.id)) value = braces(value)
+        const directElseIf = type === 'if' && name === 'ELSE' && current.length === 1 && kind(current[0]!) === 'if'
+        if (slot.kind === 'body' && !directElseIf && (current.length !== 1 || origin(current[0]!)?.id !== prior[0]?.id)) value = braces(value)
       }
       if (value !== text(slot)) edits.push({ ...slot, value })
     }
     return patch(r, edits)
   }
   const current = roots.flatMap(b => chainBlocks(b))
+  const validateCases = (blocks: PreviewBlock[], inSwitch = false): void => {
+    for (const b of blocks.flatMap(b => chainBlocks(b))) {
+      const type = kind(b)
+      if (type === 'case' && !inSwitch) throw new Error('case/default 分支必须放在 switch 中。')
+      const nestedSwitch = type === 'switch' || (!['function', 'lambda'].includes(type) && inSwitch)
+      for (const input of Object.values(b.inputs ?? {})) validateCases([input.block], nestedSwitch)
+    }
+  }
+  validateCases(roots)
   if (current.some(b => expressions.has(kind(b)))) throw new Error('画布上有未连接的表达式，请把它连接到语句或参数插槽后再应用。')
-  return sequence(current, original.blocks.blocks.flatMap(b => chainBlocks(b)), { start: 0, end: source.length })
+  return addLibraryIncludes(sequence(current, original.blocks.blocks.flatMap(b => chainBlocks(b)), { start: 0, end: source.length }), roots)
 }

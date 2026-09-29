@@ -1,5 +1,7 @@
 import type { Node } from 'web-tree-sitter'
+import { functionSignature } from './functionSignature.js'
 import type { CppPreview, PreviewBlock, SourceRecipe, SourceSlot, SourceSpan } from './types.js'
+import { simplePointerNameStart } from './declarationTypes.js'
 
 // Recipes describe editable slots in the ORIGINAL source, including whitespace,
 // delimiters and comments. They are separate from the lossy visual layout.
@@ -24,6 +26,14 @@ export function attachSourceRecipes(result: CppPreview, source: string, nodes: M
     const type = b.type.replace('cpp_preview_', '')
     const field = (name: string): Node | null => n.childForFieldName(name)
     const content = field('body')
+    const declarationType = ['definition', 'declaration'].includes(type) && b.fields?.TYPE ? field('type') : null
+    const pointerEnd = declarationType && simplePointerNameStart(n.childForFieldName('declarator') ?? n)
+    const nameStart = pointerEnd ?? declarationType?.endIndex ?? n.startIndex
+    if (declarationType) {
+      r.fields.TYPE = trim(declarationType.startIndex, pointerEnd ?? declarationType.endIndex)
+      // Include trailing whitespace in the qualifier slot only when it exists.
+      r.fields.QUALIFIERS = trim(n.startIndex, declarationType.startIndex)
+    }
     const bodySlot = (node: Node): SourceSlot => node.type === 'compound_statement'
       ? { start: node.startIndex + 1, end: node.endIndex - 1, kind: 'sequence' }
       : { ...span(node), kind: 'body' }
@@ -32,18 +42,21 @@ export function attachSourceRecipes(result: CppPreview, source: string, nodes: M
       const childRange = recipes[child.block.id]!
       r.inputs[name] = { start: childRange.start, end: childRange.end, kind: 'value' }
     }
-    if (['value', 'raw_value', 'raw', 'comment', 'directive', 'flow'].includes(type)) r.fields.TEXT = { start: r.start, end: r.end }
+    if (['value', 'choice', 'text', 'raw_value', 'raw', 'comment', 'directive', 'flow'].includes(type)) r.fields.TEXT = { start: r.start, end: r.end }
     if (type === 'data') r.fields.CODE = span(n)
     if (type === 'definition') {
       const spelling = b.fields?.TEXT ?? ''
-      r.fields.TEXT = { start: n.startIndex, end: n.startIndex + spelling.length }
+      const start = trim(nameStart, n.endIndex).start
+      r.fields.TEXT = { start, end: start + spelling.length }
     }
     if (type === 'function' || type === 'lambda') {
       r.fields.SIGNATURE = trim(n.startIndex, content!.startIndex)
+      if (type === 'function') Object.assign(r.fields, functionSignature(n, source)?.spans)
       r.inputs.BODY = bodySlot(content!)
     }
     if (type === 'scope') r.inputs.BODY = bodySlot(n)
-    if (type === 'loop') {
+    if (type === 'repeat' || type === 'while') r.inputs.BODY = bodySlot(content!)
+    if (type === 'loop' || type === 'switch') {
       r.fields.HEADER = trim(n.startIndex, content!.startIndex)
       r.fields.FOOTER = trim(content!.endIndex, n.endIndex)
       r.inputs.BODY = bodySlot(content!)
@@ -62,7 +75,7 @@ export function attachSourceRecipes(result: CppPreview, source: string, nodes: M
       const value = recipes[b.inputs!.VALUE!.block.id]!
       const before = source.slice(n.startIndex, value.start).trimEnd()
       const init = before.endsWith('=') ? n.startIndex + before.length - 1 : value.start
-      r.fields.DECL = trim(n.startIndex, init)
+      r.fields.DECL = trim(nameStart, init)
       r.fields.INIT = { start: init, end: before.endsWith('=') ? init + 1 : init }
     }
     if (type === 'annotation') {
@@ -71,10 +84,10 @@ export function attachSourceRecipes(result: CppPreview, source: string, nodes: M
       if (r.start < 0) throw new Error('无法定位调用参数注释。')
       r.fields.TEXT = { start: r.start, end: r.start + comment.length }
     }
-    if (type === 'call' || type === 'invoke' || type === 'list') {
+    if (type === 'call' || type === 'library_call' || type === 'action' || type === 'invoke' || type === 'list') {
       const args = type === 'list' ? n : field('arguments')!
       r.arguments = { start: args.startIndex + 1, end: args.endIndex - 1 }
-      if (type === 'call') r.fields.NAME = span(field('function')!)
+      if (type === 'call' || type === 'library_call' || type === 'action') r.fields.NAME = span(field('function')!)
       if (type === 'list') { r.fields.OPEN = { start: n.startIndex, end: n.startIndex + 1 }; r.fields.CLOSE = { start: n.endIndex - 1, end: n.endIndex } }
     }
     if (type === 'if') {
@@ -82,7 +95,7 @@ export function attachSourceRecipes(result: CppPreview, source: string, nodes: M
       const alternative = field('alternative')
       if (alternative) r.inputs.ELSE = { ...trim(alternative.startIndex + 4, alternative.endIndex), kind: 'body' }
     }
-    if (type === 'container') {
+    if (type === 'container' || type === 'case') {
       if (content) {
         r.fields.HEADER = trim(n.startIndex, content.startIndex)
         r.fields.FOOTER = trim(content.endIndex, n.endIndex)

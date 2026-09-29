@@ -61,15 +61,21 @@ type PackageManifest = {
   readonly dependencies?: Record<string, string>
   readonly devDependencies?: Record<string, string>
   readonly optionalDependencies?: Record<string, string>
+  readonly nickname?: string
+  readonly nickname_zh_cn?: string
 }
 
 type ReadProjectTextFile = (relPath: string) => Promise<string | undefined>
 
+export interface InstalledAilyLibraryPackage {
+  readonly relPath: string
+  readonly manifest: PackageManifest & { readonly name: string }
+}
+
 /** Map the current dependency graph; stale node_modules left by a board switch are not active libraries. */
-export async function listAilyLibraryProjections(
-  readDirectory: ReadProjectDirectory,
+export async function listInstalledAilyLibraryPackages(
   readTextFile: ReadProjectTextFile
-): Promise<AilyLibraryProjection[]> {
+): Promise<InstalledAilyLibraryPackage[]> {
   const manifests = new Map<string, Promise<PackageManifest | undefined>>()
   const readManifest = (relPath: string): Promise<PackageManifest | undefined> => {
     let pending = manifests.get(relPath)
@@ -90,7 +96,7 @@ export async function listAilyLibraryProjections(
   const dependencies = { ...project.dependencies, ...project.devDependencies, ...project.optionalDependencies }
   const pending = Object.keys(dependencies).filter(name => LIBRARY_PACKAGE.test(name))
     .map(name => ({ name, relPath: `node_modules/${name}` }))
-  const projections: AilyLibraryProjection[] = []
+  const packages: InstalledAilyLibraryPackage[] = []
   const visitedPackages = new Set<string>()
   for (let index = 0; index < pending.length && visitedPackages.size < 200; index++) {
     const item = pending[index]!
@@ -98,10 +104,7 @@ export async function listAilyLibraryProjections(
     visitedPackages.add(item.relPath)
     const manifest = await readManifest(`${item.relPath}/package.json`)
     if (!manifest || manifest.name !== item.name) continue
-    const source = item.name.startsWith('@aily-project-coder/') ? 'arduino' : 'aily'
-    for (const root of await sourceRoots(readDirectory, item.relPath, item.name.split('/').at(-1)!)) {
-      projections.push({ ...root, packageName: item.name, source })
-    }
+    packages.push({ relPath: item.relPath, manifest: { ...manifest, name: item.name } })
     for (const name of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) {
       if (!LIBRARY_PACKAGE.test(name)) continue
       // Follow npm nearest-parent resolution instead of scanning every nested package.
@@ -115,6 +118,20 @@ export async function listAilyLibraryProjections(
         if (!parent) break
         parent = parent.includes('/') ? parent.slice(0, parent.lastIndexOf('/')) : ''
       }
+    }
+  }
+  return packages
+}
+
+export async function listAilyLibraryProjections(
+  readDirectory: ReadProjectDirectory,
+  readTextFile: ReadProjectTextFile
+): Promise<AilyLibraryProjection[]> {
+  const projections: AilyLibraryProjection[] = []
+  for (const { relPath, manifest } of await listInstalledAilyLibraryPackages(readTextFile)) {
+    const source = manifest.name.startsWith('@aily-project-coder/') ? 'arduino' : 'aily'
+    for (const root of await sourceRoots(readDirectory, relPath, manifest.name.split('/').at(-1)!)) {
+      projections.push({ ...root, packageName: manifest.name, source })
     }
   }
   const labelCounts = new Map<string, number>()

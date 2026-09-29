@@ -79,12 +79,39 @@ let retry: ReturnType<typeof setTimeout> | undefined
 let socket: WebSocket | undefined
 let languageClient: MonacoLanguageClient | undefined
 let disposed = false
+
+class ManagedLanguageClient extends MonacoLanguageClient {
+  protected override async handleConnectionClosed(): Promise<void> {
+    if (this.needsStop() && !this.isRunning()) {
+      // While Starting, start() returns the existing initialization promise.
+      // The base close handler clears that promise before start() can return it;
+      // observe its rejection before closing/disposal abandons it.
+      void super.start().catch(() => {})
+    }
+    await super.handleConnectionClosed()
+  }
+
+  override async stop(timeout?: number): Promise<void> {
+    // vscode-languageclient calls stop() without awaiting it when initialize
+    // fails. Its base implementation rejects in Starting/StartFailed states.
+    if (!this.isRunning()) return
+    try { await super.stop(timeout) }
+    catch { /* The closed transport already triggers connection cleanup. */ }
+  }
+}
+
+async function releaseConnection(client: MonacoLanguageClient | undefined, ws: WebSocket | undefined): Promise<void> {
+  try { await client?.dispose() }
+  catch { /* A failed initialization must not prevent the next connection. */ }
+  finally { ws?.close() }
+}
+
 async function connect(url: string): Promise<void> {
   const current = ++generation
   clearTimeout(retry)
   const previousSocket = socket; const previousClient = languageClient
   socket = undefined; languageClient = undefined
-  await previousClient?.dispose(); previousSocket?.close()
+  await releaseConnection(previousClient, previousSocket)
   if (disposed || current !== generation) return
   setLanguageServerState('connecting')
   try {
@@ -92,13 +119,14 @@ async function connect(url: string): Promise<void> {
     if (disposed || current !== generation) return
     const ws = new WebSocket(url); socket = ws
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { ws.close(); reject(new Error('language server timeout')) }, 8000)
+      // A clean machine may need to download and verify its managed clangd first.
+      const timer = setTimeout(() => { ws.close(); reject(new Error('language server timeout')) }, standaloneUrl ? 8000 : 300_000)
       ws.onopen = () => { clearTimeout(timer); resolve() }
       ws.onerror = ws.onclose = () => { clearTimeout(timer); reject(new Error('language server unavailable')) }
     })
     if (disposed || current !== generation) { ws.close(); return }
     const transports = { reader: new WebSocketMessageReader(toSocket(ws)), writer: new WebSocketMessageWriter(toSocket(ws)) }
-    const client = new MonacoLanguageClient({ id: params.get('lspClientId') ?? 'stdio-lsp', name: params.get('lspClientName') ?? 'C/C++ language service', clientOptions: buildClientOptions(), messageTransports: transports })
+    const client = new ManagedLanguageClient({ id: params.get('lspClientId') ?? 'stdio-lsp', name: params.get('lspClientName') ?? 'C/C++ language service', clientOptions: buildClientOptions(), messageTransports: transports })
     languageClient = client
     transports.reader.onClose(() => {
       if (current !== generation || disposed) return
@@ -106,6 +134,7 @@ async function connect(url: string): Promise<void> {
     })
     await client.start()
     if (current !== generation || disposed) return
+    if (!client.isRunning() || !client.initializeResult) throw new Error('language server initialization failed')
     attempt = 0; setLanguageServerState('ready', client.initializeResult?.capabilities.experimental?.ailyCompilationDatabase)
   } catch {
     if (current !== generation || disposed) return
@@ -129,6 +158,5 @@ window.addEventListener('message', receiveEndpoint)
 if (standaloneUrl) { endpoint = standaloneUrl; void connect(standaloneUrl) }
 window.addEventListener('pagehide', () => {
   disposed = true; generation++; clearTimeout(retry); window.removeEventListener('message', receiveEndpoint)
-  const previousSocket = socket
-  void Promise.resolve(languageClient?.dispose()).finally(() => previousSocket?.close())
+  void releaseConnection(languageClient, socket)
 }, { once: true })

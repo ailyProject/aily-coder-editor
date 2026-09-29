@@ -33,7 +33,7 @@ function within(path: string, root: string): boolean {
   return path === root || path.startsWith(`${root}/`)
 }
 
-function withoutComments(code: string): string {
+export function maskCppComments(code: string): string {
   // Keep quoted include operands, but mask comments and multiline raw strings.
   return code.replace(/R"([^ ()\\\t\r\n]{0,16})\([\s\S]*?\)\1"|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\/\*[\s\S]*?(?:\*\/|$)|\/\/(?:\\\r?\n|[^\r\n])*/gu,
     token => token.startsWith('/') || token.startsWith('R"') ? token.replace(/[^\r\n]/gu, ' ') : token)
@@ -41,7 +41,7 @@ function withoutComments(code: string): string {
 
 /** Literal includes and same-file object macros; conditional branches are conservative. */
 export function sourceIncludes(code: string): Omit<LibraryUsage, 'file'>[] {
-  const lines = withoutComments(code).split(/\r?\n/u)
+  const lines = maskCppComments(code).split(/\r?\n/u)
   const macros = new Map<string, string>()
   const includes: Omit<LibraryUsage, 'file'>[] = []
   for (let index = 0; index < lines.length; index++) {

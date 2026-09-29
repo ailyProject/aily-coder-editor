@@ -1,43 +1,116 @@
 .cpp-blockly-preview {
+  /* Match Aily's Blockly theme and toolbox pane, scoped to this editor. */
+  --cpp-workspace-bg: #262626;
+  --cpp-toolbox-bg: #3a3c3f;
+  --cpp-flyout-bg: #333333;
+  --cpp-category-selected: #62666c;
+  --cpp-search-bg: #2b2d30;
+  --cpp-toolbox-width: 164px;
+  --cpp-border: var(--vscode-panel-border, #454545);
   height: 100%; width: 100%; min-height: 0; overflow: hidden;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; container: cpp-editor / inline-size;
   color: var(--vscode-foreground); background: var(--vscode-editor-background);
   font: 12px var(--vscode-font-family, sans-serif);
 }
+.cpp-blockly-preview[data-theme="light"] {
+  --cpp-workspace-bg: #e8e8e8;
+  --cpp-toolbox-bg: #d6d6d6;
+  --cpp-flyout-bg: #e0e0e0;
+  --cpp-category-selected: #ededed;
+  --cpp-search-bg: #e8e8e8;
+  --cpp-border: var(--vscode-panel-border, #c8c8c8);
+}
 .cpp-blockly-toolbar {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-  padding: 10px 14px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0;
+  display: flex; align-items: center; gap: 14px; min-height: 44px;
+  box-sizing: border-box; padding: 6px 12px; border-bottom: 1px solid var(--cpp-border); flex-shrink: 0;
 }
-.cpp-blockly-toolbar strong { font-weight: 600; margin-right: 5px; }
-.cpp-blockly-badge { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-.cpp-blockly-actions { margin-left: auto; display: flex; gap: 6px; }
-.cpp-blockly-scope { min-width: 150px; max-width: 300px; flex: 1; font: inherit; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border); padding: 5px; border-radius: 4px; }
+.cpp-blockly-identity { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; }
+.cpp-blockly-identity > svg { flex-shrink: 0; color: var(--vscode-descriptionForeground); }
+.cpp-blockly-identity strong { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.cpp-blockly-badge { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--vscode-testing-iconPassed, #64aa83); }
+.cpp-blockly-badge[data-dirty="true"] { background: var(--vscode-editorWarning-foreground, #d9a441); }
+.cpp-blockly-scope {
+  min-width: 110px; width: 210px; max-width: 290px; flex: 0 1 210px; height: 30px;
+  font: inherit; color: var(--vscode-foreground); background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-dropdown-border, var(--cpp-border)); padding: 0 25px 0 9px; border-radius: 5px;
+}
+.cpp-blockly-actions { margin-left: auto; display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+.cpp-blockly-action-group { display: flex; align-items: center; gap: 2px; }
+.cpp-blockly-action-group + .cpp-blockly-action-group { padding-left: 8px; border-left: 1px solid var(--cpp-border); }
 .cpp-blockly-preview button {
-  font: inherit; color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, transparent);
-  border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 5px 9px; cursor: pointer;
+  font: inherit; color: var(--vscode-foreground); background: transparent;
+  border: 1px solid var(--cpp-border); border-radius: 5px; padding: 5px 9px; cursor: pointer;
 }
-.cpp-blockly-preview button:hover { background: var(--vscode-list-hoverBackground); }
-.cpp-blockly-preview button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
-.cpp-blockly-status { padding: 8px 14px; color: var(--vscode-descriptionForeground); line-height: 1.6; flex-shrink: 0; }
-.cpp-blockly-status[data-state="error"] { color: var(--vscode-errorForeground); }
-.cpp-blockly-canvas { flex: 1; min-height: 120px; width: 100%; position: relative; }
-.cpp-blockly-canvas .blocklySvg { background: transparent; }
-.cpp-blockly-inspector { flex-shrink: 0; max-height: 35%; overflow: auto; border-top: 1px solid var(--vscode-panel-border); padding: 8px 14px; }
-.cpp-blockly-inspector summary { cursor: pointer; line-height: 24px; }
-.cpp-blockly-inspector pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--vscode-editor-font-family, monospace); margin: 8px 0; }
-.cpp-blockly-outline { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 0; }
-.cpp-blockly-diagnostics { margin: 0; padding: 0; list-style: none; }
-.cpp-blockly-diagnostics button { text-align: left; border: 0; width: 100%; }
-.cpp-blockly-empty { position: absolute; inset: 0; display: grid; place-content: center; color: var(--vscode-descriptionForeground); pointer-events: none; }
-.cpp-blockly-actions { flex: 1 0 100%; flex-wrap: wrap; margin-left: 0; gap: 5px; }
-.cpp-blockly-preview button:disabled { opacity: .45; cursor: default; }
+.cpp-blockly-preview button:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground, #8883); }
+.cpp-blockly-preview :focus { outline: none !important; box-shadow: none !important; }
+.cpp-blockly-preview :is(button, summary, select, input, textarea, [role="button"], .blocklyToolboxCategory):focus-visible { outline: 1px solid var(--vscode-foreground, #aaa) !important; outline-offset: -2px; }
+.cpp-blockly-preview .blocklySvg:focus { outline: none !important; }
+.cpp-blockly-quick-menu button:focus { outline: none !important; box-shadow: none !important; }
+.cpp-blockly-quick-menu button:focus-visible { outline: 1px solid var(--vscode-foreground, #aaa) !important; outline-offset: -2px; }
+.cpp-blockly-canvas .injectionDiv { --blockly-active-node-color: #c6c6c6; --blockly-active-tree-color: transparent; }
+.cpp-blockly-preview button:disabled { opacity: .35; cursor: default; }
 .cpp-blockly-preview button[hidden] { display: none; }
-.cpp-blockly-preview .cpp-blockly-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); margin-left: auto; }
+.cpp-blockly-preview .cpp-blockly-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 6px; border: 0; flex-shrink: 0; }
+.cpp-blockly-toolbar svg, .cpp-toolbox-icon svg, .cpp-toolbox-search svg { width: 18px; height: 18px; display: block; }
+.cpp-blockly-preview .cpp-blockly-primary:not(:disabled) { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.cpp-blockly-preview .cpp-blockly-primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+.cpp-blockly-status { padding: 5px 12px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 18px; flex-shrink: 0; border-top: 1px solid var(--cpp-border); }
+.cpp-blockly-status[data-state="error"] { color: var(--vscode-errorForeground); }
+.cpp-blockly-canvas { flex: 1; min-height: 120px; width: 100%; position: relative; background: var(--cpp-workspace-bg); }
+.cpp-blockly-canvas .blocklySvg { background: var(--cpp-workspace-bg); }
+.cpp-blockly-inspector { display: flex; flex-wrap: wrap; gap: 0 20px; flex-shrink: 0; max-height: 35%; overflow: auto; padding: 0 12px 4px; }
+.cpp-blockly-inspector details[open] { flex: 1 0 100%; min-width: 0; }
+.cpp-blockly-inspector summary { cursor: pointer; line-height: 24px; color: var(--vscode-descriptionForeground); }
+.cpp-blockly-diagnostics:empty { display: none; }
+.cpp-blockly-diagnostics { flex: 1 0 100%; }
+.cpp-blockly-diagnostics button { text-align: left; border: 0; width: 100%; }
 .cpp-blockly-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; padding: 6px 0; }
 .cpp-blockly-fields label { display: flex; flex: 1 1 140px; gap: 4px; flex-direction: column; color: var(--vscode-descriptionForeground); }
-.cpp-blockly-fields textarea, .cpp-blockly-code { box-sizing: border-box; width: 100%; resize: vertical; padding: 6px; font: 12px/1.4 var(--vscode-editor-font-family, monospace); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); }
+.cpp-blockly-fields textarea, .cpp-blockly-fields select, .cpp-blockly-code { box-sizing: border-box; width: 100%; resize: vertical; padding: 6px; font: 12px/1.4 var(--vscode-editor-font-family, monospace); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--cpp-border)); }
 .cpp-blockly-fields textarea:focus, .cpp-blockly-code:focus { outline: 1px solid var(--vscode-focusBorder); }
 .cpp-blockly-code { height: 130px; white-space: pre; }
 .cpp-blockly-code-error { color: var(--vscode-errorForeground); }
-.cpp-blockly-canvas .blocklyTreeRow { padding: 5px 8px 5px 3px; height: auto; }
-.cpp-blockly-canvas .blocklyTreeLabel { font: 12px var(--vscode-font-family, sans-serif); }
+/* Aily toolbox: icon + label, 40px rows, neutral full-row selection. */
+.cpp-blockly-canvas .blocklyToolbox { width: var(--cpp-toolbox-width); box-sizing: border-box; padding: 50px 0 0; background: var(--cpp-toolbox-bg); border-right: 1px solid var(--cpp-border); scrollbar-width: thin; scrollbar-color: #7777 transparent; overflow-x: hidden; }
+.cpp-blockly-canvas .blocklyToolboxCategoryGroup { padding: 0; }
+.cpp-blockly-canvas .blocklyToolboxCategory { height: 40px; box-sizing: border-box; display: flex; align-items: center; width: 100%; padding: 0 10px 0 5px; margin: 0; border: 0 !important; cursor: pointer; transition: background-color .15s ease; }
+.cpp-blockly-canvas .blocklyToolboxCategory:hover { background: color-mix(in srgb, var(--vscode-list-hoverBackground, #888888) 50%, var(--cpp-toolbox-bg)) !important; }
+.cpp-blockly-canvas .blocklyToolboxCategory.blocklyToolboxSelected { background: var(--cpp-category-selected) !important; }
+.cpp-blockly-canvas .blocklyTreeRowContentContainer { display: flex; align-items: center; width: 100%; }
+.cpp-blockly-canvas .cpp-toolbox-icon { display: inline-flex; flex: 0 0 36px; align-items: center; justify-content: center; color: var(--vscode-foreground); }
+.cpp-blockly-canvas .blocklyToolboxCategoryLabel { font: 14px var(--vscode-font-family, sans-serif); color: var(--vscode-foreground) !important; padding: 0; }
+.cpp-blockly-canvas .blocklyTreeRowContentContainer { min-width: 0; }
+.cpp-blockly-canvas .blocklyToolboxCategoryLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cpp-toolbox-search { position: absolute; z-index: 71; top: 10px; left: 10px; width: calc(var(--cpp-toolbox-width) - 20px); height: 30px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 15px; background: var(--cpp-search-bg); color: var(--vscode-descriptionForeground); }
+.cpp-toolbox-search svg { width: 14px; height: 14px; flex-shrink: 0; }
+.cpp-toolbox-search input { min-width: 0; width: 100%; padding: 0; border: 0; background: transparent; outline: none; color: var(--vscode-foreground); font: 12px var(--vscode-font-family, sans-serif); }
+.cpp-toolbox-search:focus-within { outline: 1px solid var(--vscode-focusBorder); }
+.cpp-toolbox-empty { color: var(--vscode-descriptionForeground); padding: 15px 10px; text-align: center; }
+/* Only decorations created by this Coder pane use these names. */
+.monaco-editor .cpp-blockly-source-highlight { background: var(--vscode-editor-findMatchHighlightBackground, #d7ba7d33); }
+.monaco-editor .cpp-blockly-source-gutter { border-left: 3px solid var(--vscode-editorWarning-foreground, #d7ba7d); }
+@container cpp-editor (max-width: 680px) {
+  .cpp-blockly-toolbar { gap: 8px; padding: 6px 8px; }
+  .cpp-blockly-identity strong { max-width: 105px; }
+  .cpp-blockly-actions { gap: 4px; }
+  .cpp-blockly-action-group + .cpp-blockly-action-group { padding-left: 4px; }
+  .cpp-blockly-scope { width: 140px; flex-basis: 140px; }
+}
+@container cpp-editor (max-width: 510px) {
+  .cpp-blockly-toolbar { flex-wrap: wrap; }
+  .cpp-blockly-scope { margin-left: auto; flex-grow: 1; max-width: none; }
+  .cpp-blockly-actions { flex: 1 0 100%; justify-content: flex-end; }
+  .cpp-blockly-action-group:first-child { margin-right: auto; }
+  .cpp-blockly-canvas { --cpp-toolbox-width: 132px; }
+}
+.cpp-blockly-preview .cpp-blockly-field-help { flex: 1 1 100%; margin: 4px 0 10px; color: var(--vscode-descriptionForeground, #aaa); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.cpp-blockly-dropdown .blocklyMenu {
+  scrollbar-width: thin; scrollbar-color: var(--vscode-scrollbarSlider-background, #79797966) transparent;
+  overscroll-behavior: contain; scroll-behavior: auto; color: var(--vscode-dropdown-foreground, #ddd);
+}
+.cpp-blockly-dropdown .blocklyMenu::-webkit-scrollbar { width: 8px; height: 8px; }
+.cpp-blockly-dropdown .blocklyMenu::-webkit-scrollbar-track { background: transparent; }
+.cpp-blockly-dropdown .blocklyMenu::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 4px; background: var(--vscode-scrollbarSlider-background, #79797966); background-clip: padding-box; }
+.cpp-blockly-dropdown .blocklyMenu::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground, #646464b3); }
+.cpp-blockly-dropdown .blocklyMenuItem { color: var(--vscode-dropdown-foreground, #ddd); padding-top: 6px; padding-bottom: 6px; }
+.cpp-blockly-dropdown .blocklyMenuItemHighlight { background: var(--vscode-list-hoverBackground, #ffffff14); color: var(--vscode-list-hoverForeground, #fff); }

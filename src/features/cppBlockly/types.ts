@@ -4,7 +4,7 @@ export interface PreviewBlock {
   fields?: Record<string, string>
   inputs?: Record<string, { block: PreviewBlock }>
   next?: { block: PreviewBlock }
-  extraState?: { count: number }
+  extraState?: { count: number; parameters?: string[] }
   data?: string
   x?: number
   y?: number
@@ -28,6 +28,7 @@ export interface SourceLocation {
   endLine: number
   endColumn: number
   text: string
+  precise?: boolean
 }
 
 export interface PreviewDiagnostic extends SourceLocation {
