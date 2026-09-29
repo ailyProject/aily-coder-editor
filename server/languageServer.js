@@ -10,6 +10,12 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { resolveCoderLanguageConfig } from './languageServerConfig.js'
 
 const MAX_BYTES = 8 * 1024 * 1024
+
+/** realpath keeps the requested drive-letter case on Windows, so `C:\` and `c:\` are the same workspace. */
+export function sameWorkspace(left, right) {
+  return path.relative(left, right) === ''
+}
+
 export function attachCoderLanguageServer(server, token, options = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BYTES })
   const clients = new Map()
@@ -88,7 +94,8 @@ export function attachCoderLanguageServer(server, token, options = {}) {
       try {
         const message = JSON.parse(raw.toString())
         if (!initialized) {
-          if (message.method !== 'initialize' || realpathSync(fileURLToPath(message.params?.rootUri)) !== root) throw new Error('workspace mismatch')
+          const requested = realpathSync(fileURLToPath(message.params?.rootUri))
+          if (message.method !== 'initialize' || !sameWorkspace(requested, root)) throw new Error('workspace mismatch')
           initialized = true
           initializeId = message.id
         }
