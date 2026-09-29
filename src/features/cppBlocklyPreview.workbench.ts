@@ -1,7 +1,7 @@
-import { createInstance, EditorInput, IEditorService, StandaloneServices, type IEditorGroup } from '@codingame/monaco-vscode-api'
+import { createInstance, EditorInput, IEditorService, StandaloneServices, type IEditorGroup, type IInstantiationService } from '@codingame/monaco-vscode-api'
 import { URI } from '@codingame/monaco-vscode-api/vscode/vs/base/common/uri'
 import { ExtensionHostKind, registerExtension } from '@codingame/monaco-vscode-api/extensions'
-import { registerEditorPane, SimpleEditorInput, SimpleEditorPane } from '@codingame/monaco-vscode-workbench-service-override'
+import { registerEditorPane, registerEditorSerializer, SimpleEditorInput, SimpleEditorPane, type IEditorSerializer } from '@codingame/monaco-vscode-workbench-service-override'
 import type * as vscode from 'vscode'
 import * as monaco from 'monaco-editor'
 import { Emitter } from '@codingame/monaco-vscode-api/vscode/vs/base/common/event'
@@ -133,12 +133,14 @@ class CppPreviewInput extends SimpleEditorInput {
       await this.showDraftDiff()
     } finally { this.applying = false }
   }
+  async saveFromPreview(): Promise<boolean> {
+    if (this.session.dirty) await this.apply()
+    const api = await getApi(), doc = await api.workspace.openTextDocument(api.Uri.parse(this.source.toString()))
+    return doc.save()
+  }
   override async save(): Promise<EditorInput | undefined> {
-    try {
-      if (this.session.dirty) await this.apply()
-      const api = await getApi(), doc = await api.workspace.openTextDocument(api.Uri.parse(this.source.toString()))
-      return await doc.save() ? this : undefined
-    } catch (error) { (await getApi()).window.showErrorMessage(String(error)); return undefined }
+    try { return await this.saveFromPreview() ? this : undefined }
+    catch (error) { (await getApi()).window.showErrorMessage(String(error)); return undefined }
   }
   override async revert(): Promise<void> {
     this.resetDraft()
@@ -226,6 +228,7 @@ class CppPreviewPane extends SimpleEditorPane {
       read: () => input.readDocument(),
       changed: dirty => input.setDirty(dirty),
       apply: () => input.apply(),
+      save: () => input.saveFromPreview(),
       syncDraft: (code, revision) => input.syncDraft(code, revision),
       isSyncedDraft: document => input.isSyncedDraft(document),
       resetDraft: () => input.resetDraft(),
@@ -268,6 +271,17 @@ class CppPreviewPane extends SimpleEditorPane {
 }
 
 registerEditorPane('aily-cpp-blockly-preview-pane', 'Blockly 转换预览', CppPreviewPane, [CppPreviewInput])
+registerEditorSerializer(CppPreviewPane.ID, class implements IEditorSerializer {
+  canSerialize(editor: EditorInput): boolean { return editor instanceof CppPreviewInput }
+  serialize(editor: CppPreviewInput): string { return JSON.stringify({ source: editor.source.toJSON() }) }
+  deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
+    try {
+      const { source: serializedSource } = JSON.parse(serializedEditor) as { source?: ReturnType<URI['toJSON']> }
+      const source = URI.revive(serializedSource)
+      return source && isCppPreviewFile(source.path) ? instantiationService.createInstance(CppPreviewInput, source) : undefined
+    } catch { return undefined }
+  }
+})
 
 void getApi().then(api => {
   api.workspace.registerTextDocumentContentProvider('aily-cpp-saved', {

@@ -1,6 +1,6 @@
 import { Blockly, registerCppPreviewBlocks, updateFunctionDisplay } from './blocks.js'
 import { indexBlocks, mergeScope } from './generator.js'
-import { loadCppSession, parseCppAsync, sessionCode, sessionRoots, type CppEditSession, type PreviewDocument } from './editorSession.js'
+import { loadCppSession, parseCppAsync, sessionCode, sessionRoots, type CppEditSession, type CppViewport, type PreviewDocument } from './editorSession.js'
 import { previewError, type PreviewBlock, type SourceLocation } from './types.js'
 import { cppQuickActions } from './quickItems.js'
 import { cppToolbox } from './toolbox.js'
@@ -15,12 +15,14 @@ import { signatureLabel } from './beginnerCatalog.js'
 import { onCppFieldFocus } from './fieldFocus.js'
 import { fieldSourceLocation, parsedBlockId } from './fieldLocation.js'
 import { annotateLibraryCalls, setLibraryEntries, type LibraryEntry } from './librarySelection.js'
+import { rebaseProjection } from './rebaseProjection.js'
 
 export interface PreviewHost {
   name: string
   session: CppEditSession
   read(): Promise<PreviewDocument>
   apply(): Promise<void>
+  save(): Promise<boolean>
   syncDraft(code: string, revision: number): Promise<void>
   isSyncedDraft(document: PreviewDocument): boolean
   resetDraft(): void
@@ -34,6 +36,8 @@ export interface PreviewHost {
   libraryHeaders(library: ProjectLibrary): Promise<LibraryHeaders>
   onLibrariesChange(refresh: () => void): { dispose(): void }
 }
+
+let focusedPreviewWidget: HTMLElement | undefined
 
 export function mountCppPreview(container: HTMLElement, host: PreviewHost): { dispose(): void } {
   registerCppPreviewBlocks(); registerCppToolbox()
@@ -88,14 +92,15 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   let disposed = false, loading = false, applying = false, conflict = false, revision = 0, liveSynced = false, syncedCode: string | undefined
   let libraryRevision = 0, libraryParse: ReturnType<typeof parseLibraryAsync> | undefined, libraryTimer: ReturnType<typeof setTimeout> | undefined
   let annotationTimer: ReturnType<typeof setTimeout> | undefined
-  let currentLibraryEntries: LibraryEntry[] = []
+  let currentLibraryEntries: LibraryEntry[] = session.libraryEntries ?? []
+  setLibraryEntries(workspace, currentLibraryEntries)
   const annotateCalls = (): void => {
     clearTimeout(annotationTimer)
     if (disposed || !session.original || !session.source || session.dirty || !currentLibraryEntries.length) return
     if (workspace.isDragging() || Blockly.WidgetDiv.isVisible() || Blockly.DropDownDiv.getOwner()) { annotationTimer = setTimeout(annotateCalls, 150); return }
     const baseline = annotateLibraryCalls(session.original.blocks.blocks, session.source.text, currentLibraryEntries)
     const roots = annotateLibraryCalls(session.roots, session.source.text, currentLibraryEntries)
-    if (baseline || roots) show()
+    if (baseline || roots) show(captureViewport())
   }
   const librariesNotice = (text: string): Blockly.utils.toolbox.StaticCategoryInfo => ({ kind: 'cppCategory', id: 'cpp-libraries', name: '项目库', contents: [{ kind: 'label', text }] } as Blockly.utils.toolbox.StaticCategoryInfo)
   async function refreshLibraries(): Promise<void> {
@@ -105,10 +110,14 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     try {
       const libraries = await host.libraries()
       if (!current()) return
-      const entries: LibraryEntry[] = libraries.map(library => ({ library }))
+      const entries: LibraryEntry[] = libraries.map(library => {
+        const previous = currentLibraryEntries.find(entry => entry.library.id === library.id && entry.library.version === library.version)
+        return { library, api: previous?.api }
+      })
       currentLibraryEntries = entries
+      session.libraryEntries = entries
       setLibraryEntries(workspace, entries)
-      const categories = libraries.map(library => libraryCategory(library))
+      const categories = entries.map(entry => libraryCategory(entry.library, entry.api))
       toolboxSearch.update(categories.length ? categories : [librariesNotice('当前项目暂无已安装的库')])
       // One parser at a time keeps large library sets from flooding the UI thread.
       for (const [index, library] of libraries.entries()) {
@@ -120,6 +129,7 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
           if (!current()) return
           entries[index] = { library, api }
           currentLibraryEntries = entries
+          session.libraryEntries = entries
           setLibraryEntries(workspace, entries)
           categories[index] = libraryCategory(library, api, headers.notices)
           annotateCalls()
@@ -142,16 +152,22 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   let selectedId: string | undefined, shownScope = session.scope
   let activeField: { blockId: string; name: string } | undefined
   let fieldParse: ReturnType<typeof parseCppAsync> | undefined, fieldFocusRevision = 0
+  let lastCapturedCode: string | undefined
   let sourceCursor: SourcePosition | undefined
   let selectedLocation: SourceLocation | undefined
+  let sourceIds = new Map<string, string>()
+  let workspaceIds = new Map<string, string>()
+  const sourceId = (id: string): string => sourceIds.get(id) ?? id
+  const workspaceId = (id: string): string => workspaceIds.get(id) ?? id
   const highlightField = (block: Blockly.Block, name: string): void => {
+    focusedPreviewWidget = container
     activeField = { blockId: block.id, name }
     const focus = ++fieldFocusRevision
     fieldParse?.cancel()
     if (conflict || !session.source || !session.original) return
     let currentCode: string
-    try { currentCode = sessionCode(session) } catch { host.highlight(fieldSourceLocation(session.source.text, session.original, block.id, name)); return }
-    if (currentCode === session.source.text) { host.highlight(fieldSourceLocation(session.source.text, session.original, block.id, name)); return }
+    try { currentCode = sessionCode(session) } catch { host.highlight(fieldSourceLocation(session.source.text, session.original, sourceId(block.id), name)); return }
+    if (currentCode === session.source.text) { host.highlight(fieldSourceLocation(session.source.text, session.original, sourceId(block.id), name)); return }
     host.highlight()
     fieldParse = parseCppAsync(currentCode)
     void fieldParse.promise.then(result => {
@@ -180,13 +196,18 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   }
   const capture = (): void => {
     if (loading || disposed || !session.original) return
+    let previousCode = lastCapturedCode
+    if (previousCode === undefined) { try { previousCode = sessionCode(session) } catch { /* An incomplete draft has no prior code. */ } }
     const state = Blockly.serialization.workspaces.save(workspace)
     session.view = (state.blocks?.blocks ?? []) as PreviewBlock[]
     // Scope roots are pinned only for navigation, never persisted as immutable.
     if (session.scope && session.view[0]) { delete (session.view[0] as PreviewBlock & {movable?: boolean}).movable; delete (session.view[0] as PreviewBlock & {deletable?: boolean}).deletable }
-    session.revision++
-    try { const currentCode = sessionCode(session); session.dirty = currentCode !== session.source?.text; liveSynced = currentCode === syncedCode }
-    catch { session.dirty = true; liveSynced = false }
+    try {
+      const currentCode = sessionCode(session)
+      if (currentCode !== previousCode) session.revision++
+      lastCapturedCode = currentCode
+      session.dirty = currentCode !== session.source?.text; liveSynced = currentCode === syncedCode
+    } catch { session.revision++; lastCapturedCode = undefined; session.dirty = true; liveSynced = false }
     host.changed(session.dirty); summary()
     if (generated.open) previewCode()
   }
@@ -194,6 +215,27 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     try { code.value = sessionCode(session); code.classList.remove('cpp-blockly-code-error') }
     catch (error) { code.value = error instanceof Error ? error.message : String(error); code.classList.add('cpp-blockly-code-error') }
   }
+  let shortcutSaving = false, saveTimer: ReturnType<typeof setTimeout> | undefined
+  const saveShortcut = (event: KeyboardEvent): void => {
+    if (event.key.toLowerCase() !== 's' || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+    const widget = Blockly.WidgetDiv.getDiv()
+    const path = event.composedPath()
+    const editingBlockField = !!widget && path.includes(widget) && focusedPreviewWidget === container
+    if (!path.includes(container) && !editingBlockField) return
+    event.preventDefault(); event.stopImmediatePropagation()
+    if (shortcutSaving) return
+    shortcutSaving = true
+    if (editingBlockField) Blockly.WidgetDiv.hide()
+    if (syncTimer) { clearTimeout(syncTimer); syncTimer = undefined }
+    // Blockly queues the final field-change event when its editor closes.
+    saveTimer = setTimeout(() => {
+      saveTimer = undefined
+      if (disposed) return
+      capture()
+      void host.save().then(saved => { if (!saved) fail('保存未完成，请重试。') }).catch(fail).finally(() => { shortcutSaving = false })
+    }, 0)
+  }
+  window.addEventListener('keydown', saveShortcut, true)
   const syncField = (): void => {
     if (loading || disposed || conflict || !session.original) return
     if (syncTimer) clearTimeout(syncTimer)
@@ -227,11 +269,11 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   const showProperties = (block?: Blockly.Block): void => {
     if (selectedId && selectedId !== block?.id) workspace.getBlockById(selectedId)?.removeSelect()
     fields.replaceChildren(); selectedId = block?.id
-    selectedLocation = block && session.original?.locations[block.id]
+    selectedLocation = block && session.original?.locations[sourceId(block.id)]
     if (!block) return
     const help = block.getTooltip()
     if (help) fields.append(element('p', 'cpp-blockly-field-help', help))
-    const location = session.original?.locations[block.id]
+    const location = session.original?.locations[sourceId(block.id)]
     if (location) button(fields, `定位源码 L${location.line}`, () => reveal(location))
     const names: Record<string, string> = { TYPE: block.type === 'cpp_preview_function' ? '返回类型' : '数据类型', QUALIFIERS: block.type === 'cpp_preview_function' ? '函数修饰符' : '变量用途', TEXT: block.type === 'cpp_preview_text' ? '文字内容' : '值 / 原文', NAME: block.type === 'cpp_preview_action' ? '操作方式' : '函数名', LIBRARY: '项目库', METHOD: '调用方法', RECEIVER: '对象名', SIGNATURE: '函数定义', PARAMETERS: '函数参数', SUFFIX: '函数后缀', DECL: '变量名称 / 数组', OP: '运算方式', MODE: '循环方式', COUNTER: '计数变量', BEFORE: '前缀', AFTER: '后缀', HEADER: '完整 C++ 规则', FOOTER: '结束规则', CODE: '完整数据', MEMBER: '成员', OPEN: '开始符号', CLOSE: '结束符号' }
     for (const input of block.inputList) for (const field of input.fieldRow) {
@@ -265,14 +307,15 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     if (conflict) { host.highlight(); return }
     // New draft blocks have no source yet; show their nearest mapped container.
     let location: SourceLocation | undefined
-    for (let current = block; current && !location; current = current.getSurroundParent() ?? undefined) location = session.original?.locations[current.id]
+    for (let current = block; current && !location; current = current.getSurroundParent() ?? undefined) location = session.original?.locations[sourceId(current.id)]
     host.highlight(location)
   }
   const selectSource = (position: SourcePosition): void => {
     sourceCursor = position
+    activeField = undefined; ++fieldFocusRevision; fieldParse?.cancel()
     if (disposed || loading || conflict || !session.original) return
     const id = blockAtPosition(session.original.locations, position)
-    let block = id ? workspace.getBlockById(id) : null
+    let block = id ? workspace.getBlockById(workspaceId(id)) : null
     if (id && !block && session.scope) {
       try {
         capture(); session.roots = mergeScope(session.roots, shownScope, session.view ?? [])
@@ -296,8 +339,16 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     if (session.scope && !current.has(session.scope)) session.scope = ''
     scope.value = session.scope; scope.disabled = session.original?.status === 'error'
   }
-  const show = (): void => {
+  const captureViewport = (): CppViewport => ({
+    scale: workspace.scale, x: workspace.scrollX, y: workspace.scrollY,
+    roots: workspace.getTopBlocks(false).map(block => block.getRelativeToSurfaceXY())
+  })
+  const show = (viewport?: CppViewport): void => {
     activeField = undefined; ++fieldFocusRevision; fieldParse?.cancel()
+    lastCapturedCode = undefined
+    selectedId = undefined; selectedLocation = undefined
+    sourceIds.clear(); workspaceIds.clear()
+    host.highlight()
     loading = true
     try {
       if (session.original && session.source && !session.dirty) {
@@ -312,11 +363,16 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
       Blockly.serialization.workspaces.load({blocks: { languageVersion: 0, blocks: roots }}, workspace)
       for (const block of workspace.getAllBlocks(false)) updateFunctionDisplay(block)
       if (selected) { const block = workspace.getBlockById(selected.id); block?.setDeletable(false); block?.setMovable(false) }
-      if (!session.view) {
+      if (viewport || !session.view) {
         let y = 24
-        for (const root of roots) {
+        for (const [index, root] of roots.entries()) {
           const block = workspace.getBlockById(root.id)
-          if (block) { block.moveBy(24 - block.getRelativeToSurfaceXY().x, y - block.getRelativeToSurfaceXY().y); y += block.getHeightWidth().height + 36 }
+          if (block) {
+            const position = block.getRelativeToSurfaceXY()
+            const target = viewport?.roots[index] ?? {x: 24, y}
+            block.moveBy(target.x - position.x, target.y - position.y)
+            y += block.getHeightWidth().height + 36
+          }
         }
       }
       for (const b of workspace.getAllBlocks(false)) {
@@ -327,8 +383,50 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
     } catch(error) { fail(error) }
     finally { Blockly.Events.enable(); loading = false }
     Blockly.svgResize(workspace)
-    if (!session.view) { workspace.zoomToFit(); if (workspace.scale < 0.65) { workspace.setScale(0.85); workspace.scroll(0, 0) } }
+    if (viewport) { workspace.setScale(viewport.scale); workspace.scroll(viewport.x, viewport.y) }
+    else if (!session.view) { workspace.zoomToFit(); if (workspace.scale < 0.65) { workspace.setScale(0.85); workspace.scroll(0, 0) } }
     summary(); if (generated.open) previewCode()
+  }
+  const rebaseVisible = (): boolean => {
+    if (!session.original || !session.source || session.scope || session.original.status === 'error') return false
+    annotateLibraryCalls(session.original.blocks.blocks, session.source.text, currentLibraryEntries)
+    annotateLibraryCalls(session.roots, session.source.text, currentLibraryEntries)
+    const visible = Blockly.serialization.workspaces.save(workspace).blocks?.blocks as PreviewBlock[] | undefined
+    const rebased = visible && rebaseProjection(visible, session.original.blocks.blocks)
+    if (!rebased) return false
+    try {
+      if (sessionCode({...session, view: rebased.view}) !== session.source.text) return false
+    } catch { return false }
+    const rebasedBlocks = indexBlocks(rebased.view)
+    Blockly.Events.disable()
+    try {
+      for (const [id, source] of rebased.sourceIds) {
+        const block = workspace.getBlockById(id)
+        if (block) {
+          const updated = rebasedBlocks.get(id)
+          block.data = updated?.data ?? null
+          for (const [name, value] of Object.entries(updated?.fields ?? {})) {
+            const field = block.getField(name)
+            if (field && field.getValue() !== value) field.setValue(value)
+          }
+          const location = session.original.locations[source]
+          if (location) block.setTooltip(`第 ${location.line} 行 · 在下方属性中查看完整值或定位源码`)
+        }
+      }
+    } finally { Blockly.Events.enable() }
+    sourceIds = rebased.sourceIds
+    workspaceIds = new Map([...sourceIds].map(([id, source]) => [source, id]))
+    session.view = rebased.view
+    lastCapturedCode = session.source.text
+    workspace.clearUndo()
+    if (selectedId) selectedLocation = session.original.locations[sourceId(selectedId)]
+    summary(); if (generated.open) previewCode()
+    const selected = selectedId && workspace.getBlockById(selectedId)
+    const focused = activeField && workspace.getBlockById(activeField.blockId)
+    if (focused && activeField) highlightField(focused, activeField.name)
+    else if (selected) highlightBlock(selected)
+    else host.highlight()
+    return true
   }
   workspace.addChangeListener(event => {
     if (disposed || loading) return
@@ -343,8 +441,10 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
       capture()
       // Method selection can also resize arguments; sync the final event revision.
       syncField()
-      const id = 'blockId' in event && typeof event.blockId === 'string' ? event.blockId : selectedId
-      highlightBlock(id ? workspace.getBlockById(id) ?? undefined : undefined)
+      // Deserialization and async library annotation change fields too. Only an
+      // explicit selection or field focus should paint the source editor.
+      const selected = selectedId ? workspace.getBlockById(selectedId) : null
+      if (selected) highlightBlock(selected)
       // Inline field edits also refresh the complete-value inspector.
       if (selectedId && !fields.contains(container.getRootNode() instanceof ShadowRoot ? (container.getRootNode() as ShadowRoot).activeElement : document.activeElement)) showProperties(workspace.getBlockById(selectedId) ?? undefined)
     }
@@ -359,6 +459,7 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   }
   async function refresh(): Promise<void> {
     const id = ++revision
+    const viewport = session.original ? captureViewport() : undefined
     parse?.cancel(); loading = true; scope.disabled = true; apply.disabled = true
     status.textContent = '正在解析 C++…'; status.dataset.state = 'loading'
     const old = indexBlocks(session.roots).get(session.scope)
@@ -376,7 +477,7 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
         const matches = [...indexBlocks(session.roots).values()].filter(b => b.type === old.type && (b.fields?.SIGNATURE ?? b.fields?.HEADER) === (old.fields?.SIGNATURE ?? old.fields?.HEADER))
         session.scope = (matches.find(b => result.locations[b.id]?.text === oldLocation?.text) ?? matches.sort((a,b) => Math.abs((result.locations[a.id]?.line ?? 0) - (oldLocation?.line ?? 0)) - Math.abs((result.locations[b.id]?.line ?? 0) - (oldLocation?.line ?? 0)))[0])?.id ?? ''
       }
-      show()
+      show(viewport)
       if (sourceCursor) selectSource(sourceCursor)
     } catch(error) { if (!disposed && revision === id) { loadCppSession(session, {text:'',version:0,dirty:false}, previewError(String(error))); show() } }
     finally { if (revision === id) loading = false }
@@ -397,14 +498,22 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   const reset = host.onReset(() => {
     if (disposed) return
     const location = selectedLocation
+    const viewport = captureViewport()
     conflict = false; liveSynced = false; syncedCode = undefined
-    host.highlight()
-    if (session.original) { show(); if (location) { selectSource(location); highlightBlock(workspace.getBlockById(selectedId ?? '') ?? undefined) } }
+    if (session.original) {
+      if (rebaseVisible()) return
+      show(viewport)
+      if (location) {
+        const id = blockAtPosition(session.original.locations, location)
+        const block = id && workspace.getBlockById(id)
+        if (block) { block.select(); showProperties(block); highlightBlock(block) }
+      }
+    }
     else void refresh()
   })
   const resize = new ResizeObserver(() => { if (!disposed) Blockly.svgResize(workspace) }); resize.observe(canvas)
   if (session.original) {
-    show()
+    show(session.viewport)
     void host.read().then(current => {
       if (disposed) return
       if (session.dirty) { conflict = !host.isSyncedDraft(current) && (current.text !== session.source?.text || current.version !== session.source?.version); summary() }
@@ -414,7 +523,11 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
   } else void refresh()
   const cursor = host.onCursor(selectSource)
   return { dispose() {
+    session.viewport = captureViewport()
     capture(); disposed = true; ++revision; parse?.cancel(); fieldParse?.cancel(); stopFieldFocus(); if (timer) clearTimeout(timer); if (syncTimer) clearTimeout(syncTimer)
+    if (saveTimer) clearTimeout(saveTimer)
+    if (focusedPreviewWidget === container) focusedPreviewWidget = undefined
+    window.removeEventListener('keydown', saveShortcut, true)
     ++libraryRevision; libraryParse?.cancel(); clearTimeout(libraryTimer); clearTimeout(annotationTimer); librarySubscription.dispose(); toolboxSearch.dispose()
     host.highlight(); cursor.dispose(); subscription.dispose(); reset.dispose(); resize.disconnect(); workspace.dispose(); container.replaceChildren()
   } }

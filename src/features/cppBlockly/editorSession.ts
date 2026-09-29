@@ -1,7 +1,9 @@
 import { generateCpp, mergeScope } from './generator.js'
 import type { CppPreview, PreviewBlock } from './types.js'
+import type { LibraryEntry } from './librarySelection.js'
 
 export interface PreviewDocument { text: string; version: number; dirty: boolean }
+export interface CppViewport { scale: number; x: number; y: number; roots: Array<{x: number; y: number}> }
 export interface CppEditSession {
   source?: PreviewDocument
   original?: CppPreview
@@ -10,6 +12,8 @@ export interface CppEditSession {
   view?: PreviewBlock[]
   dirty: boolean
   revision: number
+  viewport?: CppViewport
+  libraryEntries?: LibraryEntry[]
 }
 export const createCppSession = (): CppEditSession => ({ roots: [], scope: '', dirty: false, revision: 0 })
 export function sessionRoots(session: CppEditSession): PreviewBlock[] {

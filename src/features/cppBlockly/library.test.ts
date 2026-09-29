@@ -13,6 +13,7 @@ import { convertCpp } from './converter.js'
 import { generateCpp } from './generator.js'
 import { annotateLibraryCalls, libraryMethodKey, setLibraryEntries } from './librarySelection.js'
 import { fieldSourceLocation, parsedBlockId } from './fieldLocation.js'
+import { rebaseProjection } from './rebaseProjection.js'
 import type { PreviewBlock } from './types.js'
 
 let parser: Parser
@@ -96,6 +97,31 @@ test('library and method dropdowns update the call, arguments and header; import
     const imported = roots[1]!.inputs!.BODY!.block.inputs!.VALUE!.block
     assert.equal(imported.type, 'cpp_preview_library_call')
     assert.equal(libraryBlockInfo(imported.data)?.header, 'Sensor.h')
+  } finally { workspace.dispose() }
+})
+
+test('saving a field edit keeps annotated library blocks in the live workspace', async () => {
+  const demo: ProjectLibrary = {id: 'sketch/libraries/Demo', roots: ['sketch/libraries/Demo'], name: 'Demo', version: '1'}
+  const demoApi = extractLibraryApi(parser, [{include: 'Demo.h', path: 'Demo.h', source: '#pragma once\nclass DemoDevice { public: void begin(); int read(int channel); void write(int value); };\nextern DemoDevice Demo;\n'}])
+  const entries = [{library: demo, api: demoApi}]
+  const source = '#include <Arduino.h>\n#include <Demo.h>\n\nstatic String stayJson(const char* s) {\n  return String(s);\n}\n\nvoid setup() {\n  Demo.begin();\n  Demo.write(1);\n}\n\nvoid loop() {}\n'
+  const original = convertCpp(parser, source)
+  annotateLibraryCalls(original.blocks.blocks, source, entries)
+  const workspace = new Blockly.Workspace()
+  setLibraryEntries(workspace, entries)
+  try {
+    Blockly.serialization.workspaces.load({blocks: original.blocks}, workspace)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const functionId = original.blocks.blocks.find(block => block.type === 'cpp_preview_function')!.id
+    workspace.getBlockById(functionId)!.getField('NAME')!.setValue('keptJson')
+    const visible = Blockly.serialization.workspaces.save(workspace).blocks!.blocks as PreviewBlock[]
+    const code = generateCpp(source, original, visible)
+    const parsed = convertCpp(parser, code)
+    // Library catalog refresh can still be running when the source save arrives.
+    const rebased = rebaseProjection(visible, parsed.blocks.blocks)
+    assert.ok(rebased)
+    assert.equal(generateCpp(code, parsed, rebased.view), code)
+    assert.equal(rebased.view.flatMap(block => block.inputs?.BODY?.block.inputs?.VALUE?.block?.type ?? []).includes('cpp_preview_library_call'), true)
   } finally { workspace.dispose() }
 })
 

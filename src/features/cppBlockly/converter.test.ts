@@ -16,6 +16,7 @@ import { cppQuickActions } from './quickItems.js'
 import { codeOptions } from './beginnerCatalog.js'
 import { filterCppCategories } from './libraryToolbox.js'
 import { fieldSourceLocation } from './fieldLocation.js'
+import { rebaseProjection } from './rebaseProjection.js'
 import { isCppPreviewFile, MAX_SOURCE_LENGTH, type CppPreview, type PreviewBlock } from './types.js'
 
 let parser: Parser
@@ -48,6 +49,26 @@ test('function signature fields expose qualifiers, return type, name and paramet
     const code = generateCpp(source, result, Blockly.serialization.workspaces.save(workspace).blocks!.blocks as PreviewBlock[])
     assert.equal(code, 'const static char* escape(const char* s, int size) { return s; }')
     assert.equal(convertCpp(parser, code).status, 'ready')
+  } finally { workspace.dispose() }
+})
+
+test('saved field edits rebase visible block ids onto the new source without rebuilding', () => {
+  const source = '#include <Arduino.h>\nstatic String stayJson(const char* s) { return String(s); }\nvoid setup() { Demo.begin(); Demo.write(1); }\nvoid loop() {}\n'
+  const initial = convertCpp(parser, source)
+  const workspace = new Blockly.Workspace()
+  try {
+    Blockly.serialization.workspaces.load({ blocks: initial.blocks }, workspace)
+    const functionId = initial.blocks.blocks.find(block => block.type === 'cpp_preview_function')!.id
+    workspace.getBlockById(functionId)!.getField('NAME')!.setValue('remainJson')
+    const visible = Blockly.serialization.workspaces.save(workspace).blocks!.blocks as PreviewBlock[]
+    const code = generateCpp(source, initial, visible)
+    const saved = convertCpp(parser, code)
+    const rebased = rebaseProjection(visible, saved.blocks.blocks)
+    assert.ok(rebased)
+    assert.equal(generateCpp(code, saved, rebased.view), code)
+    assert.equal(rebased.sourceIds.get(functionId), saved.blocks.blocks.find(block => block.type === 'cpp_preview_function')!.id)
+    rebased.view.find(block => block.type === 'cpp_preview_function')!.fields!.NAME = 'againJson'
+    assert.equal(generateCpp(code, saved, rebased.view), code.replace('remainJson', 'againJson'))
   } finally { workspace.dispose() }
 })
 

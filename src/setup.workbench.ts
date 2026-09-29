@@ -261,6 +261,12 @@ async function restoreCoderActiveEditor(): Promise<void> {
     return
   }
 
+  // The workbench may already have restored this file alongside a custom preview.
+  // Opening it again without a group replaces the preview in the active group.
+  if (editorService.editors.some(editor => editor.resource?.toString() === targetUri.toString())) {
+    return
+  }
+
   await editorService.openEditor({
     resource: targetUri,
     options: { pinned: true }
