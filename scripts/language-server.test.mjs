@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { realpathSync } from 'node:fs'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -8,7 +9,16 @@ import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { WebSocket } from 'ws'
 import { attachCoderAgentRpcServer } from '../server/agentRpcServer.js'
-import { attachCoderLanguageServer } from '../server/languageServer.js'
+import { attachCoderLanguageServer, sameWorkspace } from '../server/languageServer.js'
+
+test('workspace identity treats Windows drive-letter case as the same directory', () => {
+  const root = realpathSync(process.cwd())
+  const otherCase = process.platform === 'win32' && /^[a-zA-Z]:/.test(root)
+    ? (root[0] === root[0].toLowerCase() ? root[0].toUpperCase() : root[0].toLowerCase()) + root.slice(1)
+    : root
+  assert.equal(sameWorkspace(root, otherCase), true)
+  assert.equal(sameWorkspace(root, path.join(root, 'missing-lsp-child')), false)
+})
 
 test('managed runtime authenticates clangd, returns fresh diagnostics and definitions, releases sessions', { timeout: 20000 }, async t => {
   const cleanAppData = process.env.AILY_LSP_TEST_APPDATA
