@@ -9,8 +9,9 @@ function fixture(files: Record<string, string>, documents: Record<string, string
     async readDirectory(path) {
       const entries = new Map<string, { name: string; isDirectory: boolean }>()
       for (const file of Object.keys(files)) {
-        if (!file.startsWith(`${path}/`)) continue
-        const parts = file.slice(path.length + 1).split('/')
+        const prefix = path ? `${path}/` : ''
+        if (!file.startsWith(prefix)) continue
+        const parts = file.slice(prefix.length).split('/')
         entries.set(parts[0]!, { name: parts[0]!, isDirectory: parts.length > 1 })
       }
       if (!entries.size) throw new Error(`Cannot read ${path}`)
@@ -86,4 +87,17 @@ test('scans nested project test/example sources and ignores continued line comme
   assert.deepEqual(sourceIncludes('// ignore next line \\\n#include <Servo.h>'), [])
   const fs = fixture({ [`${ROOT}/Servo.h`]: '', 'sketch/src/examples/example.cpp': '#include <Servo.h>' })
   assert.equal((await findLibraryUsage(fs, { libraryRoots: [ROOT] }))[0]?.file, 'sketch/src/examples/example.cpp')
+})
+
+test('checks native Arduino tabs, src and unsaved buffers without scanning build caches', async () => {
+  const fs = fixture({
+    [`${ROOT}/Servo.h`]: '',
+    'Blink.ino': '#include <Servo.h>',
+    'src/driver.cpp': '#include <Servo.h>',
+    '.build/generated.cpp': '#include <Servo.h>',
+  }, { 'Blink.ino': '// removed', 'Other.ino': '#include <Servo.h>' })
+  assert.deepEqual(await findLibraryUsage({ ...fs, sourceRoot: '' }, { libraryRoots: [ROOT] }), [
+    { file: 'Other.ino', line: 1, header: 'Servo.h' },
+    { file: 'src/driver.cpp', line: 1, header: 'Servo.h' },
+  ])
 })

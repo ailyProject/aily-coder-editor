@@ -25,6 +25,7 @@ import {
 import { libraryStrings } from './ailyComponentLibraryI18n.js'
 import { initialHostLanguage, workbenchUiStrings } from './ailyWorkbenchI18n.js'
 import { ailyViewCommandStrings } from './ailyViewCommandI18n.js'
+import { onDidImportDroppedFiles } from './fileDrop.workbench.js'
 import {
   startVirtualTreeInlineRename,
   validateRenameEntryName
@@ -434,10 +435,10 @@ async function readProjectPackageEntry(vscodeApi: typeof vscode): Promise<string
   try {
     const uri = vscodeApi.Uri.joinPath(root, 'package.json')
     const raw = await vscodeApi.workspace.fs.readFile(uri)
-    const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
+    const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string; arduinoSketch?: boolean }
     const entry = doc.entry?.trim()
     return entry != null && entry.length > 0
-      ? `sketch/${entry.replace(/\\/g, '/').replace(/^\/+/, '')}`
+      ? `${doc.arduinoSketch === true ? '' : 'sketch/'}${entry.replace(/\\/g, '/').replace(/^\/+/, '')}`
       : undefined
   } catch {
     return undefined
@@ -734,6 +735,13 @@ async function readOptionalProjectTextFile(
   }
 }
 
+async function readUserSourceRoot(vscodeApi: typeof vscode): Promise<string> {
+  try {
+    const manifest = JSON.parse(await readOptionalProjectTextFile(vscodeApi, 'package.json') || '{}')
+    return manifest.arduinoSketch === true ? '.' : SRC_REL
+  } catch { return SRC_REL }
+}
+
 async function readProjectLibraryMetadata(
   vscodeApi: typeof vscode,
   libraryRelPath: string
@@ -778,7 +786,8 @@ async function listFsDirectoryChildren(
     if (underNodeModules && relPath === NODE_MODULES_REL && NODE_MODULES_SKIP.has(name)) {
       continue
     }
-    const childRel = `${relPath}/${name}`
+    if (relPath === '.' && ['node_modules', 'sketch', 'package.json', 'package-lock.json'].includes(name)) continue
+    const childRel = relPath === '.' ? name : `${relPath}/${name}`
     const isDirectory = isFsDirectory(vscodeApi, fileType)
     out.push({
       kind: 'fs',
@@ -1091,6 +1100,8 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   async getChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
+      const sourceRoot = await readUserSourceRoot(this.#vscode)
+      blueprintPathOverrides.set('user-view', { label: initialAilyViewCopy.userView, path: sourceRoot })
       return ailyViewBlueprint.filter((nd) => nd.visible).map((nd) => wrapBlueprintChild(nd))
     }
 
@@ -1106,7 +1117,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
     // User View：递归镜像 sketch/src。
     if (node.id === 'user-view') {
-      return listFsDirectoryChildren(this.#vscode, SRC_REL)
+      return listFsDirectoryChildren(this.#vscode, await readUserSourceRoot(this.#vscode))
     }
 
     // Library：本地源码优先；其余节点映射 npm 包最终 src 下的库根。
@@ -1889,8 +1900,8 @@ void getApi().then((vscode) => {
     }
     try {
       const raw = await vscode.workspace.fs.readFile(packageUri)
-      const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string }
-      doc.entry = entryRel.replace(/\\/g, '/').replace(/^sketch\//, '')
+      const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string; arduinoSketch?: boolean }
+      doc.entry = entryRel.replace(/\\/g, '/').replace(doc.arduinoSketch === true ? /^\.\// : /^sketch\//, '')
       const out = `${JSON.stringify(doc, null, 2)}\n`
       await vscode.workspace.fs.writeFile(packageUri, new TextEncoder().encode(out))
     } catch {
@@ -1976,6 +1987,8 @@ void getApi().then((vscode) => {
     treeDataProvider: provider,
     showCollapseAll: true
   })
+
+  onDidImportDroppedFiles(() => refreshDynamicBlueprintSections(provider))
 
   vscode.commands.registerCommand(COMMANDS.rename, async (element?: ExplorerTreeElement) => {
     const label = elementLabel(element)
@@ -2121,7 +2134,7 @@ void getApi().then((vscode) => {
       return
     }
     srcWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(root, `${SRC_REL}/**`)
+      new vscode.RelativePattern(root, '**/*.{ino,pde,c,cc,cpp,cxx,h,hpp,hh,S,s}')
     )
     srcWatcher.onDidCreate((uri) => bumpStartHereFromUri(uri))
     srcWatcher.onDidDelete((uri) => bumpStartHereFromUri(uri))

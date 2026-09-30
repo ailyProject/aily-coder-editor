@@ -509,7 +509,9 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
       .map(document => [document.uri.path.slice(rootPath.length), document.getText()]))
     let uses
     try {
+      const manifest = JSON.parse(new TextDecoder().decode(await api.workspace.fs.readFile(api.Uri.joinPath(rootUri, 'package.json'))))
       uses = await findLibraryUsage({
+        ...(manifest.arduinoSketch === true ? { sourceRoot: '' } : {}),
         documents,
         readDirectory: async path => (await api.workspace.fs.readDirectory(api.Uri.joinPath(rootUri, path)))
           .map(([name, type]) => ({ name, isDirectory: (type & api.FileType.Directory) !== 0 })),

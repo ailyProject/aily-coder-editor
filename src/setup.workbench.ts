@@ -54,6 +54,7 @@ import {
   onDidReceiveParentBackedNativeFsWatchChange
 } from './parentBackedNativeFs.js'
 import { NativeFsExternalModelSync } from './nativeFsExternalModelSync.js'
+import { installFileDrop } from './features/fileDrop.workbench.js'
 
 /** 与宿主 `?theme=` 共用：dark→Dark+、light→Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -120,6 +121,8 @@ await initializeMonacoService(
   constructOptions,
   envOptions
 )
+
+installFileDrop()
 
 /** 兼容旧版持久化设置：Explorer 显示 node_modules，搜索与 SCM 继续使用各自过滤链。 */
 async function migrateExplorerNodeModulesVisibility(): Promise<void> {
@@ -247,16 +250,26 @@ async function restoreCoderActiveEditor(): Promise<void> {
     CODER_LAST_ACTIVE_FILE_KEY,
     StorageScope.WORKSPACE
   )
+  const fileService = await getService(IFileService)
+  let defaultEntry = 'sketch/src/main.cpp'
+  try {
+    const manifest = JSON.parse((await fileService.readFile(URI.joinPath(workspaceRoot, 'package.json'))).value.toString())
+    if (typeof manifest.entry === 'string' && manifest.entry.trim()) {
+      const entry = manifest.entry.replace(/\\/g, '/')
+      if (!entry.startsWith('/') && !/^[A-Za-z]:/.test(entry) && !entry.split('/').includes('..')) {
+        defaultEntry = manifest.arduinoSketch === true ? entry : `sketch/${entry}`
+      }
+    }
+  } catch { /* Legacy projects retain the default entry. */ }
   const targetUri = hasOpened
     ? rememberedPath
       ? URI.joinPath(workspaceRoot, rememberedPath)
       : undefined
-    : URI.joinPath(workspaceRoot, 'sketch', 'src', 'main.cpp')
+    : URI.joinPath(workspaceRoot, defaultEntry)
   if (targetUri == null || workspaceRelativeFilePath(targetUri, workspaceRoot) == null) {
     return
   }
 
-  const fileService = await getService(IFileService)
   if (!(await fileService.exists(targetUri))) {
     return
   }

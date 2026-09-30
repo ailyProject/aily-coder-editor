@@ -368,7 +368,7 @@ export function shouldRefreshStartHereNativeWatch(filename: string | undefined):
   }
   const norm = filename.replace(/\\/g, '/').toLowerCase()
   return (
-    norm.endsWith('.cpp') ||
+    /\.(ino|pde|c|cc|cpp|cxx|h|hpp|hh|s)$/.test(norm) ||
     norm.includes('/src/') ||
     norm.startsWith('src/') ||
     norm === 'src' ||

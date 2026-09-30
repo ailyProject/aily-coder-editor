@@ -6,6 +6,7 @@ export type LibraryUsageSource = {
   readonly folderName?: string
 }
 export type LibraryUsageFileSystem = {
+  readonly sourceRoot?: string
   readDirectory(path: string): Promise<readonly { name: string; isDirectory: boolean }[]>
   readFile(path: string): Promise<string>
   /** Open editor buffers, including unsaved changes, take precedence over disk. */
@@ -69,13 +70,14 @@ export async function findLibraryUsage(fs: LibraryUsageFileSystem, library: Libr
       : library.folderName ? [`${LOCAL_LIBRARIES_ROOT}/${library.folderName}`] : []).map(normalize))]
   if (!roots.length) throw new Error('Cannot locate the installed library source')
   const documents = fs.documents ?? new Map<string, string>()
+  const sourceRoot = fs.sourceRoot ?? SKETCH_ROOT
   let entryCount = 0
   const walk = async (path: string, files: Set<string>, excluded: readonly string[] = []): Promise<void> => {
     if (excluded.some(root => within(path, root))) return
     for (const entry of await fs.readDirectory(path)) {
       if (++entryCount > MAX_ENTRIES) throw new Error('Too many source entries to complete the library usage check')
       if (entry.name.startsWith('.')) continue
-      const child = `${path}/${entry.name}`
+      const child = path ? `${path}/${entry.name}` : entry.name
       if (entry.isDirectory) {
         if (!IGNORED_DIRECTORIES.has(entry.name)) await walk(child, files, excluded)
       } else if (SOURCE_FILE.test(entry.name) && !excluded.some(root => within(child, root))) {
@@ -84,9 +86,9 @@ export async function findLibraryUsage(fs: LibraryUsageFileSystem, library: Libr
     }
   }
   const projectFiles = new Set<string>()
-  await walk(SKETCH_ROOT, projectFiles, roots.filter(root => within(root, SKETCH_ROOT)))
+  await walk(sourceRoot, projectFiles, roots)
   for (const path of documents.keys()) {
-    if (within(path, SKETCH_ROOT) && SOURCE_FILE.test(path) && !roots.some(root => within(path, root))) projectFiles.add(path)
+    if ((!sourceRoot || within(path, sourceRoot)) && SOURCE_FILE.test(path) && !roots.some(root => within(path, root))) projectFiles.add(path)
   }
 
   const localHeaders = new Set<string>()
@@ -113,7 +115,7 @@ export async function findLibraryUsage(fs: LibraryUsageFileSystem, library: Libr
   for (const file of [...projectFiles].sort()) {
     const content = documents.get(file) ?? await fs.readFile(file)
     for (const include of sourceIncludes(content)) {
-      const relativeTarget = normalize(`${file.slice(0, file.lastIndexOf('/'))}/${include.header}`)
+      const relativeTarget = normalize(`${file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : ''}/${include.header}`)
       // Project-local headers can shadow installed library headers.
       if (projectFiles.has(relativeTarget) || projectFiles.has(`${SKETCH_ROOT}/src/${include.header}`)
         || projectFiles.has(`${SKETCH_ROOT}/include/${include.header}`)) continue
