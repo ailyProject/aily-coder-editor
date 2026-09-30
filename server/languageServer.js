@@ -7,7 +7,7 @@ import process from 'node:process'
 import { fileURLToPath, URL } from 'node:url'
 import { setTimeout, clearTimeout } from 'node:timers'
 import { WebSocket, WebSocketServer } from 'ws'
-import { resolveCoderLanguageConfig } from './languageServerConfig.js'
+import { resolveCoderLanguageConfig, resolveInoCompileCommand } from './languageServerConfig.js'
 
 const MAX_BYTES = 8 * 1024 * 1024
 
@@ -90,8 +90,15 @@ export function attachCoderLanguageServer(server, token, options = {}) {
         data = data.subarray(end + 4 + length)
       }
     })
+    const send = message => {
+      const body = Buffer.from(JSON.stringify(message))
+      child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`); child.stdin.write(body)
+    }
+    let forwarding = Promise.resolve()
     socket.on('message', raw => {
-      try {
+      // Keep didOpen/configuration/didChange ordered while reading build flags.
+      forwarding = forwarding.then(async () => {
+        if (!clients.has(socket)) return
         const message = JSON.parse(raw.toString())
         if (!initialized) {
           const requested = realpathSync(fileURLToPath(message.params?.rootUri))
@@ -99,9 +106,16 @@ export function attachCoderLanguageServer(server, token, options = {}) {
           initialized = true
           initializeId = message.id
         }
-        const body = Buffer.from(JSON.stringify(message))
-        child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`); child.stdin.write(body)
-      } catch { socket.close(1008, 'invalid language request'); stop() }
+        if (message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri?.startsWith('file:')) {
+          const file = fileURLToPath(message.params.textDocument.uri)
+          const command = await resolveInoCompileCommand(file, root, database)
+          if (!clients.has(socket)) return
+          if (command) send({ jsonrpc: '2.0', method: 'workspace/didChangeConfiguration', params: {
+            settings: { compilationDatabaseChanges: { [file]: command } },
+          } })
+        }
+        send(message)
+      }).catch(() => { socket.close(1008, 'invalid language request'); stop() })
     })
   })
   server.on('upgrade', onUpgrade)

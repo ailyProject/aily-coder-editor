@@ -474,6 +474,8 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     logLevel: LogLevel.Info // Default value
   },
   configurationDefaults: {
+    // Arduino sketches use the same grammar and language-client selector as C++.
+    "files.associations": { "*.ino": "cpp" },
     // 'window.title': '${separator}${dirty}${activeEditorShort}'
     "window.menuBarVisibility": "compact",
     // Keep contextual editor actions available, including Markdown's split preview button.

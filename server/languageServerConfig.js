@@ -42,6 +42,53 @@ export function buildConfigurationCurrent(packageTime, ninjaTime, lastBuildTime,
     (Number.isFinite(lastBuildTime) && lastBuildTime >= ninjaTime && Math.abs(packageTime - lastBuildTime) < 1500)
 }
 
+/** clangd ignores didOpen.languageId when choosing compiler input language.
+ * Supply an in-memory command for sketches without changing project/build files. */
+export async function resolveInoCompileCommand(file, root, database) {
+  if (!/\.ino$/i.test(file) || !inside(root, file)) return undefined
+  const directories = []
+  for (let directory = path.dirname(file); inside(root, directory); directory = path.dirname(directory)) {
+    directories.push(directory)
+    if (directory === root) break
+  }
+  const candidates = database ? [database] : directories.flatMap(directory => [directory, path.join(directory, 'build')])
+  for (const directory of candidates) {
+    let rows
+    try { rows = JSON.parse(await readFile(path.join(directory, 'compile_commands.json'), 'utf8')) }
+    catch { continue }
+    if (!Array.isArray(rows)) continue
+    const sourcePath = row => path.resolve(row.directory || directory, row.file)
+    const valid = rows.filter(row => typeof row?.file === 'string' &&
+      (Array.isArray(row.arguments) && row.arguments.every(arg => typeof arg === 'string') || typeof row.command === 'string'))
+    const cppRows = valid.filter(row => /\.(?:ino|cpp|cc|cxx|c\+\+)$/i.test(row.file))
+    const row = valid.find(row => sourcePath(row) === file) ||
+      cppRows.find(row => path.basename(row.file) === path.basename(file) + '.cpp') ||
+      cppRows.find(row => path.basename(row.file) === path.basename(file).replace(/\.ino$/i, '.cpp')) ||
+      cppRows.find(row => path.dirname(sourcePath(row)) === path.dirname(file)) || cppRows[0]
+    if (!row) continue
+    const workingDirectory = row.directory || directory
+    let args
+    try { args = row.arguments || splitCompilerArguments(row.command) }
+    catch { continue }
+    if (!args.length) continue
+    // Preserve board includes, defines, response files and the compiler driver.
+    // Replace only the input file; put -x before it (and before any -- separator).
+    args = args.filter((arg, index) => index === 0 || path.resolve(workingDirectory, arg) !== sourcePath(row))
+    const separator = args.indexOf('--')
+    args.splice(separator < 0 ? args.length : separator, 0, '-x', 'c++')
+    args.push(file)
+    return { workingDirectory, compilationCommand: args }
+  }
+  // Respect a simple project's compile_flags.txt as well as the no-build case.
+  for (const directory of database ? [...new Set([database, ...directories])] : directories) {
+    try {
+      const flags = (await readFile(path.join(directory, 'compile_flags.txt'), 'utf8')).split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      return { workingDirectory: directory, compilationCommand: ['clang', ...flags, '-x', 'c++', file] }
+    } catch { /* Try the parent directory. */ }
+  }
+  return { workingDirectory: path.dirname(file), compilationCommand: ['clang', '-x', 'c++', file] }
+}
+
 async function boundedRead(file, roots, maximum = 1024 * 1024) {
   const canonical = await realpath(file)
   if (!roots.some(root => inside(root, canonical)) || (await stat(canonical)).size > maximum) throw new Error('Compiler input is outside installed/project roots or too large')

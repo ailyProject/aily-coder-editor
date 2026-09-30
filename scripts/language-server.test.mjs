@@ -20,12 +20,21 @@ test('workspace identity treats Windows drive-letter case as the same directory'
   assert.equal(sameWorkspace(root, path.join(root, 'missing-lsp-child')), false)
 })
 
-test('managed runtime authenticates clangd, returns fresh diagnostics and definitions, releases sessions', { timeout: 20000 }, async t => {
+for (const [extension, withDatabase] of [['cpp', false], ['ino', false], ['INO', false], ['c', false], ['ino', true]]) test(`managed runtime authenticates clangd, returns fresh diagnostics and definitions for .${extension} (${withDatabase ? 'build database' : 'fallback'}), releases sessions`, { timeout: 20000 }, async t => {
   const cleanAppData = process.env.AILY_LSP_TEST_APPDATA
   if (!cleanAppData && spawnSync('clangd', ['--version']).status !== 0) { t.skip('clangd is not installed on this test host'); return }
-  const root = await mkdtemp(path.join(tmpdir(), 'aily-clangd-runtime-'))
-  const file = path.join(root, 'probe.cpp'); const uri = pathToFileURL(file).toString()
-  const text = 'int add(int a, int b) { return a + b; }\nint main() { return add(1); }\n'
+  const root = realpathSync(await mkdtemp(path.join(tmpdir(), 'aily-clangd-runtime-')))
+  const file = path.join(root, `probe.${extension}`); const uri = pathToFileURL(file).toString()
+  let text = 'int add(int a, int b) { return a + b; }\nint main() { return add(1); }\n'
+  if (withDatabase) {
+    await writeFile(path.join(root, 'board.h'), '#define BOARD_HEADER 1\n')
+    // The real builder compiles generated C++, while the editor opens the sketch.
+    await writeFile(path.join(root, 'compile_commands.json'), JSON.stringify([
+      { directory: root, file: 'probe.ino.cpp', arguments: ['clang++', '-std=c++17', '-DBOARD_FLAG=1', '-include', 'board.h', '-c', 'probe.ino.cpp'] },
+    ]))
+    text += '#if !defined(BOARD_FLAG) || !defined(BOARD_HEADER)\n#error lost board configuration\n#endif\n'
+    text += 'template <typename T> constexpr T identity(T value) { return value; }\n'
+  }
   await writeFile(file, text)
   const http = createServer(); const rpc = attachCoderAgentRpcServer(http, { additionalUpgradePaths: ['/lsp'] })
   const lsp = attachCoderLanguageServer(http, rpc.token, cleanAppData ? {
@@ -54,13 +63,18 @@ test('managed runtime authenticates clangd, returns fresh diagnostics and defini
     send({ id: 1, method: 'initialize', params: { processId: null, rootUri: pathToFileURL(root).toString(), capabilities: {} } })
     const initialized = (await until(message => message.id === 1)).result.capabilities
     assert.ok(initialized.definitionProvider)
-    assert.equal(initialized.experimental.ailyCompilationDatabase, false)
+    assert.equal(initialized.experimental.ailyCompilationDatabase, withDatabase)
     send({ method: 'initialized', params: {} })
-    send({ method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'cpp', version: 1, text } } })
+    send({ method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: extension === 'c' ? 'c' : 'cpp', version: 1, text } } })
     const diagnostics = await until(message => message.method === 'textDocument/publishDiagnostics' && message.params.uri === uri && message.params.diagnostics.length)
     assert.match(diagnostics.params.diagnostics[0].message, /argument|matching function/i)
     send({ id: 2, method: 'textDocument/definition', params: { textDocument: { uri }, position: { line: 1, character: 20 } } })
     assert.equal((await until(message => message.id === 2)).result[0].range.start.line, 0)
+    send({ id: 3, method: 'textDocument/hover', params: { textDocument: { uri }, position: { line: 0, character: 5 } } })
+    assert.match(JSON.stringify((await until(message => message.id === 3)).result), /add/)
+    send({ id: 4, method: 'textDocument/completion', params: { textDocument: { uri }, position: { line: 1, character: 22 } } })
+    const completions = (await until(message => message.id === 4)).result
+    assert.ok((completions.items || completions).some(item => item.label.includes('add')))
     send({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 2 }, contentChanges: [{ text: text.replace('add(1)', 'add(1, 2)') }] } })
     await until(message => message.method === 'textDocument/publishDiagnostics' && message.params.uri === uri && message.params.version === 2 && !message.params.diagnostics.length)
     await new Promise(resolve => { socket.once('close', resolve); socket.close() })
