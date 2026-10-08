@@ -72,6 +72,7 @@ flowchart TB
 - **Aily View**：以 `User View` 递归展示 `sketch/src/`，`Config` 展示根 `package.json`，`Library` 合并展示本地库与 Aily/Arduino npm 包最终 `src` 库根，详见 `docs/aily-code工程视图与信息架构设计.md`。
 - **源码编辑**：C/C++、JavaScript/TypeScript 等语言扩展；Monaco 编辑器与基础语言特性。
 - **语言服务**：内嵌 Coder 使用 Runtime 的 `/lsp` 接口。优先使用 `AILY_CLANGD_PATH`、应用数据目录中已安装的 clangd 或系统 clangd；新电脑缺少工具时自动下载、校验并安装固定版本的 Espressif clangd，无需手动安装 LLVM 或配置 PATH。首次连接需要联网，后续可离线复用。Windows 使用系统 `tar.exe` 解压；安装发生在用户应用数据目录，无需管理员权限。工具准备不依赖项目是否已编译；完整的开发板诊断仍需要有效的编译配置。独立开发调试可使用 `server/lspWsProxy.ts`。
+- **源码导航**：F12 和右键菜单支持定义、声明、实现、类型、引用预览、查找全部引用、调用层级和重命名。索引覆盖工程、本地/npm 库、当前主板的 SDK 核心及库、编译器标准头文件，以及 `CPATH` / `CPLUS_INCLUDE_PATH` / `C_INCLUDE_PATH` / `INCLUDE`。工程外源码按实际 `file:` 路径只读打开，支持继续跳转。真实编译数据库（包括宿主全局构建目录）优先；首次构建前按已安装主板环境提供导航，完整诊断仍以真实构建参数为准。
 - **宿主协同**：嵌入布局同步、侧栏顶栏、命令面板裁剪、OS 级 Reveal 转发等。
 
 ## 本仓库不提供什么
@@ -191,6 +192,7 @@ npm start
 | `npm run dev:unlink` | 移除 `<版本>-dev` 并恢复原 `active.json` 和目录索引 |
 | `npm run lint` | ESLint |
 | `npm run lsp-proxy` | 启动 LSP WebSocket 代理（配合 clangd） |
+| `npm run test:lsp` | 验证语言环境、真实 clangd 导航、源码读取边界和工具安装 |
 
 `dev` / `dev:link` 与其它 Aily 子应用使用同一条用户级多版本发现链路：源码包
 映射到 `${AILY_APPDATA_PATH}/npm-global/app/store/subapp-aily-coder-editor/<版本>-dev/source`，本地目录合入

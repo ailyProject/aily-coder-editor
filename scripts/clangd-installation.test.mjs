@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { installManagedClangd, resolveCoderLanguageCommand } from '../server/clangdInstallation.js'
@@ -9,7 +9,7 @@ import { resolveCoderLanguageConfig } from '../server/languageServerConfig.js'
 import { CLANGD_RELEASES, ESP_CLANGD_VERSION } from '../server/clangdReleases.js'
 
 async function fixture(t) {
-  const root = await mkdtemp(path.join(tmpdir(), 'aily clangd-'))
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'aily clangd-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   const archive = Buffer.from('verified test archive')
   const calls = []; const requests = []

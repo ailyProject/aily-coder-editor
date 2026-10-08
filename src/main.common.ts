@@ -52,7 +52,7 @@ import '@codingame/monaco-vscode-typescript-basics-default-extension' // !!
 // import '@codingame/monaco-vscode-yaml-default-extension'
 import '@codingame/monaco-vscode-theme-defaults-default-extension' // !!
 import '@codingame/monaco-vscode-theme-seti-default-extension' // !!
-// import '@codingame/monaco-vscode-references-view-default-extension'
+import '@codingame/monaco-vscode-references-view-default-extension'
 // import '@codingame/monaco-vscode-search-result-default-extension'
 // import '@codingame/monaco-vscode-configuration-editing-default-extension'
 // import '@codingame/monaco-vscode-markdown-math-default-extension'

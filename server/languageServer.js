@@ -8,6 +8,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { setTimeout, clearTimeout } from 'node:timers'
 import { WebSocket, WebSocketServer } from 'ws'
 import { resolveCoderLanguageConfig, resolveInoCompileCommand } from './languageServerConfig.js'
+import { readLanguageFile } from './languageServerFiles.js'
 
 const MAX_BYTES = 8 * 1024 * 1024
 
@@ -49,13 +50,14 @@ export function attachCoderLanguageServer(server, token, options = {}) {
     }
     finally { preparing--; preparingSockets.delete(socket) }
   }
-  wss.on('connection', (socket, root, { command, database, queryDrivers }) => {
+  wss.on('connection', (socket, root, { command, database, compilationDatabase, queryDrivers, readableRoots = [root] }) => {
     const args = ['--background-index', '--header-insertion=iwyu', '--pch-storage=memory', '--limit-results=40',
       ...(database ? [`--compile-commands-dir=${database}`] : []),
       ...(queryDrivers.length ? [`--query-driver=${queryDrivers.join(',')}`] : [])]
     const child = spawn(command, args, { cwd: root, env: options.env || process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     clients.set(socket, child)
     let data = Buffer.alloc(0); let initialized = false; let initializeId
+    const implementations = new Map()
     const stop = () => {
       if (!clients.delete(socket)) return
       child.kill('SIGTERM')
@@ -84,7 +86,19 @@ export function attachCoderLanguageServer(server, token, options = {}) {
         try { message = JSON.parse(data.subarray(end + 4, end + 4 + length).toString('utf8')) }
         catch { socket.close(1002, 'invalid language response'); stop(); return }
         if (message.id === initializeId && message.result?.capabilities) {
-          message.result.capabilities.experimental = { ...message.result.capabilities.experimental, ailyCompilationDatabase: Boolean(database) }
+          message.result.capabilities.experimental = { ...message.result.capabilities.experimental, ailyCompilationDatabase: compilationDatabase, ailySourceFileAccess: true }
+        }
+        const implementation = implementations.get(message.id)
+        if (implementation) {
+          implementations.delete(message.id)
+          // clangd's implementation request primarily finds subclasses and
+          // virtual overrides. For a normal function, use its indexed body when
+          // there are no overrides, keeping native nonempty results intact.
+          if (!message.error && (!message.result || Array.isArray(message.result) && !message.result.length)) {
+            send({ ...implementation, method: 'textDocument/definition' })
+            data = data.subarray(end + 4 + length)
+            continue
+          }
         }
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
         data = data.subarray(end + 4 + length)
@@ -106,6 +120,16 @@ export function attachCoderLanguageServer(server, token, options = {}) {
           initialized = true
           initializeId = message.id
         }
+        if (message.method?.startsWith('aily/fs/')) {
+          try {
+            const result = await readLanguageFile(message.method, message.params, readableRoots)
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
+          } catch (error) {
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: error.code === 'ENOENT' ? 'Source not found' : 'Source access denied' } }))
+          }
+          return
+        }
+        if (message.method === 'textDocument/implementation') implementations.set(message.id, message)
         if (message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri?.startsWith('file:')) {
           const file = fileURLToPath(message.params.textDocument.uri)
           const command = await resolveInoCompileCommand(file, root, database)

@@ -13,6 +13,8 @@ import {
 } from 'vscode-ws-jsonrpc'
 import { setLanguageServerState, hasLanguageServerCompilationDatabase } from './languageServerState'
 import { getHostEmbedContext } from '../hostEmbedContext'
+import { registerFileSystemOverlay } from '@codingame/monaco-vscode-files-service-override'
+import { LanguageSourceFileProvider } from './languageSourceFiles'
 
 /** One language client per workbench, backed by its managed Coder runtime. */
 const params = new URLSearchParams(window.location.search)
@@ -79,6 +81,7 @@ let retry: ReturnType<typeof setTimeout> | undefined
 let socket: WebSocket | undefined
 let languageClient: MonacoLanguageClient | undefined
 let disposed = false
+let sourceFiles: vscode.Disposable | undefined
 
 class ManagedLanguageClient extends MonacoLanguageClient {
   protected override async handleConnectionClosed(): Promise<void> {
@@ -135,6 +138,13 @@ async function connect(url: string): Promise<void> {
     await client.start()
     if (current !== generation || disposed) return
     if (!client.isRunning() || !client.initializeResult) throw new Error('language server initialization failed')
+    if (!sourceFiles && client.initializeResult.capabilities.experimental?.ailySourceFileAccess) {
+      sourceFiles = registerFileSystemOverlay(0, new LanguageSourceFileProvider(async (method, params) => {
+        const active = languageClient
+        if (!active?.isRunning()) throw new Error('Language service unavailable')
+        return active.sendRequest(method, params)
+      }, resource => vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(resource.toString())) != null))
+    }
     attempt = 0; setLanguageServerState('ready', client.initializeResult?.capabilities.experimental?.ailyCompilationDatabase)
   } catch {
     if (current !== generation || disposed) return
@@ -158,5 +168,6 @@ window.addEventListener('message', receiveEndpoint)
 if (standaloneUrl) { endpoint = standaloneUrl; void connect(standaloneUrl) }
 window.addEventListener('pagehide', () => {
   disposed = true; generation++; clearTimeout(retry); window.removeEventListener('message', receiveEndpoint)
+  sourceFiles?.dispose()
   void releaseConnection(languageClient, socket)
 }, { once: true })

@@ -110,6 +110,7 @@
     "prepack": "npm run build:subapp",
     "start:debugServer": "tsx src/debugServer.ts",
     "lsp-proxy": "tsx server/lspWsProxy.ts",
+    "test:lsp": "node --test scripts/language-server-config.test.mjs scripts/language-server.test.mjs scripts/language-navigation.test.mjs scripts/clangd-installation.test.mjs",
     "test:cpp-blockly": "tsx --test src/features/cppBlockly/converter.test.ts src/features/cppBlockly/library.test.ts"
   },
   "overrides": {

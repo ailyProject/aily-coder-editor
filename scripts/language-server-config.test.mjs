@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { splitCompilerArguments, clangdCompatibleArguments, resolveCoderLanguageConfig, resolveInoCompileCommand, buildConfigurationCurrent } from '../server/languageServerConfig.js'
@@ -30,7 +30,7 @@ test('missing build configuration degrades, explicit compilation database remain
     const missing = await resolveCoderLanguageConfig(root, { command: 'configured-clangd' })
     assert.equal(missing.command, 'configured-clangd'); assert.equal(missing.database, undefined)
     await writeFile(path.join(root, 'compile_commands.json'), '[]')
-    assert.equal((await resolveCoderLanguageConfig(root, { command: 'configured-clangd' })).database, root)
+    assert.equal((await resolveCoderLanguageConfig(root, { command: 'configured-clangd' })).database, await realpath(root))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

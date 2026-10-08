@@ -855,6 +855,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
   readonly #loadPlatformPackages: () => Promise<readonly HostPlatformPackageV1[]>
   readonly #onDidChangeTreeData: vscode.EventEmitter<ExplorerTreeElement | undefined | void>
   readonly onDidChangeTreeData: vscode.Event<ExplorerTreeElement | undefined | void>
+  readonly #parents = new WeakMap<ExplorerTreeElement, ExplorerTreeElement>()
 
   constructor(
     vscodeApi: typeof vscode,
@@ -1098,7 +1099,50 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     return item
   }
 
+  getParent(element: ExplorerTreeElement): ExplorerTreeElement | undefined {
+    return this.#parents.get(element)
+  }
+
+  /** Resolve through the displayed tree so npm projections and local overrides
+   * retain their actual Library parents instead of mirroring node_modules. */
+  async findFile(uri: vscode.Uri): Promise<ExplorerTreeElement | undefined> {
+    const vs = this.#vscode
+    const root = vs.workspace.workspaceFolders?.[0]?.uri
+    if (root == null || uri.scheme !== root.scheme ||
+      vs.workspace.getWorkspaceFolder(uri)?.uri.toString() !== root.toString()) return undefined
+    const ignoreCase = /^[a-z]:[\\/]/i.test(root.fsPath)
+    const normalize = (value: string): string => {
+      const relative = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '')
+      return ignoreCase ? relative.toLowerCase() : relative
+    }
+    const target = normalize(vs.workspace.asRelativePath(uri, false))
+    const visit = async (parent?: ExplorerTreeElement): Promise<ExplorerTreeElement | undefined> => {
+      for (const element of await this.getChildren(parent)) {
+        const resource = this.getTreeItem(element).resourceUri
+        const relative = resource == null ? undefined : normalize(vs.workspace.asRelativePath(resource, false))
+        const directory = element.kind === 'fs' ? element.isDirectory : element.node.expandable
+        const libraryGroup = element.kind === 'project' && element.node.id === 'library'
+        if (!directory && relative === target) return element
+        if (directory && (libraryGroup || relative == null || relative === '.' || relative === '' || target.startsWith(`${relative}/`))) {
+          const found = await visit(element)
+          if (found != null) return found
+        }
+      }
+      return undefined
+    }
+    return visit()
+  }
+
   async getChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
+    const children = await this.#readChildren(element)
+    for (const child of children) {
+      if (element == null) this.#parents.delete(child)
+      else this.#parents.set(child, element)
+    }
+    return children
+  }
+
+  async #readChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
       const sourceRoot = await readUserSourceRoot(this.#vscode)
       blueprintPathOverrides.set('user-view', { label: initialAilyViewCopy.userView, path: sourceRoot })
@@ -1987,6 +2031,26 @@ void getApi().then((vscode) => {
     treeDataProvider: provider,
     showCollapseAll: true
   })
+
+  let activeFileGeneration = 0
+  let activeFileReveal = Promise.resolve()
+  const revealActiveFile = (): void => {
+    const generation = ++activeFileGeneration
+    const uri = vscode.window.activeTextEditor?.document.uri
+    if (uri == null || !treeView.visible) return
+    // Serialize reveals and discard stale lookups when tabs change quickly.
+    activeFileReveal = activeFileReveal.then(async () => {
+      if (generation !== activeFileGeneration) return
+      const element = await provider.findFile(uri)
+      if (element != null && generation === activeFileGeneration && treeView.visible) {
+        await treeView.reveal(element, { select: true, focus: false })
+      }
+    }).catch(() => { /* Deleted or unmapped files leave the current selection intact. */ })
+  }
+  vscode.window.onDidChangeActiveTextEditor(revealActiveFile)
+  treeView.onDidChangeVisibility(event => { if (event.visible) revealActiveFile() })
+  provider.onDidChangeTreeData(revealActiveFile)
+  revealActiveFile()
 
   onDidImportDroppedFiles(() => refreshDynamicBlueprintSections(provider))
 
