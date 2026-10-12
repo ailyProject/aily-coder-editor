@@ -10,7 +10,9 @@ import { CodeSuggestionHostBridgeService } from ${JSON.stringify(hostRoot + '/sr
 import { setServerUrl } from ${JSON.stringify(hostRoot + '/src/app/configs/api.config.ts')};
 setServerUrl(location.origin);
 const listeners = new Set();
-const auth = { isSessionInvalidating: false, getToken2: async () => 'v4-local-fixture-only', refreshAuthToken: async () => false,
+const loginListeners = new Set();
+const auth = { isSessionInvalidating: false, isLoggedIn: true, getToken2: async () => 'v4-local-fixture-only', refreshAuthToken: async () => false,
+ isLoggedIn$: { subscribe(callback) { loginListeners.add(callback); callback(auth.isLoggedIn); return {unsubscribe(){loginListeners.delete(callback)}}; } },
  userInfo$: { subscribe(callback) { listeners.add(callback); callback({id:'fixture-user'}); return {unsubscribe(){listeners.delete(callback)}}; } } };
 const bridge = new CodeSuggestionHostBridgeService(auth);
 window.fixtureMessages=[];
@@ -28,7 +30,7 @@ window.addEventListener('message', async event => {
    frame.contentWindow.postMessage({channel:'aily-coder-editor-native-fs-reply',id:message.id,...response},'*');
  }
 });
-window.fixtureSignOut=()=>{auth.isSessionInvalidating=true; for(const callback of listeners) callback(null);};
+window.fixtureSignOut=()=>{auth.isSessionInvalidating=true; auth.isLoggedIn=false; for(const callback of loginListeners) callback(false); for(const callback of listeners) callback(null);};
 window.addEventListener('beforeunload',()=>bridge.dispose());
 `, resolveDir: hostRoot, loader: 'ts' }, bundle: true, format: 'esm', platform: 'browser', outfile: output + '/host.js',
  plugins: [{ name: 'fixture-angular-di', setup(build) {

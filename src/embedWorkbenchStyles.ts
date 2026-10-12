@@ -66,6 +66,10 @@ const EMBED_WORKBENCH_CSS = `
   transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
 }
 
+.aily-embed-sidebar-nav__btn[hidden] {
+  display: none !important;
+}
+
 .aily-embed-sidebar-nav__btn .codicon {
   font-size: 18px;
 }

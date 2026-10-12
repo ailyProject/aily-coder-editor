@@ -1,8 +1,8 @@
-let status = { text: '$(sparkle) Aily Tab', detail: 'Tab 接受 · Esc 拒绝' }
+let status = { text: '$(sparkle) Aily Tab', detail: 'Tab 接受 · Esc 拒绝', visible: false }
 const listeners = new Set<() => void>()
 export function getCompletionStatus() { return status }
-export function setCompletionStatus(text: string, detail: string): void {
-  status = { text, detail }; for (const listener of listeners) listener()
+export function setCompletionStatus(text: string, detail: string, visible: boolean): void {
+  status = { text, detail, visible }; for (const listener of listeners) listener()
 }
 export function onCompletionStatusChanged(listener: () => void): () => void {
   listeners.add(listener); return () => listeners.delete(listener)

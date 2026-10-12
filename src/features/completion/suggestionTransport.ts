@@ -10,6 +10,7 @@ type Pending = { resolve: (value: unknown) => void; reject: (error: unknown) => 
 export class ParentSuggestionTransport {
   onSessionChanged?: () => void
   onAvailabilityChanged?: () => void
+  authenticated: boolean | undefined
   private pending = new Map<string, Pending>()
   private cooldown?: { status: number; code: string; until: number }
   private cooldownTimer?: ReturnType<typeof setTimeout>
@@ -19,6 +20,10 @@ export class ParentSuggestionTransport {
   }
   private onMessage = (event: MessageEvent) => {
     if (event.source !== this.host.parent || event.data?.channel !== SUGGESTION_EVENT_CHANNEL) return
+    if (['session-state', 'session-changed'].includes(event.data.type) && typeof event.data.authenticated === 'boolean') {
+      this.authenticated = event.data.authenticated
+    }
+    if (event.data.type === 'session-state') { this.onAvailabilityChanged?.(); return }
     if (event.data.type === 'session-changed') {
       for (const id of [...this.pending.keys()]) { this.cancelHost(id); this.finish(id, undefined, abortError()) }
       this.clearCooldown(); this.onSessionChanged?.(); return

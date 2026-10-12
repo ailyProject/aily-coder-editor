@@ -780,7 +780,10 @@ export class CompletionFeature {
   }
   private updateStatus(): void {
     if (!this.status) return
-    try { this.renderStatus() } finally { setCompletionStatus(this.status.text, typeof this.status.tooltip === 'string' ? this.status.tooltip : '') }
+    try { this.renderStatus() } finally {
+      setCompletionStatus(this.status.text, typeof this.status.tooltip === 'string' ? this.status.tooltip : '',
+        this.transport.unavailable?.status !== 401 && (this.transport.authenticated ?? (this.capabilities != null)))
+    }
   }
   private renderStatus(): void {
     const document = this.api.window.activeTextEditor?.document

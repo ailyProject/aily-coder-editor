@@ -76,6 +76,7 @@ function updateSidebarNavLabels(nav: HTMLElement): void {
   const completion = nav.querySelector<HTMLButtonElement>('[data-action-id="completion"]')
   if (completion != null) {
     const status = getCompletionStatus()
+    completion.hidden = !status.visible
     const title = status.text.replace(/\$\([^)]*\)\s*/g, '')
     completion.title = `${title}\n${status.detail}`
     completion.setAttribute('aria-label', title)
@@ -213,6 +214,7 @@ function mountSidebarNav(sidebar: HTMLElement): void {
   completion.type = 'button'
   completion.className = 'aily-embed-sidebar-nav__btn'
   completion.dataset.actionId = 'completion'
+  completion.hidden = true
   const completionIcon = document.createElement('span')
   completionIcon.className = 'codicon codicon-sparkle'
   completionIcon.setAttribute('aria-hidden', 'true')
