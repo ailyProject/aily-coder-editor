@@ -1,7 +1,14 @@
-import { IEditorService, StandaloneServices } from '@codingame/monaco-vscode-api'
+import { ICommandService, IEditorService, StandaloneServices, getService } from '@codingame/monaco-vscode-api'
 
 export const HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-editor-host-lifecycle-request'
 export const HOST_LIFECYCLE_RESPONSE_CHANNEL = 'aily-coder-editor-host-lifecycle-response'
+export const HOST_LIFECYCLE_SAVE_CHANNEL = 'aily-coder-editor-project-save'
+
+export function requestHostProjectSave(): void {
+  if (typeof window !== 'undefined' && window.parent !== window) {
+    window.parent.postMessage({ channel: HOST_LIFECYCLE_SAVE_CHANNEL }, '*')
+  }
+}
 
 type HostLifecycleAction = 'status' | 'save-all'
 
@@ -18,6 +25,16 @@ export function installHostLifecycleBridge(): void {
     return
   }
   installed = true
+
+  // Monaco owns editor/menu shortcuts inside the iframe. An explicit Save also
+  // commits pending project libraries; host saveAll calls the editor service
+  // directly, so this command listener cannot recurse or react to auto-save.
+  const saveCommands = new Set(['workbench.action.files.save', 'saveAll',
+    'workbench.action.files.saveWithoutFormatting', 'workbench.files.action.saveAllInGroup',
+    'workbench.action.files.saveFiles'])
+  void getService(ICommandService).then(commands => commands.onDidExecuteCommand(event => {
+    if (saveCommands.has(event.commandId)) requestHostProjectSave()
+  }))
 
   window.addEventListener('message', event => {
     const request = event.data as HostLifecycleRequest

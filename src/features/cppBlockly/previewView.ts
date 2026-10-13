@@ -8,6 +8,7 @@ import { registerCppToolbox, mountToolboxSearch } from './toolboxUi.js'
 import { cppIcon, type CppIcon } from './icons.js'
 import { blockAtPosition, type SourcePosition } from './sourceSelection.js'
 import previewCss from './preview.css?inline'
+import { requestHostProjectSave } from '../../hostLifecycle.js'
 import { libraryCategory } from './libraryToolbox.js'
 import { parseLibraryAsync } from './libraryWorker.js'
 import type { ProjectLibrary, LibraryHeaders } from './libraryCatalog.js'
@@ -252,7 +253,10 @@ export function mountCppPreview(container: HTMLElement, host: PreviewHost): { di
       saveTimer = undefined
       if (disposed) return
       capture()
-      void host.save().then(saved => { if (!saved) fail('保存未完成，请重试。') }).catch(fail).finally(() => { shortcutSaving = false })
+      void host.save().then(saved => {
+        if (saved) requestHostProjectSave()
+        else fail('保存未完成，请重试。')
+      }).catch(fail).finally(() => { shortcutSaving = false })
     }, 0)
   }
   window.addEventListener('keydown', saveShortcut, true)

@@ -587,8 +587,8 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
         : '')
     const command = packageName
       ? action === 'install'
-        ? `npm install ${packageName}@${version} --save --save-exact --ignore-scripts --no-audit --no-fund`
-        : `npm uninstall ${packageName} --ignore-scripts --no-audit --no-fund`
+        ? `npm install ${packageName}@${version} --no-save --ignore-scripts --no-audit --no-fund`
+        : `npm uninstall ${packageName} --no-save --ignore-scripts --no-audit --no-fund`
       : `POST /api/component-libraries/${action === 'install' ? 'install' : 'remove'} ${library.id}@${version}`
     if (reportHostLibraryOperationFeedback({ state, action, libraryName, command, error })) return
 

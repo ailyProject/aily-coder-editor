@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer'
 import { URL } from 'node:url'
+import { withHostLibraryTransaction, withManualLibraryRequest } from './hostLibrarySession.js'
 import {
   installCoderLibrary,
+  materializeCoderProjectLibraries,
   installArduinoComponentLibrary,
   installComponentLibrary,
   removeCoderLibrary,
@@ -47,6 +49,10 @@ function toClientLibrary(library) {
 }
 
 export async function handleComponentLibraryApiRequest(request, response) {
+  return withManualLibraryRequest(() => handleRequest(request, response))
+}
+
+async function handleRequest(request, response) {
   const url = new URL(request.url || '/', 'http://127.0.0.1')
   if (!url.pathname.startsWith(API_PREFIX)) {
     return false
@@ -59,82 +65,19 @@ export async function handleComponentLibraryApiRequest(request, response) {
 
   try {
     const body = await readJsonBody(request)
-    if (url.pathname === `${API_PREFIX}scan`) {
-      const libraries = await scanComponentLibraries({ workspaceRoot: body.workspaceRoot })
-      sendJson(response, 200, {
-        ok: true,
-        libraries: libraries.map(toClientLibrary),
-      })
-      return true
-    }
-    if (url.pathname === `${API_PREFIX}search`) {
-      const search = body.source === 'aily' ? searchCoderLibraries : searchArduinoComponentLibraries
-      const result = await search({
-        workspaceRoot: body.workspaceRoot,
-        query: body.query,
-        category: body.category,
-        type: body.type,
-        offset: body.offset,
-        limit: body.limit,
-        forceRefresh: body.forceRefresh === true,
-      })
-      sendJson(response, 200, {
-        ok: true,
-        ...result,
-        libraries: result.libraries.map(toClientLibrary),
-      })
-      return true
-    }
-    if (url.pathname === `${API_PREFIX}install`) {
-      if (body.source === 'aily') {
-        const library = await installCoderLibrary({
-          workspaceRoot: body.workspaceRoot,
-          libraryRef: body.libraryId,
-          version: body.version,
-          allowIncompatible: body.allowIncompatible === true,
-        })
-        sendJson(response, 200, {
-          ok: true,
-          library: toClientLibrary(library),
-        })
-        return true
-      }
-      const library = body.source === 'registry'
-        ? await installArduinoComponentLibrary({
-          workspaceRoot: body.workspaceRoot,
-          libraryId: body.libraryId,
-          version: body.version,
-          allowIncompatible: body.allowIncompatible === true,
-        })
-        : await installComponentLibrary({
-          workspaceRoot: body.workspaceRoot,
-          libraryId: body.libraryId,
-        })
-      sendJson(response, 200, {
-        ok: true,
-        library: toClientLibrary(library),
-      })
-      return true
-    }
-    if (url.pathname === `${API_PREFIX}remove`) {
-      const library = body.source === 'aily'
-        ? await removeCoderLibrary({
-          workspaceRoot: body.workspaceRoot,
-          libraryRef: body.libraryId,
-          version: body.version,
-        })
-        : await removeArduinoComponentLibrary({
-          workspaceRoot: body.workspaceRoot,
-          libraryId: body.libraryId,
-          version: body.version,
-        })
-      sendJson(response, 200, {
-        ok: true,
-        library: toClientLibrary(library),
-      })
-      return true
-    }
-    sendJson(response, 404, { ok: false, error: 'Unknown component library API route' })
+    const execute = () => handleAction(url, body)
+    let result
+    if (['install', 'remove'].some(action => url.pathname === `${API_PREFIX}${action}`)) {
+      const prepareSources = () => materializeCoderProjectLibraries({ workspaceRoot: body.workspaceRoot })
+      result = await withHostLibraryTransaction(body.workspaceRoot, async () => {
+        const result = await execute()
+        // npm can replace another pending package while reconciling the full
+        // unsaved tree. Restore every package-local archive, not just this one.
+        await prepareSources()
+        return result
+      }, false, prepareSources)
+    } else result = await execute()
+    sendJson(response, result.ok ? 200 : 404, result)
   } catch (error) {
     sendJson(response, 400, {
       ok: false,
@@ -144,4 +87,78 @@ export async function handleComponentLibraryApiRequest(request, response) {
     })
   }
   return true
+}
+
+async function handleAction(url, body) {
+  if (url.pathname === `${API_PREFIX}scan`) {
+    const libraries = await scanComponentLibraries({ workspaceRoot: body.workspaceRoot })
+    return {
+      ok: true,
+      libraries: libraries.map(toClientLibrary),
+    }
+  }
+  if (url.pathname === `${API_PREFIX}search`) {
+    const search = body.source === 'aily' ? searchCoderLibraries : searchArduinoComponentLibraries
+    const result = await search({
+      workspaceRoot: body.workspaceRoot,
+      query: body.query,
+      category: body.category,
+      type: body.type,
+      offset: body.offset,
+      limit: body.limit,
+      forceRefresh: body.forceRefresh === true,
+    })
+    return {
+      ok: true,
+      ...result,
+      libraries: result.libraries.map(toClientLibrary),
+    }
+  }
+  if (url.pathname === `${API_PREFIX}install`) {
+    if (body.source === 'aily') {
+      const library = await installCoderLibrary({
+        workspaceRoot: body.workspaceRoot,
+        libraryRef: body.libraryId,
+        version: body.version,
+        allowIncompatible: body.allowIncompatible === true,
+      })
+      return {
+        ok: true,
+        library: toClientLibrary(library),
+      }
+    }
+    const library = body.source === 'registry'
+      ? await installArduinoComponentLibrary({
+        workspaceRoot: body.workspaceRoot,
+        libraryId: body.libraryId,
+        version: body.version,
+        allowIncompatible: body.allowIncompatible === true,
+      })
+      : await installComponentLibrary({
+        workspaceRoot: body.workspaceRoot,
+        libraryId: body.libraryId,
+      })
+    return {
+      ok: true,
+      library: toClientLibrary(library),
+    }
+  }
+  if (url.pathname === `${API_PREFIX}remove`) {
+    const library = body.source === 'aily'
+      ? await removeCoderLibrary({
+        workspaceRoot: body.workspaceRoot,
+        libraryRef: body.libraryId,
+        version: body.version,
+      })
+      : await removeArduinoComponentLibrary({
+        workspaceRoot: body.workspaceRoot,
+        libraryId: body.libraryId,
+        version: body.version,
+      })
+    return {
+      ok: true,
+      library: toClientLibrary(library),
+    }
+  }
+  return { ok: false, error: 'Unknown component library API route' }
 }

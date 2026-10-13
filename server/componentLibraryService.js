@@ -34,6 +34,7 @@ import {
 import { CODER_LIBRARY_PACKAGE, loadCoderPackageCatalog } from './coderPackageCatalog.js'
 import { checkArduinoDependencies, readArduinoDependencyMetadata } from './arduinoLibraryDependencies.js'
 import { publishLibraryDirectory } from './libraryDirectoryPublication.js'
+import { assertSavedLibrarySession, hostLibraryRequest, isManualLibraryRequest, readProjectManifest } from './hostLibrarySession.js'
 
 const SAFE_LIBRARY_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u
 const COMPONENT_LIBRARY_RECEIPT = '.aily-component-library.json'
@@ -216,7 +217,7 @@ function addSdkDependencies(target, dependencies) {
 }
 
 async function resolveEffectiveSdkDependencies(projectRoot, appDataRoot) {
-  const project = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+  const project = await readProjectManifest(projectRoot)
   const boardPackageName = findBoardPackageName(project)
   const boardManifest = boardPackageName
     ? await readJson(
@@ -1115,6 +1116,15 @@ function runProcess(command, args, { cwd, signal, env = process.env } = {}) {
 
 async function runNpmLibraryCommand(projectRoot, args, { signal, runNpmCommand, appDataPath } = {}) {
   const env = await ailyNpmEnvironment(appDataPath)
+  if (isManualLibraryRequest()) {
+    signal?.throwIfAborted()
+    return hostLibraryRequest('mutate', projectRoot, {
+      action: args[0] === 'install' ? 'install' : 'remove', packages: [args[1]],
+      options: { ignoreScripts: true,
+        ...(env.AILY_NPM_REGISTRY ? { registry: env.AILY_NPM_REGISTRY, '@aily-project:registry': env.AILY_NPM_REGISTRY } : {}),
+        '@aily-project-coder:registry': env.AILY_NPM_REGISTRY_CODER },
+    })
+  }
   if (runNpmCommand) {
     return runNpmCommand({ projectRoot, args, signal, env })
   }
@@ -1531,7 +1541,7 @@ function createDependencyInspector(projectRoot, options) {
   let inventory
   return async roots => {
     inventory ??= (async () => {
-      const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+      const manifest = await readProjectManifest(projectRoot)
       const directories = new Set(roots)
       for (const name of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.optionalDependencies }).filter(isSafeBlocklyLibraryPackageName)) {
         const directory = packagePath(projectRoot, name)
@@ -1586,7 +1596,7 @@ export async function searchBlocklyLibraryPackages(options) {
   const matchesSource = name => (official ? CODER_LIBRARY_PACKAGE : BLOCKLY_LIBRARY_PACKAGE).test(name)
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
   const appDataRoot = await resolveAppDataRoot(options.appDataPath)
-  const projectManifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+  const projectManifest = await readProjectManifest(projectRoot)
   const declaredPackages = { ...projectManifest.dependencies, ...projectManifest.devDependencies, ...projectManifest.optionalDependencies }
   const allRoots = await managedBlocklyRoots(projectRoot)
   const legacyInstalled = await listInstalledComponentLibraries(path.join(projectRoot, 'sketch', 'libraries'))
@@ -1726,6 +1736,9 @@ async function ensureProjectDirectory(projectRoot, segments) {
 }
 
 async function withBlocklyPackageTransaction(projectRoot, packageName, task) {
+  // The host owns the unsaved dependency tree and rollback. Never snapshot or
+  // overwrite its saved manifest from the child runtime during a manual edit.
+  if (isManualLibraryRequest()) return task(packagePath(projectRoot, packageName))
   await ensureProjectDirectory(projectRoot, ['node_modules', packageName.split('/')[0]])
   const packageRoot = packagePath(projectRoot, packageName)
   const temporaryRoot = await mkdtemp(path.join(projectRoot, '.aily-library-transaction-'))
@@ -1934,7 +1947,7 @@ async function materializeBlocklyLibraryPackage(projectRoot, packageRoot, packag
 export async function materializeCoderProjectLibraries(options) {
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
   return withWorkspaceMutationLock(projectRoot, async () => {
-    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const manifest = await readProjectManifest(projectRoot)
     const dependencies = { ...manifest.dependencies, ...manifest.devDependencies, ...manifest.optionalDependencies }
     const packages = new Map()
     for (const name of Object.keys(dependencies).filter(isSafeBlocklyLibraryPackageName)) {
@@ -1976,7 +1989,7 @@ export async function materializeCoderProjectLibraries(options) {
 /** Explicit npm installation transfers this dependency from board-template ownership to the user. */
 async function retainExplicitCoderLibraryDependency(projectRoot, packageName) {
   const manifestPath = path.join(projectRoot, 'package.json')
-  const manifest = await readJson(manifestPath, 'package.json')
+  const manifest = await readProjectManifest(projectRoot)
   const receipt = manifest.coderBoardTemplateDependencies
   if (manifest.type !== 'coder' || receipt?.schemaVersion !== 1
     || !receipt.dependencies || typeof receipt.dependencies !== 'object' || Array.isArray(receipt.dependencies)
@@ -1984,6 +1997,10 @@ async function retainExplicitCoderLibraryDependency(projectRoot, packageName) {
   const dependencies = { ...receipt.dependencies }
   delete dependencies[packageName]
   manifest.coderBoardTemplateDependencies = { ...receipt, dependencies }
+  if (isManualLibraryRequest()) {
+    await hostLibraryRequest('patch', projectRoot, manifest)
+    return
+  }
   const staging = await mkdtemp(path.join(projectRoot, '.aily-library-ownership-'))
   try {
     const stagedManifest = path.join(staging, 'package.json')
@@ -2001,6 +2018,7 @@ export async function installBlocklyLibraryPackage(options) {
     throw new ComponentLibraryError('CODER_LIBRARY_REF_INVALID', 'Use the exact package and version from coder_library_search')
   }
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  await assertSavedLibrarySession(projectRoot)
   return withWorkspaceMutationLock(projectRoot, async () => {
     const appDataPath = await resolveAppDataRoot(options.appDataPath)
     const search = await searchBlocklyLibraryPackages({ ...options, source: packageLibraryIdentity(packageName).source, query: packageName, appDataPath })
@@ -2010,7 +2028,7 @@ export async function installBlocklyLibraryPackage(options) {
       throw new ComponentLibraryError('CODER_LIBRARY_INCOMPATIBLE', `${library.name} is not compatible with the active Coder architecture`,
         { ...library.compatibility, compatibleAlternatives: search.compatibleAlternatives })
     }
-    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const manifest = await readProjectManifest(projectRoot)
     const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
     const inspect = createDependencyInspector(projectRoot, { ...options, appDataPath })
     const prepare = async (root, installed) => {
@@ -2028,7 +2046,7 @@ export async function installBlocklyLibraryPackage(options) {
       await runNpmLibraryCommand(projectRoot, ['install', `${packageName}@${version}`, '--save', '--save-exact',
         '--ignore-scripts', '--no-audit', '--no-fund'], { ...options, appDataPath })
       const packageManifest = await readJson(path.join(packageRoot, 'package.json'), 'library package')
-      const linked = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+      const linked = await readProjectManifest(projectRoot)
       if (packageManifest.name !== packageName || packageManifest.version !== version || !directDependencySpec(linked, packageName)) {
         throw new ComponentLibraryError('BLOCKLY_LIBRARY_PACKAGE_INVALID', 'Installed package identity/version or root dependency does not match the request')
       }
@@ -2040,8 +2058,9 @@ export async function installBlocklyLibraryPackage(options) {
 export async function removeBlocklyLibraryPackage(options) {
   const { packageName, version } = options
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  await assertSavedLibrarySession(projectRoot)
   return withWorkspaceMutationLock(projectRoot, async () => {
-    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const manifest = await readProjectManifest(projectRoot)
     const installedPackage = await readJson(path.join(packagePath(projectRoot, packageName), 'package.json'), 'library package').catch(() => null)
     const allRoots = await managedBlocklyRoots(projectRoot)
     const roots = allRoots.filter(root => root.receipt.packageName === packageName)
@@ -2055,7 +2074,7 @@ export async function removeBlocklyLibraryPackage(options) {
       throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', 'Removal requires the exact installed version and all managed source roots')
     }
     await assertUnmodifiedBlocklyRoots(roots)
-    const staging = await mkdtemp(path.join(projectRoot, '.aily-library-remove-'))
+    const staging = roots.length ? await mkdtemp(path.join(projectRoot, '.aily-library-remove-')) : null
     const moved = []
     try {
       await withBlocklyPackageTransaction(projectRoot, packageName, async () => {
@@ -2073,7 +2092,7 @@ export async function removeBlocklyLibraryPackage(options) {
       for (const backup of moved) await rename(backup.backup, backup.original)
       throw error
     } finally {
-      await rm(staging, { recursive: true, force: true })
+      if (staging) await rm(staging, { recursive: true, force: true })
     }
   })
 }
@@ -2099,8 +2118,9 @@ export async function localizeCoderLibrary(options) {
   const packageName = ref.packageName
   const version = String(options.version ?? '').trim()
   const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  await assertSavedLibrarySession(projectRoot)
   return withWorkspaceMutationLock(projectRoot, async () => {
-    const manifest = await readJson(path.join(projectRoot, 'package.json'), 'package.json')
+    const manifest = await readProjectManifest(projectRoot)
     const packageRoot = packagePath(projectRoot, packageName)
     const packageManifest = await readJson(path.join(packageRoot, 'package.json'), 'library package')
     if (!directDependencySpec(manifest, packageName) || packageManifest.name !== packageName || packageManifest.version !== version) {

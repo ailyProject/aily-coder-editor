@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { withHostLibraryTransaction } from './hostLibrarySession.js'
 import { presentLibrarySearch } from './librarySearchPresentation.js'
 import {
   installCoderLibrary,
@@ -178,16 +179,16 @@ export function createCoderAgentRpcRouter(operations = {}) {
           }
         }
         if (method === 'coder.library.install') {
-          const library = await install({ workspaceRoot, ...mutationParams(params), signal })
+          const library = await withHostLibraryTransaction(workspaceRoot, () => install({ workspaceRoot, ...mutationParams(params), signal }), true)
           signal?.throwIfAborted()
           return { ok: true, library: publicLibrary(library) }
         }
         if (method === 'coder.library.localize') {
-          const library = await localize({ workspaceRoot, ...localizationParams(params), signal })
+          const library = await withHostLibraryTransaction(workspaceRoot, () => localize({ workspaceRoot, ...localizationParams(params), signal }), true)
           signal?.throwIfAborted()
           return { ok: true, library: publicLibrary(library) }
         }
-        const library = await remove({ workspaceRoot, ...mutationParams(params), signal })
+        const library = await withHostLibraryTransaction(workspaceRoot, () => remove({ workspaceRoot, ...mutationParams(params), signal }), true)
         signal?.throwIfAborted()
         return { ok: true, library: publicLibrary(library) }
       } catch (error) {
