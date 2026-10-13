@@ -54,6 +54,7 @@ type LibraryEntry = {
   readonly installed: boolean
   readonly installedVersion?: string
   readonly managed?: boolean
+  readonly local?: boolean
 }
 
 type CompatibleAlternative = {
@@ -73,7 +74,7 @@ type ApiResponse = {
   readonly errorCode?: string
   readonly details?: CompatibilityDetails
   readonly libraries?: readonly LibraryEntry[]
-  readonly library?: Partial<LibraryEntry>
+  readonly library?: LibraryEntry
   readonly total?: number
   readonly categories?: readonly string[]
   readonly types?: readonly string[]
@@ -92,7 +93,7 @@ class ComponentLibraryApiError extends Error {
 }
 
 async function callApi(
-  action: 'search' | 'install' | 'remove',
+  action: 'search' | 'install' | 'remove' | 'resolve-removal',
   body: Record<string, unknown>
 ): Promise<ApiResponse> {
   const response = await fetch(`/api/component-libraries/${action}`, {
@@ -484,12 +485,12 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     const contextKey = this.#contextKey
     if (!root) return false
     try {
-      const response = await callApi('search', {
-        workspaceRoot: root, source: target.source, query: target.query, offset: 0, limit: 50
+      const response = await callApi('resolve-removal', {
+        workspaceRoot: root, source: target.source, libraryId: target.id, folderName: target.folderName
       })
       if (root !== workspaceRoot(this.vscodeApi) || contextKey !== this.#contextKey) return false
-      const library = response.libraries?.find(item => item.id === target.id && item.source === target.source)
-      if (!library?.installed || library.managed !== true || !library.installedVersion) {
+      const library = response.library
+      if (!library?.installed || (!library.managed && !library.local) || !library.installedVersion) {
         throw new Error(`${target.query}: ${this.#copy().unavailable}`)
       }
       return await this.#remove(library.id, library.source, library.installedVersion, library)
@@ -538,7 +539,7 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     if (
       !root
       || !library?.installed
-      || library.managed !== true
+      || (!library.managed && !library.local)
       || !installedVersion
       || this.#installing.has(libraryId)
       || this.#removing.has(libraryId)
@@ -549,6 +550,18 @@ class ComponentLibraryViewProvider implements vscode.WebviewViewProvider {
     const contextKey = this.#contextKey
     try {
       if (!await this.#confirmLibraryRemoval(library, root) || contextKey !== this.#contextKey) return false
+      // A dirty editor must not recreate removed source on the next Save All.
+      // Closing only this library's tabs uses the normal save/discard/cancel UI.
+      const api = this.vscodeApi
+      const roots = library.libraryRoots?.length ? library.libraryRoots
+        : library.folderName ? [`sketch/libraries/${library.folderName}`] : []
+      const paths = roots.map(relative => api.Uri.joinPath(api.Uri.file(root), relative).path.replace(/\/$/u, '') + '/')
+      const tabs = api.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => {
+        const input = tab.input as { uri?: vscode.Uri; original?: vscode.Uri; modified?: vscode.Uri }
+        return [input?.uri, input?.original, input?.modified].some(uri => uri?.scheme === 'file' && paths.some(path => uri.path.startsWith(path)))
+      })
+      if (tabs.length && !await api.window.tabGroups.close(tabs, true)) return false
+      if (root !== workspaceRoot(api) || contextKey !== this.#contextKey) return false
       this.#reportOperationFeedback('loading', library, 'uninstall', installedVersion)
       await callApi('remove', { workspaceRoot: root, libraryId, source, version: installedVersion })
       this.#searchSession.invalidate()

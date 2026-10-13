@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import assert from 'node:assert/strict'
 import { gzip } from 'node:zlib'
 import { promisify } from 'node:util'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -20,6 +20,8 @@ import {
   scanComponentLibraries,
   searchArduinoComponentLibraries,
   searchCoderIndexLibraries,
+  resolveLibraryRemoval,
+  removeWorkspaceLibrary,
 } from './componentLibraryService.js'
 import {
   parseCoderLibraryIndex,
@@ -27,6 +29,29 @@ import {
 } from './coderLibraryRegistry.js'
 
 const gzipAsync = promisify(gzip)
+
+test('local uninstall resolves project directories without catalog, exact installed version, or provenance guessing', async t => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-local-uninstall-'))
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }))
+  await writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ type: 'coder' }))
+  const root = path.join(workspaceRoot, 'sketch/libraries')
+  for (const folderName of ['Adafruit_GFX_Library', 'GuwenUI', 'GxEPD2']) {
+    await mkdir(path.join(root, folderName), { recursive: true })
+    await writeFile(path.join(root, folderName, 'library.properties'), `name=${folderName}\nversion=1.0.0`)
+    const library = await resolveLibraryRemoval({ workspaceRoot, folderName })
+    assert.equal(library.id, `workspace:${folderName}`)
+    assert.equal(library.local, true)
+    assert.equal(library.installedVersion, '1.0.0')
+    assert.deepEqual(library.libraryRoots, [`sketch/libraries/${folderName}`])
+  }
+  await assert.rejects(removeWorkspaceLibrary({ workspaceRoot, libraryId: 'workspace:GuwenUI', version: '2.0.0' }), /版本已变化/)
+  await assert.rejects(resolveLibraryRemoval({ workspaceRoot, folderName: '../other' }), /Invalid/)
+  await symlink(path.join(root, 'GuwenUI'), path.join(root, 'LinkedLibrary'), 'dir')
+  await assert.rejects(resolveLibraryRemoval({ workspaceRoot, folderName: 'LinkedLibrary' }), /real directory/)
+  assert.equal((await removeWorkspaceLibrary({ workspaceRoot, libraryId: 'workspace:GuwenUI', version: '1.0.0' })).removed, true)
+  await assert.rejects(readFile(path.join(root, 'GuwenUI/library.properties')), { code: 'ENOENT' })
+  assert.match(await readFile(path.join(root, 'GxEPD2/library.properties'), 'utf8'), /GxEPD2/)
+})
 
 test('parses Arduino library.properties metadata', () => {
   assert.deepEqual(

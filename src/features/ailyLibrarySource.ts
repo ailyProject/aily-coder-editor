@@ -10,6 +10,7 @@ export type LibraryRemovalTarget = {
   readonly id: string
   readonly source: 'aily' | 'registry'
   readonly query: string
+  readonly folderName?: string
 }
 
 export function packageLibraryRemovalTarget(packageName: string): LibraryRemovalTarget | undefined {
@@ -21,10 +22,15 @@ export function packageLibraryRemovalTarget(packageName: string): LibraryRemoval
 export function workspaceLibraryRemovalTarget(input: {
   readonly ailyReceipt?: string
   readonly arduinoReceipt?: string
+  readonly folderName?: string
 }): LibraryRemovalTarget | undefined {
   const aily = parseJsonObject(input.ailyReceipt)
   if (aily?.source === 'blockly-library' && typeof aily.packageName === 'string') {
-    return packageLibraryRemovalTarget(aily.packageName)
+    const target = packageLibraryRemovalTarget(aily.packageName)
+    if (target) return target
+  }
+  if (input.folderName && !input.folderName.startsWith('.') && !/[/\\\0]/u.test(input.folderName)) {
+    return { id: `workspace:${input.folderName}`, source: 'aily', query: input.folderName, folderName: input.folderName }
   }
   const receipt = parseJsonObject(input.arduinoReceipt)
   if (typeof receipt?.name !== 'string' || !receipt.name.trim() || typeof receipt.libraryId !== 'string') return undefined

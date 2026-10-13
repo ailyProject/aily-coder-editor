@@ -4,6 +4,8 @@ import { withHostLibraryTransaction, withManualLibraryRequest } from './hostLibr
 import {
   installCoderLibrary,
   materializeCoderProjectLibraries,
+  resolveLibraryRemoval,
+  removeWorkspaceLibrary,
   installArduinoComponentLibrary,
   installComponentLibrary,
   removeCoderLibrary,
@@ -73,7 +75,7 @@ async function handleRequest(request, response) {
         const result = await execute()
         // npm can replace another pending package while reconciling the full
         // unsaved tree. Restore every package-local archive, not just this one.
-        await prepareSources()
+        if (!result.library?.local) await prepareSources()
         return result
       }, false, prepareSources)
     } else result = await execute()
@@ -90,6 +92,9 @@ async function handleRequest(request, response) {
 }
 
 async function handleAction(url, body) {
+  if (url.pathname === `${API_PREFIX}resolve-removal`) {
+    return { ok: true, library: await resolveLibraryRemoval(body) }
+  }
   if (url.pathname === `${API_PREFIX}scan`) {
     const libraries = await scanComponentLibraries({ workspaceRoot: body.workspaceRoot })
     return {
@@ -144,6 +149,9 @@ async function handleAction(url, body) {
     }
   }
   if (url.pathname === `${API_PREFIX}remove`) {
+    if (String(body.libraryId).startsWith('workspace:')) {
+      return { ok: true, library: await removeWorkspaceLibrary(body) }
+    }
     const library = body.source === 'aily'
       ? await removeCoderLibrary({
         workspaceRoot: body.workspaceRoot,

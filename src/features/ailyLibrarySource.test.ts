@@ -19,7 +19,8 @@ test('library roots resolve exact package identities for both list sources', () 
 
 test('managed local roots use receipt identities rather than folder or display names', () => {
   assert.deepEqual(workspaceLibraryRemovalTarget({
-    ailyReceipt: JSON.stringify({ source: 'blockly-library', packageName: '@aily-project/lib-servo' })
+    ailyReceipt: JSON.stringify({ source: 'blockly-library', packageName: '@aily-project/lib-servo' }),
+    folderName: 'Servo'
   }), packageLibraryRemovalTarget('@aily-project/lib-servo'))
   for (const [source, id, expectedSource] of [
     ['aily-coder-index', `coder:${'a'.repeat(24)}`, 'aily'],
@@ -32,6 +33,17 @@ test('managed local roots use receipt identities rather than folder or display n
   for (const receipt of [undefined, '{bad json', JSON.stringify({ source: 'aily-chat' }),
     JSON.stringify({ source: 'arduino-platform', libraryId: 'arduino:Servo', name: 'Servo' })]) {
     assert.equal(workspaceLibraryRemovalTarget({ arduinoReceipt: receipt }), undefined)
+  }
+})
+
+test('explicit local roots can be removed regardless of receipt or generated source metadata', () => {
+  for (const folderName of ['Adafruit_GFX_Library', 'GxEPD2', 'GuwenUI']) {
+    assert.deepEqual(workspaceLibraryRemovalTarget({ folderName }), {
+      id: `workspace:${folderName}`, source: 'aily', query: folderName, folderName,
+    })
+  }
+  for (const folderName of ['../other', 'a/b', 'a\\b', '.git']) {
+    assert.equal(workspaceLibraryRemovalTarget({ folderName }), undefined)
   }
 })
 

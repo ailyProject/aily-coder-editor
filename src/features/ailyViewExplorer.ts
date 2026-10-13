@@ -754,7 +754,7 @@ async function readProjectLibraryMetadata(
   ])
   return {
     librarySource: classifyWorkspaceLibrarySource({ ailyReceipt, arduinoReceipt, packageJson, localReceipt }),
-    libraryRemovalTarget: workspaceLibraryRemovalTarget({ ailyReceipt, arduinoReceipt })
+    libraryRemovalTarget: workspaceLibraryRemovalTarget({ ailyReceipt, arduinoReceipt, folderName: libraryRelPath.split('/').at(-1) })
   }
 }
 

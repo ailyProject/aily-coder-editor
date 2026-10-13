@@ -458,10 +458,12 @@ async function removeManagedComponentLibrary({
     )
   }
 
-  await rm(candidate.targetPath, { recursive: true, force: false })
+  if (isManualLibraryRequest()) await hostLibraryRequest('removeLocal', projectRoot, { folderName: candidate.folderName })
+  else await rm(candidate.targetPath, { recursive: true, force: false })
   return {
     ...base,
     name: receiptName,
+    local: true,
     folderName: candidate.folderName,
     removed: true,
     alreadyRemoved: false,
@@ -978,6 +980,54 @@ export async function removeCoderIndexLibrary({
 
 export async function searchCoderLibraries(options) {
   return searchBlocklyLibraryPackages(options)
+}
+
+/** Uninstall resolves the actual installed root, without catalog/network/paging.
+ * Local roots are explicit user-selected directories, never inferred packages. */
+export async function resolveLibraryRemoval(options) {
+  const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  let folder = options.folderName
+  if (!folder && !String(options.libraryId).includes('@')) {
+    const installed = await listInstalledComponentLibraries(path.join(projectRoot, 'sketch', 'libraries'))
+    folder = [...installed.values()].find(item => item.receipt?.libraryId === options.libraryId)?.folderName
+  }
+  if (folder) {
+    if (!isSafeComponentLibraryDirectoryName(folder)) throw new ComponentLibraryError('COMPONENT_PATH_CONFLICT', 'Invalid local library folder')
+    let directory = projectRoot
+    for (const segment of ['sketch', 'libraries', folder]) {
+      directory = path.join(directory, segment)
+      const entry = await lstat(directory)
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new ComponentLibraryError('COMPONENT_PATH_CONFLICT', 'Local library must be a real directory inside sketch/libraries')
+    }
+    const properties = await readFile(path.join(directory, 'library.properties'), 'utf8').then(parseArduinoLibraryProperties).catch(() => ({}))
+    const id = `workspace:${folder}`
+    return { id, libraryRef: id, source: options.source === 'registry' ? 'registry' : 'aily', local: true,
+      name: properties.name || folder, folderName: folder, installed: true, managed: false,
+      version: properties.version || 'local', installedVersion: properties.version || 'local',
+      libraryRoots: [path.posix.join('sketch/libraries', folder)] }
+  }
+  const { packageName } = parseCoderLibraryRef(options.libraryId)
+  if (!packageName) throw new ComponentLibraryError('COMPONENT_NOT_INSTALLED', '该库已被移除，请刷新库列表。')
+  const manifest = await readProjectManifest(projectRoot)
+  const state = await inspectPackageInstallation(projectRoot, manifest, packageName)
+  if (!state.managed) throw new ComponentLibraryError('COMPONENT_NOT_INSTALLED', '该库不是工程的直接依赖，请先卸载引用它的库。')
+  const legacyRoots = await managedBlocklyRoots(projectRoot, packageName)
+  return { ...packageLibraryIdentity(packageName), packageName, name: packageName,
+    version: state.version, installedVersion: state.version, installed: true, managed: true,
+    libraryRoots: [...state.roots.map(root => relativeProjectPath(projectRoot, root.sourcePath)),
+      ...legacyRoots.map(root => relativeProjectPath(projectRoot, root.directory))] }
+}
+
+export async function removeWorkspaceLibrary(options) {
+  if (!String(options.libraryId).startsWith('workspace:')) throw new ComponentLibraryError('COMPONENT_PATH_CONFLICT', 'Invalid local library identity')
+  const projectRoot = await resolveWorkspaceRoot(options.workspaceRoot)
+  return withWorkspaceMutationLock(projectRoot, async () => {
+    const library = await resolveLibraryRemoval({ ...options, folderName: String(options.libraryId).slice('workspace:'.length) })
+    if (library.installedVersion !== options.version) throw new ComponentLibraryError('COMPONENT_PROVENANCE_CONFLICT', '库版本已变化，请刷新后重试。')
+    if (isManualLibraryRequest()) await hostLibraryRequest('removeLocal', projectRoot, { folderName: library.folderName })
+    else await rm(path.join(projectRoot, 'sketch/libraries', library.folderName), { recursive: true })
+    return { ...library, removed: true, installed: false }
+  })
 }
 
 function parseCoderLibraryRef(libraryRef) {
@@ -1692,7 +1742,8 @@ export async function searchBlocklyLibraryPackages(options) {
     if (tokens.length && !tokens.some(token => name.includes(token))) continue
     libraries.push({ id: receipt.libraryId, libraryRef: receipt.libraryId, source: official ? 'registry' : 'aily', tier: 'preferred',
       name: receipt.name, version: installed.version, versions: [installed.version], installedVersion: installed.version,
-      installed: true, managed: true, folderName: installed.folderName, architectures: [], score: 1 })
+      installed: true, managed: true, folderName: installed.folderName, architectures: [],
+      exactMatch: [name, receipt.libraryId].some(value => value.toLocaleLowerCase('en') === exactQuery), score: 1 })
   }
   libraries.sort((a, b) => Number(Boolean(b.exactMatch)) - Number(Boolean(a.exactMatch))
     || b.score - a.score || Number(b.installed) - Number(a.installed) || a.name.localeCompare(b.name))
@@ -2074,14 +2125,18 @@ export async function removeBlocklyLibraryPackage(options) {
       throw new ComponentLibraryError('BLOCKLY_LIBRARY_PROVENANCE_CONFLICT', 'Removal requires the exact installed version and all managed source roots')
     }
     await assertUnmodifiedBlocklyRoots(roots)
-    const staging = roots.length ? await mkdtemp(path.join(projectRoot, '.aily-library-remove-')) : null
+    const manual = isManualLibraryRequest()
+    const staging = roots.length && !manual ? await mkdtemp(path.join(projectRoot, '.aily-library-remove-')) : null
     const moved = []
     try {
       await withBlocklyPackageTransaction(projectRoot, packageName, async () => {
         for (const root of roots) {
-          const backup = path.join(staging, root.folderName)
-          await rename(root.directory, backup)
-          moved.push({ original: root.directory, backup })
+          if (manual) await hostLibraryRequest('removeLocal', projectRoot, { folderName: root.folderName })
+          else {
+            const backup = path.join(staging, root.folderName)
+            await rename(root.directory, backup)
+            moved.push({ original: root.directory, backup })
+          }
         }
         await runNpmLibraryCommand(projectRoot, ['uninstall', packageName, '--ignore-scripts', '--no-audit', '--no-fund'], options)
       })
