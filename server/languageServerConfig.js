@@ -7,7 +7,7 @@ import process from 'node:process'
 import os from 'node:os'
 import { defaultAilyAppDataPath } from './componentLibraryService.js'
 import { resolveCoderLanguageCommand } from './clangdInstallation.js'
-import { resolveLanguageEnvironment, languageSources, insideLanguageRoot } from './languageServerEnvironment.js'
+import { resolveLanguageEnvironment, resolveInstalledLanguageCompiler, languageSources, insideLanguageRoot } from './languageServerEnvironment.js'
 
 const run = promisify(execFile)
 const exists = async file => { try { return (await stat(file)).isFile() } catch { return false } }
@@ -15,10 +15,22 @@ const inside = (root, file) => { const relative = path.relative(root, file); ret
 const COMPILATION_RULES = ['cpp_compile', 'c_compile', 'core_cpp_compile', 'core_c_compile']
 
 /** Parse compiler arguments, never execute a shell command from build.ninja. */
-export function splitCompilerArguments(value) {
+export function splitCompilerArguments(value, platform = process.platform) {
   const result = []; let token = ''; let quote = ''; let started = false
   for (let index = 0; index < value.length; index++) {
     const char = value[index]
+    if (char === '\\' && platform === 'win32' && quote !== "'") {
+      // Windows paths do not use POSIX backslash escapes. Only a run before a
+      // double quote is special (CommandLineToArgvW/GCC driver quoting).
+      let count = 1
+      while (value[index + count] === '\\') count++
+      if (value[index + count] === '"') {
+        token += '\\'.repeat(Math.floor(count / 2)); index += count
+        if (count % 2) token += '"'
+        else quote = quote === '"' ? '' : '"'
+      } else { token += '\\'.repeat(count); index += count - 1 }
+      started = true; continue
+    }
     if (char === '\\' && quote !== "'" && index + 1 < value.length && (quote !== '"' || ['"', '\\', '$', '`'].includes(value[index + 1]))) {
       token += value[++index]; started = true
     } else if (quote) { if (char === quote) quote = ''; else token += char }
@@ -42,6 +54,15 @@ export function buildConfigurationCurrent(packageTime, ninjaTime, lastBuildTime,
   // writing Ninja. That metadata write must not invalidate its own configuration.
   return sameConfiguration || packageTime <= ninjaTime ||
     (Number.isFinite(lastBuildTime) && lastBuildTime >= ninjaTime && Math.abs(packageTime - lastBuildTime) < 1500)
+}
+
+function compilerInputLanguage(args) {
+  let language
+  for (let index = 1; index < args.length && args[index] !== '--'; index++) {
+    if (args[index] === '-x') language = args[++index]
+    else if (args[index].startsWith('-x')) language = args[index].slice(2)
+  }
+  return language
 }
 
 /** clangd ignores didOpen.languageId when choosing compiler input language.
@@ -73,6 +94,10 @@ export async function resolveInoCompileCommand(file, root, database) {
     try { args = row.arguments || splitCompilerArguments(row.command) }
     catch { continue }
     if (!args.length) continue
+    // A managed .ino entry already typed as C++ must retain its database project
+    // identity. An unnecessary compilationDatabaseChanges override makes clangd
+    // background-index only this file instead of the SDK/library database.
+    if (sourcePath(row) === file && compilerInputLanguage(args) === 'c++') return undefined
     // Preserve board includes, defines, response files and the compiler driver.
     // Replace only the input file; put -x before it (and before any -- separator).
     args = args.filter((arg, index) => index === 0 || path.resolve(workingDirectory, arg) !== sourcePath(row))
@@ -97,14 +122,14 @@ async function boundedRead(file, roots, maximum = 1024 * 1024) {
   return readFile(canonical, 'utf8')
 }
 
-async function expandCompilerResponses(args, cwd, roots, cache = new Map(), depth = 0) {
+async function expandCompilerResponses(args, cwd, roots, cache = new Map(), depth = 0, split = splitCompilerArguments) {
   if (depth > 4 || args.length > 4096) throw new Error('Compiler response nesting exceeds budget')
   const result = []
   for (const arg of args) {
     if (!arg.startsWith('@')) { result.push(arg); continue }
     const file = path.resolve(cwd, arg.slice(1))
-    if (!cache.has(file)) cache.set(file, boundedRead(file, roots).then(splitCompilerArguments))
-    result.push(...await expandCompilerResponses(await cache.get(file), cwd, roots, cache, depth + 1))
+    if (!cache.has(file)) cache.set(file, boundedRead(file, roots).then(split))
+    result.push(...await expandCompilerResponses(await cache.get(file), cwd, roots, cache, depth + 1, split))
     if (result.length > 4096) throw new Error('Compiler response arguments exceed budget')
   }
   return result
@@ -113,6 +138,8 @@ async function expandCompilerResponses(args, cwd, roots, cache = new Map(), dept
 /** Derive a language-service database from the builder's real, read-only Ninja
  * compilation records. It never changes the build database or build flags. */
 async function resolveBuildLanguageConfig(root, options = {}) {
+  const platform = options.platform || process.platform
+  const split = value => splitCompilerArguments(value, platform)
   const command = await resolveCoderLanguageCommand(options)
   const fallback = { command, database: undefined, queryDrivers: [] }
   const appData = await realpath(options.appDataPath || defaultAilyAppDataPath()).catch(() => path.resolve(options.appDataPath || defaultAilyAppDataPath()))
@@ -156,11 +183,11 @@ async function resolveBuildLanguageConfig(root, options = {}) {
     const roots = [root, appData, build]; const responseFiles = new Map(); const drivers = new Map()
     for (const row of rows) {
       if (typeof row.command !== 'string' || typeof row.file !== 'string' || row.directory !== build) throw new Error('Invalid builder compilation record')
-      let args = await expandCompilerResponses(splitCompilerArguments(row.command), build, roots, responseFiles)
+      let args = await expandCompilerResponses(split(row.command), build, roots, responseFiles, 0, split)
       const name = args[0]
       if (!name || path.basename(name) !== name || !/^(?:[\w.-]*g(?:\+\+|cc)|clang\+\+|clang)(?:\.exe)?$/.test(name)) throw new Error('Unsupported compiler')
-      const compiler = path.join(compilerDirectory, name)
-      if (!compilerAllowed(await realpath(compiler)) || compiler.includes(',')) throw new Error('Compiler outside installed tools')
+      const compiler = await resolveInstalledLanguageCompiler(path.join(compilerDirectory, name), compilerRoots, platform)
+      if (!compiler || compiler.includes(',')) throw new Error('Compiler outside installed tools')
       if (!drivers.has(compiler)) {
         const result = await run(compiler, ['-print-file-name=include'], { timeout: 1500, maxBuffer: 8192, windowsHide: true })
         const include = await realpath(result.stdout.trim())
@@ -199,11 +226,13 @@ async function resolveBuildLanguageConfig(root, options = {}) {
  * library/SDK implementations. Navigation can work before the first build while
  * diagnostics still distinguish that approximate environment from build proof. */
 export async function resolveCoderLanguageConfig(root, options = {}) {
+  const platform = options.platform || process.platform
+  const split = value => splitCompilerArguments(value, platform)
   root = await realpath(root)
   const base = await resolveBuildLanguageConfig(root, options)
   const env = options.env || process.env
   const appData = await realpath(options.appDataPath || defaultAilyAppDataPath()).catch(() => path.resolve(options.appDataPath || defaultAilyAppDataPath()))
-  const environment = await resolveLanguageEnvironment(root, appData, env, splitCompilerArguments)
+  const environment = await resolveLanguageEnvironment(root, appData, env, split, platform)
   const readableRoots = new Set(environment.readableRoots)
   const languageBinary = await realpath(base.command).catch(() => '')
   if (languageBinary && insideLanguageRoot(appData, languageBinary)) readableRoots.add(path.dirname(path.dirname(languageBinary)))
@@ -226,16 +255,22 @@ export async function resolveCoderLanguageConfig(root, options = {}) {
   const compatible = async (args, cwd) => {
     // Filter GCC-only flags after expanding response files as well. The owned
     // language database changes; the builder's original records stay untouched.
-    try { args = await expandCompilerResponses(args, cwd, responseRoots, responseArguments) } catch { /* Preserve an unavailable response file. */ }
+    try { args = await expandCompilerResponses(args, cwd, responseRoots, responseArguments, 0, split) } catch { /* Preserve an unavailable response file. */ }
     return clangdCompatibleArguments(args)
   }
   for (const row of rows.slice(0, 4096)) {
     if (typeof row?.file !== 'string' || typeof row.directory !== 'string') continue
     let args
-    try { args = row.arguments || splitCompilerArguments(row.command) } catch { continue }
+    try { args = row.arguments || split(row.command) } catch { continue }
     if (!Array.isArray(args) || !args.length || !args.every(arg => typeof arg === 'string')) continue
     const file = path.resolve(row.directory, row.file)
     args = await compatible(args, row.directory)
+    if (/\.ino$/i.test(file) && compilerInputLanguage(args) !== 'c++') {
+      const input = args.findIndex((arg, index) => index > 0 && path.resolve(row.directory, arg) === file)
+      const separator = args.indexOf('--')
+      const before = Math.min(input < 0 ? args.length : input, separator < 0 ? args.length : separator)
+      args.splice(before, 0, '-x', 'c++')
+    }
     const separator = args.indexOf('--')
     args.splice(separator < 0 ? args.length : separator, 0, ...includeFlags)
     canonicalRows.push({ directory: row.directory, file, arguments: args }); known.add(file)
@@ -271,7 +306,7 @@ export async function resolveCoderLanguageConfig(root, options = {}) {
       const arg = args[index]
       if (arg.startsWith('@')) {
         const file = path.resolve(cwd, arg.slice(1))
-        if (!responseCache.has(file)) responseCache.set(file, boundedRead(file, [root, appData, ...readableRoots]).then(splitCompilerArguments).catch(() => []))
+        if (!responseCache.has(file)) responseCache.set(file, boundedRead(file, [root, appData, ...readableRoots]).then(split).catch(() => []))
         await collectIncludes(await responseCache.get(file), cwd, depth + 1)
       }
       const paired = ['-I', '-isystem', '-iquote', '-idirafter', '--sysroot', '-isysroot', '-F', '-iframework', '-include'].includes(arg)

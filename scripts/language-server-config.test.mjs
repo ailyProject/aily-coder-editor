@@ -12,6 +12,14 @@ test('compiler argument parsing preserves quoted paths and macro quotes without 
   assert.throws(() => splitCompilerArguments('g++ "unfinished'))
 })
 
+test('Windows compiler commands preserve drive paths, UNC paths and escaped macro quotes', () => {
+  assert.deepEqual(splitCompilerArguments(String.raw`g++ -IC:\SDK\include @C:\SDK\cpp_flags "-I\\server\SDK headers" "-DBOARD=\"ESP32\""`, 'win32'),
+    ['g++', String.raw`-IC:\SDK\include`, String.raw`@C:\SDK\cpp_flags`, String.raw`-I\\server\SDK headers`, '-DBOARD="ESP32"'])
+  assert.deepEqual(splitCompilerArguments(String.raw`"C:\SDK path\bin\g++.exe" "-IC:\SDK path\\" main.cpp`, 'win32'),
+    [String.raw`C:\SDK path\bin\g++.exe`, '-IC:\\SDK path\\', 'main.cpp'])
+  assert.deepEqual(splitCompilerArguments(String.raw`g++ -I/sdk\ headers @/sdk\ flags`, 'linux'), ['g++', '-I/sdk headers', '@/sdk flags'])
+})
+
 test('clangd adaptation removes only known unsupported GCC flags', () => {
   assert.deepEqual(clangdCompatibleArguments(['g++', '-mlongcalls', '-fstrict-volatile-bitfields', '-mfix-esp32-psram-cache-strategy=memw', '-std=gnu++17', '-DARDUINO_ARCH_ESP32', '-I/sdk', '-fno-rtti']),
     ['g++', '-std=gnu++17', '-DARDUINO_ARCH_ESP32', '-I/sdk', '-fno-rtti'])
@@ -66,5 +74,25 @@ test('sketch commands reuse exact, generated and sibling C++ build flags without
     await writeFile(dbFile, JSON.stringify([{ directory: root, file: 'Blink.ino', command: 'clang++ -DKEEP -- Blink.ino' }]))
     assert.deepEqual((await resolveInoCompileCommand(file, root, database)).compilationCommand,
       ['clang++', '-DKEEP', '-x', 'c++', '--', file])
+    await writeFile(dbFile, JSON.stringify([{ directory: root, file, arguments: ['clang++', '-x', 'c++', file] }]))
+    assert.equal(await resolveInoCompileCommand(file, root, database), undefined)
+    await writeFile(dbFile, JSON.stringify([{ directory: root, file, arguments: ['clang++', '-xc++', file] }]))
+    assert.equal(await resolveInoCompileCommand(file, root, database), undefined)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('managed sketch database sets C++ in the database and avoids shadowing SDK background indexing', async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'aily-ino-index-')))
+  const file = path.join(root, 'main.ino')
+  try {
+    await writeFile(file, 'void setup() {}\n')
+    await writeFile(path.join(root, 'compile_commands.json'), JSON.stringify([{ directory: root, file, arguments: ['clang++', '-DKEEP=1', file] }]))
+    const config = await resolveCoderLanguageConfig(root, { command: 'test-clangd' })
+    const rows = JSON.parse(await readFile(path.join(config.database, 'compile_commands.json'), 'utf8'))
+    const args = rows.find(row => row.file === file).arguments
+    assert.equal(args[args.indexOf('-x') + 1], 'c++')
+    assert.ok(args.indexOf('-x') < args.indexOf(file))
+    assert.ok(args.includes('-DKEEP=1'))
+    assert.equal(await resolveInoCompileCommand(file, root, config.database), undefined)
   } finally { await rm(root, { recursive: true, force: true }) }
 })

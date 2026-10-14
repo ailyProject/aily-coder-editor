@@ -11,21 +11,44 @@ import { insideLanguageRoot } from '../server/languageServerEnvironment.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const base = await realpath(await mkdtemp(path.join(tmpdir(), 'aily-navigation-ui-')))
-const root = path.join(base, 'project'); const appData = path.join(base, 'global')
-const sdk = path.join(appData, 'sdk', 'probe_1.0.0'); const core = path.join(sdk, 'cores', 'probe')
+const root = path.join(base, 'project'); const esp32AppData = process.env.AILY_NAVIGATION_ESP32_APPDATA
+const appData = esp32AppData || path.join(base, 'global')
+const version = process.env.AILY_ESP32_TEST_VERSION || '3.3.10'
+const sdk = path.join(appData, 'sdk', esp32AppData ? `esp32_${version}` : 'probe_1.0.0')
+const core = path.join(sdk, 'cores', esp32AppData ? 'esp32' : 'probe')
 const library = path.join(root, 'node_modules', '@aily-project', 'lib-probe', 'src')
 const environment = path.join(base, 'environment')
 const board = path.join(root, 'node_modules', '@aily-project', 'board-probe')
-for (const folder of [core, library, environment, board]) await mkdir(folder, { recursive: true })
-const source = '#include <SDK.h>\n#include <Probe.h>\n#include <Environment.h>\nProbe probe;\nint run() { return probe.read() + probe.read() + sdkRead() + globalDevice.value + ENV_GLOBAL; }\n'
+for (const folder of [library, environment, board, ...(!esp32AppData ? [core] : [])]) await mkdir(folder, { recursive: true })
+const source = esp32AppData ? `#include <Arduino.h>
+#include <Wire.h>
+#include <WiFi.h>
+void setup() {
+  Serial.begin(115200);
+  Serial.printf("number=%d\\n", 1);
+  Serial.printf(F("flash=%d\\n"), 1);
+  Serial.print(1);
+  Serial.println(1);
+  Serial.available();
+  Wire.begin();
+  WiFi.begin("ssid", "password");
+  Print &output = Serial; output.printf("base=%d", 1);
+  Stream &input = Serial; input.readString();
+  String text("hello"); text.length();
+}
+void loop() {}
+` : '#include <SDK.h>\n#include <Probe.h>\n#include <Environment.h>\nProbe probe;\nint run() { return probe.read() + probe.read() + sdkRead() + globalDevice.value + ENV_GLOBAL; }\n'
+const boardDependencies = esp32AppData ? { '@aily-project/sdk-esp32': version, '@aily-project/compiler-esp-x32': '14.2.0', '@aily-project/tool-esp32-libs': version } : { '@aily-project/sdk-probe': '1.0.0' }
 for (const [file, content] of [
   [path.join(root, 'main.cpp'), source],
-  [path.join(root, 'package.json'), JSON.stringify({ board: 'Probe board', dependencies: { '@aily-project/board-probe': '1.0.0', '@aily-project/lib-probe': '1.0.0' }, boardDependencies: { '@aily-project/sdk-probe': '1.0.0' } })],
-  [path.join(board, 'package.json'), '{}'], [path.join(board, 'board.json'), '{"compilerParam":"compile -b probe:probe:probe"}'],
-  [path.join(sdk, 'platform.txt'), 'recipe.cpp.o.pattern="clang++" -std=c++17 -DSDK_GLOBAL=7 {includes} "{source_file}" -o "{object_file}"\n'],
-  [path.join(sdk, 'boards.txt'), 'probe.build.core=probe\n'],
-  [path.join(core, 'SDK.h'), '#pragma once\nstruct SDKType { int value; };\nextern SDKType globalDevice;\nint sdkRead();\n'],
-  [path.join(core, 'SDK.cpp'), '#include "SDK.h"\nSDKType globalDevice{7};\nint sdkRead() { return SDK_GLOBAL; }\n'],
+  [path.join(root, 'package.json'), JSON.stringify({ board: 'Probe board', dependencies: { '@aily-project/board-probe': '1.0.0', '@aily-project/lib-probe': '1.0.0' }, boardDependencies })],
+  [path.join(board, 'package.json'), '{}'], [path.join(board, 'board.json'), JSON.stringify({ compilerParam: esp32AppData ? 'compile -b esp32:esp32:esp32' : 'compile -b probe:probe:probe' })],
+  ...(!esp32AppData ? [
+    [path.join(sdk, 'platform.txt'), 'recipe.cpp.o.pattern="clang++" -std=c++17 -DSDK_GLOBAL=7 {includes} "{source_file}" -o "{object_file}"\n'],
+    [path.join(sdk, 'boards.txt'), 'probe.build.core=probe\n'],
+    [path.join(core, 'SDK.h'), '#pragma once\nstruct SDKType { int value; };\nextern SDKType globalDevice;\nint sdkRead();\n'],
+    [path.join(core, 'SDK.cpp'), '#include "SDK.h"\nSDKType globalDevice{7};\nint sdkRead() { return SDK_GLOBAL; }\n'],
+  ] : []),
   [path.join(library, 'Probe.h'), '#pragma once\nstruct Probe { int read(); };\n'],
   [path.join(library, 'Probe.cpp'), '#include "Probe.h"\nint Probe::read() { return 42; }\n'],
   [path.join(environment, 'Environment.h'), '#pragma once\n#define ENV_GLOBAL 11\n'],

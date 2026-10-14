@@ -17,6 +17,11 @@ export function sameWorkspace(left, right) {
   return path.relative(left, right) === ''
 }
 
+export function queryDriverGlobs(drivers, platform = process.platform) {
+  // clangd matches these as globs, where a Windows backslash is an escape.
+  return drivers.map(driver => platform === 'win32' ? driver.replace(/\\/g, '/') : driver).join(',')
+}
+
 export function attachCoderLanguageServer(server, token, options = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BYTES })
   const clients = new Map()
@@ -53,7 +58,7 @@ export function attachCoderLanguageServer(server, token, options = {}) {
   wss.on('connection', (socket, root, { command, database, compilationDatabase, queryDrivers, readableRoots = [root] }) => {
     const args = ['--background-index', '--header-insertion=iwyu', '--pch-storage=memory', '--limit-results=40',
       ...(database ? [`--compile-commands-dir=${database}`] : []),
-      ...(queryDrivers.length ? [`--query-driver=${queryDrivers.join(',')}`] : [])]
+      ...(queryDrivers.length ? [`--query-driver=${queryDriverGlobs(queryDrivers, options.platform)}`] : [])]
     const child = spawn(command, args, { cwd: root, env: options.env || process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     clients.set(socket, child)
     let data = Buffer.alloc(0); let initialized = false; let initializeId
@@ -72,8 +77,16 @@ export function attachCoderLanguageServer(server, token, options = {}) {
     })
     child.on('exit', () => { socket.close(1011, 'clangd stopped'); stop() })
     child.stdin.on('error', () => { socket.close(1011, 'clangd input closed'); stop() })
-    // Drain diagnostics from stderr, but never mix them into the JSON-RPC stream.
-    child.stderr.on('data', () => {})
+    // Keep parser/toolchain warnings visible in the language client's output,
+    // even when approximate board diagnostics are suppressed in the editor.
+    let stderr = ''
+    child.stderr.on('data', chunk => {
+      stderr += chunk.toString('utf8')
+      const lines = stderr.split(/\r?\n/); stderr = lines.pop().slice(-4096)
+      for (const line of lines) if (/^[EW]\[/.test(line) && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'window/logMessage', params: { type: line.startsWith('E') ? 1 : 2, message: `[clangd] ${line.slice(0, 4096)}` } }))
+      }
+    })
     child.stdout.on('data', chunk => {
       data = Buffer.concat([data, chunk])
       if (data.length > MAX_BYTES) { socket.close(1009, 'language response too large'); stop(); return }

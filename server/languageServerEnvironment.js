@@ -11,9 +11,30 @@ export const insideLanguageRoot = (root, file) => {
 }
 const json = file => readFile(file, 'utf8').then(JSON.parse).then(value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}).catch(() => ({}))
 const directory = async file => { try { return (await stat(file)).isDirectory() ? await realpath(file) : undefined } catch { return undefined } }
-const properties = async file => Object.fromEntries((await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
-  .filter(line => !/^\s*[#!]/.test(line) && line.includes('='))
-  .map(line => { const index = line.indexOf('='); return [line.slice(0, index).trim(), line.slice(index + 1).trim()] }))
+export function parseLanguageProperties(text, platform = process.platform) {
+  const result = {}
+  const host = { win32: 'windows', darwin: 'macosx', linux: 'linux' }[platform]
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*[#!]/.test(line) || !line.includes('=')) continue
+    const index = line.indexOf('='); const key = line.slice(0, index).trim(); const value = line.slice(index + 1).trim()
+    if (!key) continue
+    result[key] = value
+    const suffix = /^(.*)\.(windows|macosx|linux)$/.exec(key)
+    if (suffix?.[2] === host) result[suffix[1]] = value
+  }
+  return result
+}
+const properties = async (file, platform) => parseLanguageProperties(await readFile(file, 'utf8').catch(() => ''), platform)
+
+/** realpath does not perform Windows executable-extension lookup. Keep compiler
+ * discovery inside the installed roots, including when the candidate is a link. */
+export async function resolveInstalledLanguageCompiler(file, roots, platform = process.platform) {
+  const candidates = platform === 'win32' && !/\.exe$/i.test(file) ? [`${file}.exe`, file] : [file]
+  for (const candidate of candidates) {
+    const canonical = await realpath(candidate).catch(() => '')
+    if (canonical && roots.some(root => insideLanguageRoot(root, canonical)) && (await stat(canonical)).isFile()) return canonical
+  }
+}
 
 /** Walk source trees, not caches, examples or dependency managers. Do not follow
  * directory symlinks: compilation-database files are added separately. */
@@ -34,7 +55,7 @@ export async function languageSources(roots) {
 
 /** Only the selected board's installed packages contribute SDK and compiler
  * paths. Never mix all globally installed SDK versions into one translation unit. */
-export async function resolveLanguageEnvironment(root, appData, env, split) {
+export async function resolveLanguageEnvironment(root, appData, env, split, platform = process.platform) {
   const project = await json(path.join(root, 'package.json'))
   const boardPattern = /^@aily-project\/(?:board|coder)-[\w.-]+$/
   const boardName = boardPattern.test(project.board || '') ? project.board
@@ -96,7 +117,7 @@ export async function resolveLanguageEnvironment(root, appData, env, split) {
     for (const entry of await readdir(src, { withFileTypes: true }).catch(() => [])) if (entry.isDirectory()) await addLibrary(path.join(src, entry.name))
   }
   for (const key of ['CPATH', 'CPLUS_INCLUDE_PATH', 'C_INCLUDE_PATH', 'INCLUDE']) {
-    for (const value of String(env[key] || '').split(key === 'INCLUDE' ? ';' : path.delimiter).filter(Boolean)) {
+    for (const value of String(env[key] || '').split(key === 'INCLUDE' || platform === 'win32' ? ';' : path.delimiter).filter(Boolean)) {
       const folder = path.resolve(root, value); await addInclude(folder)
       const found = await directory(folder); if (found) sourceRoots.add(found)
     }
@@ -106,8 +127,8 @@ export async function resolveLanguageEnvironment(root, appData, env, split) {
   let cppFlags = []; let cFlags = []; let cppDriver = 'clang++'; let cDriver = 'clang'
   for (const sdk of new Set(sdkRoots)) {
     readableRoots.add(sdk)
-    const platform = { ...await properties(path.join(sdk, 'platform.txt')), ...await properties(path.join(sdk, 'platform.local.txt')) }
-    const boards = { ...await properties(path.join(sdk, 'boards.txt')), ...await properties(path.join(sdk, 'boards.local.txt')) }
+    const platformProperties = { ...await properties(path.join(sdk, 'platform.txt'), platform), ...await properties(path.join(sdk, 'platform.local.txt'), platform) }
+    const boards = { ...await properties(path.join(sdk, 'boards.txt'), platform), ...await properties(path.join(sdk, 'boards.local.txt'), platform) }
     const fqbn = /(?:-b|--board)\s+([^\s]+)/.exec(boardConfig.compilerParam || '')?.[1] || boardConfig.type || ''
     const [, arch, id, menu = ''] = fqbn.split(':')
     const selected = {}
@@ -123,7 +144,7 @@ export async function resolveLanguageEnvironment(root, appData, env, split) {
       for (const [key, value] of Object.entries(boards)) if (key.startsWith(prefix)) selected[key.slice(prefix.length)] = value
     }
     const overrides = Object.fromEntries(Object.entries(project.projectConfig || {}).map(([key, value]) => [key.includes('.') ? key : `build.${key}`, value]))
-    const values = { ...platform, ...selected, 'runtime.platform.path': sdk, 'runtime.ide.version': '10819', 'build.arch': arch?.toUpperCase() || path.basename(sdk).split('_')[0].toUpperCase(), ...overrides, ...project.compilerOptions }
+    const values = { ...platformProperties, ...selected, 'runtime.platform.path': sdk, 'runtime.ide.version': '10819', 'build.arch': arch?.toUpperCase() || path.basename(sdk).split('_')[0].toUpperCase(), ...overrides, ...project.compilerOptions }
     for (const [name, folder] of toolRoots) values[`runtime.tools.${name}.path`] = folder
     const expand = value => {
       let text = String(value || '')
@@ -139,7 +160,7 @@ export async function resolveLanguageEnvironment(root, appData, env, split) {
     }
     for (const entry of await readdir(path.join(sdk, 'libraries'), { withFileTypes: true }).catch(() => [])) if (entry.isDirectory()) await addLibrary(path.join(sdk, 'libraries', entry.name))
     const recipeFlags = language => {
-      const recipe = expand(platform[`recipe.${language}.o.pattern`] || '')
+      const recipe = expand(values[`recipe.${language}.o.pattern`] || '')
       let args
       try { args = split(recipe) } catch { return [] }
       // Output, source and {includes} belong to the managed database, not recipe.
@@ -148,8 +169,7 @@ export async function resolveLanguageEnvironment(root, appData, env, split) {
     cppFlags = recipeFlags('cpp'); cFlags = recipeFlags('c')
     const resolveDriver = async language => {
       const full = expand(`${values['compiler.path'] || ''}${values[`compiler.${language}.cmd`] || ''}`)
-      const canonical = await realpath(full).catch(() => '')
-      return canonical && [...compilerRoots, ...toolRoots.values()].some(folder => insideLanguageRoot(folder, canonical)) ? canonical : undefined
+      return resolveInstalledLanguageCompiler(full, [...compilerRoots, ...toolRoots.values()], platform)
     }
     cppDriver = await resolveDriver('cpp') || cppDriver; cDriver = await resolveDriver('c') || cDriver
   }
@@ -166,7 +186,10 @@ export async function resolveLanguageEnvironment(root, appData, env, split) {
     try {
       const { stderr } = await run(driver, ['-E', '-v', '-x', 'c++', process.platform === 'win32' ? 'NUL' : '/dev/null'], { env, timeout: 3000, maxBuffer: 128 * 1024, windowsHide: true })
       const block = /#include <\.\.\.> search starts here:([\s\S]*?)End of search list\./.exec(stderr)?.[1] || ''
-      for (const line of block.split(/\r?\n/)) { const folder = await directory(line.trim().replace(/ \(framework directory\)$/, '')); if (folder) readableRoots.add(folder) }
+      for (const line of block.split(/\r?\n/)) {
+        const folder = await directory(line.trim().replace(/ \(framework directory\)$/, ''))
+        if (folder) { systemIncludes.add(folder); readableRoots.add(folder) }
+      }
     } catch { /* Explicit SDK/library includes remain available. */ }
   }
   const macros = project.macros || project.MACROS || project.projectConfig?.macros || []

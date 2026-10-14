@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { WebSocket } from 'ws'
 import { attachCoderAgentRpcServer } from '../server/agentRpcServer.js'
-import { attachCoderLanguageServer, sameWorkspace } from '../server/languageServer.js'
+import { attachCoderLanguageServer, sameWorkspace, queryDriverGlobs } from '../server/languageServer.js'
 
 test('workspace identity treats Windows drive-letter case as the same directory', () => {
   const root = realpathSync(process.cwd())
@@ -18,6 +18,12 @@ test('workspace identity treats Windows drive-letter case as the same directory'
     : root
   assert.equal(sameWorkspace(root, otherCase), true)
   assert.equal(sameWorkspace(root, path.join(root, 'missing-lsp-child')), false)
+})
+
+test('Windows installed compiler allowlists use clangd glob path separators', () => {
+  assert.equal(queryDriverGlobs([String.raw`C:\SDK path\bin\g++.exe`, String.raw`\\server\SDK\bin\gcc.exe`], 'win32'),
+    'C:/SDK path/bin/g++.exe,//server/SDK/bin/gcc.exe')
+  assert.equal(queryDriverGlobs(['/sdk/g++'], 'linux'), '/sdk/g++')
 })
 
 for (const [extension, withDatabase] of [['cpp', false], ['ino', false], ['INO', false], ['c', false], ['ino', true]]) test(`managed runtime authenticates clangd, returns fresh diagnostics and definitions for .${extension} (${withDatabase ? 'build database' : 'fallback'}), releases sessions`, { timeout: 20000 }, async t => {
