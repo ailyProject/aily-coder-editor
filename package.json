@@ -89,6 +89,7 @@
     "typecheck": "tsc --noEmit",
     "check-build": "npm run lint && npm run typecheck",
     "build": "npm run check-build && npm run build:runtime && vite --config vite.config.ts build",
+    "build:browser": "node scripts/build-browser.mjs",
     "build:runtime": "node scripts/build-runtime.mjs",
     "build:watch": "vite --config vite.config.ts build --watch",
     "build:subapp": "npm run build",

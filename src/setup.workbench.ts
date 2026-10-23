@@ -39,7 +39,8 @@ import {
   remoteAuthority,
   userDataProvider,
   disableShadowDom,
-  useEmbedHostLocalFolder
+  useEmbedHostLocalFolder,
+  useHtmlFileSystemProvider
 } from './setup.common'
 import { installEmbedCommandPaletteBlock } from './embedCommandPalettePatch'
 import { installEmbedEditorContextMenus } from './embedEditorContextMenus'
@@ -55,6 +56,7 @@ import {
 } from './parentBackedNativeFs.js'
 import { NativeFsExternalModelSync } from './nativeFsExternalModelSync.js'
 import { installFileDrop } from './features/fileDrop.workbench.js'
+import { installBrowserWorkspace } from './browserWorkspace.js'
 
 /** 与宿主 `?theme=` 共用：dark→Dark+、light→Light Modern（见 setup.common.ts） */
 export type { CoderEmbedThemeScheme } from './setup.common'
@@ -123,6 +125,16 @@ await initializeMonacoService(
 )
 
 installFileDrop()
+
+if (useHtmlFileSystemProvider) {
+  // This composition explicitly trusts only its own deployment origin. A
+  // future cross-origin parent requires an explicit deployment policy.
+  const snapshotModuleURL = new URL('./browser-project-port.mjs', document.baseURI)
+  if (snapshotModuleURL.origin !== window.location.origin || snapshotModuleURL.search || snapshotModuleURL.hash) {
+    throw new TypeError('The Browser ProjectPort module must belong to this same-origin release.')
+  }
+  await installBrowserWorkspace(container, { expectedParentOrigin: window.location.origin, snapshotModuleURL: snapshotModuleURL.href })
+}
 
 /** 兼容旧版持久化设置：Explorer 显示 node_modules，搜索与 SCM 继续使用各自过滤链。 */
 async function migrateExplorerNodeModulesVisibility(): Promise<void> {

@@ -187,12 +187,14 @@ export const connectionToken = params.get('connectionToken') ?? undefined
 export const remotePath =
   remoteAuthority != null ? (params.get('remotePath') ?? undefined) : undefined
 export const resetLayout = params.has('resetLayout')
-export const useHtmlFileSystemProvider = params.has('htmlFileSystemProvider')
 export const disableShadowDom = params.has('disableShadowDom')
 export const embedFolderAbsolute =
   remoteAuthority != null ? undefined : decodeFolderQueryParam(params.get('folder'))
-/** aily Electron 宿主通过 postMessage 桥接磁盘；纯浏览器预览仍为演示工作区 */
+/** Native/remote keep their existing providers. A Browser gets directory
+ * permission only from the original HTML FS directory picker. */
 const embedNativeFsBridge = params.get('nativeFsBridge') === 'true'
+export const useHtmlFileSystemProvider = remoteAuthority == null &&
+  (params.has('htmlFileSystemProvider') || !(embedFolderAbsolute && embedNativeFsBridge))
 export const useEmbedHostLocalFolder = Boolean(
   embedFolderAbsolute && embedNativeFsBridge && !useHtmlFileSystemProvider
 )
@@ -452,6 +454,9 @@ export const constructOptions: IWorkbenchConstructionOptions = {
   workspaceProvider: {
     trusted: true,
     async open() {
+      // HTML FS folders are selected and activated in the current Workbench by
+      // browserWorkspace. Never reopen the same URL pretending it switched.
+      if (useHtmlFileSystemProvider) return false
       window.open(window.location.href)
       return true
     },
@@ -466,7 +471,7 @@ export const constructOptions: IWorkbenchConstructionOptions = {
           }
         : useEmbedHostLocalFolder && embedFolderAbsolute
           ? { folderUri: vscode.Uri.file(embedFolderAbsolute) }
-          : {
+          : useHtmlFileSystemProvider ? undefined : {
               workspaceUri: workspaceFile
             }
   },

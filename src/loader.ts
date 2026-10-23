@@ -1,4 +1,5 @@
 import { announceAilyCoderReadyProtocol } from './embedLifecycle'
+import { initializeCoderProduct } from './coderProduct.js'
 
 const searchParams = new URLSearchParams(window.location.search)
 const locale = searchParams.get('locale')
@@ -64,38 +65,7 @@ if (mode === 'full-workbench') {
   announceAilyCoderReadyProtocol()
 }
 
-declare global {
-  interface Window {
-    _VSCODE_PRODUCT_JSON: object
-  }
-}
-
-window._VSCODE_PRODUCT_JSON = {
-  defaultChatAgent: {
-    chatExtensionId: 'codingame.aiDemo',
-    extensionId: '',
-    completionsEnablementSetting: 'codingameAICompletionsEnabled',
-    nextEditSuggestionsSetting: 'codingameNextEditSuggestionsEnabled',
-    provider: {
-      default: {
-        id: 'codingame',
-        name: 'Codingame'
-      },
-      apple: {
-        id: 'codingame',
-        name: 'Codingame'
-      },
-      enterprise: {
-        id: 'codingame',
-        name: 'Codingame'
-      },
-      google: {
-        id: 'codingame',
-        name: 'Codingame'
-      }
-    }
-  }
-}
+initializeCoderProduct()
 
 ;(async () => {
   if (sandboxed) {
