@@ -1,5 +1,7 @@
 import { ICommandService, IEditorService, ITextFileService, StandaloneServices, getService } from '@codingame/monaco-vscode-api'
 import { VSBuffer, readableToBuffer } from '@codingame/monaco-vscode-api/vscode/vs/base/common/buffer'
+import { TextFileEditorModelState } from '@codingame/monaco-vscode-api/vscode/vs/workbench/services/textfile/common/textfiles'
+import { createHostEditorSaver } from './hostEditorSave'
 import { captureProjectCopy } from './projectCopySnapshot'
 
 export const HOST_LIFECYCLE_REQUEST_CHANNEL = 'aily-coder-editor-host-lifecycle-request'
@@ -23,6 +25,13 @@ type HostLifecycleRequest = {
 
 let installed = false
 let copySnapshot: { token: string; assertCurrent(): void; complete(): Promise<void> } | undefined
+
+const saveHostEditors = createHostEditorSaver(
+  () => StandaloneServices.get(ITextFileService).files.models
+    .filter(model => model.hasState(TextFileEditorModelState.PENDING_SAVE))
+    .map(model => model.joinState(TextFileEditorModelState.PENDING_SAVE)),
+  () => StandaloneServices.get(IEditorService).saveAll({ includeUntitled: false }),
+)
 
 export function installHostLifecycleBridge(): void {
   if (installed || typeof window === 'undefined') {
@@ -132,7 +141,9 @@ async function handleHostLifecycleRequest(request: HostLifecycleRequest): Promis
       }
     }
 
-    const result = await editorService.saveAll({ includeUntitled: false })
+    // onDidExecuteCommand fires before the command's Promise settles. In
+    // particular, save participants reject reentrant saves while formatting.
+    const result = await saveHostEditors()
     const dirtyAfter = countDirtyEditors(editorService)
     return result.success && dirtyAfter === 0
       ? { ok: true, dirtyBefore, dirtyAfter }
