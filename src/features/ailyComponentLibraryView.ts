@@ -29,6 +29,8 @@ import {
 export const AILY_COMPONENT_LIBRARY_CONTAINER_ID = 'ailyComponentLibraries'
 export const AILY_COMPONENT_LIBRARY_VIEW_ID = 'aily.componentLibraries'
 const AILY_COMPONENT_LIBRARY_PANE_COMPOSITE_ID = `workbench.view.extension.${AILY_COMPONENT_LIBRARY_CONTAINER_ID}`
+/** The secondary side bar only hosts the library manager; this is both its first-open and minimum width. */
+const AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH = 350
 
 type LibraryEntry = {
   readonly id: string
@@ -640,6 +642,7 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
     )
   })
   let closeMenuItem = registerCloseMenuItem()
+  const panelWidthListener = enforceLibraryPanelWidth()
   let closeTitle = libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close
   const unsubscribeCloseTitle = onHostEmbedContextChanged(() => {
     const nextTitle = libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close
@@ -649,14 +652,45 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
     closeMenuItem = registerCloseMenuItem()
   })
   return {
-    dispose: () => { provider.dispose(); registration.dispose(); closeMenuItem.dispose(); unsubscribeCloseTitle() },
+    dispose: () => { provider.dispose(); registration.dispose(); closeMenuItem.dispose(); unsubscribeCloseTitle(); panelWidthListener?.dispose() },
     refresh: () => provider.refresh(),
     removeLibrary: target => provider.removeLibrary(target)
   }
 }
 
+type SizedWorkbenchPart = { minimumWidth: number }
+type PartAwareLayoutService = IWorkbenchLayoutService & { getPart?(part: Parts): SizedWorkbenchPart }
+
+function ensureLibraryPanelWidth(layoutService: PartAwareLayoutService): void {
+  try {
+    const part = layoutService.getPart?.(Parts.AUXILIARYBAR_PART)
+    if (part && part.minimumWidth < AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH) {
+      part.minimumWidth = AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH
+    }
+    if (!layoutService.isVisible(Parts.AUXILIARYBAR_PART, window)) return
+    const size = layoutService.getSize(Parts.AUXILIARYBAR_PART)
+    if (size.width < AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH) {
+      layoutService.setSize(Parts.AUXILIARYBAR_PART, { width: AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH, height: size.height })
+    }
+  } catch {
+    /* workbench layout is not ready, or the views-only layout has no grid parts */
+  }
+}
+
+function enforceLibraryPanelWidth(): vscode.Disposable | undefined {
+  try {
+    const layoutService = StandaloneServices.get(IWorkbenchLayoutService) as PartAwareLayoutService
+    ensureLibraryPanelWidth(layoutService)
+    return layoutService.onDidChangePartVisibility(() => ensureLibraryPanelWidth(layoutService))
+  } catch {
+    return undefined
+  }
+}
+
 export async function openAilyComponentLibraryPanel(): Promise<void> {
-  StandaloneServices.get(IWorkbenchLayoutService).setPartHidden(false, Parts.AUXILIARYBAR_PART)
+  const layoutService = StandaloneServices.get(IWorkbenchLayoutService) as PartAwareLayoutService
+  layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART)
+  ensureLibraryPanelWidth(layoutService)
   await StandaloneServices.get(IViewsService).openView(AILY_COMPONENT_LIBRARY_VIEW_ID, true)
 }
 
