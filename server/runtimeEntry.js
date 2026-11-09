@@ -8,6 +8,7 @@ import { attachCoderAgentRpcServer } from './agentRpcServer.js'
 import { handleComponentLibraryApiRequest } from './componentLibraryApi.js'
 import { activeDevReloadUrl } from './devReload.js'
 import { attachCoderLanguageServer } from './languageServer.js'
+import { handleUiStateApiRequest } from './uiStateApi.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const uiRoot = path.join(packageRoot, 'ui')
@@ -115,7 +116,7 @@ async function startServeMode(options) {
 
   const server = createServer((request, response) => {
     void handleComponentLibraryApiRequest(request, response).then(async handled => {
-      if (handled) return
+      if (handled || await handleUiStateApiRequest(request, response)) return
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         response.writeHead(405, { Allow: 'GET, HEAD' })
         response.end()

@@ -31,6 +31,7 @@ export const AILY_COMPONENT_LIBRARY_VIEW_ID = 'aily.componentLibraries'
 const AILY_COMPONENT_LIBRARY_PANE_COMPOSITE_ID = `workbench.view.extension.${AILY_COMPONENT_LIBRARY_CONTAINER_ID}`
 /** The secondary side bar only hosts the library manager; this is both its first-open and minimum width. */
 const AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH = 350
+const AILY_UI_STATE_API = '/api/ui-state'
 
 type LibraryEntry = {
   readonly id: string
@@ -642,7 +643,7 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
     )
   })
   let closeMenuItem = registerCloseMenuItem()
-  const panelWidthListener = enforceLibraryPanelWidth()
+  const panelWidthListener = syncLibraryPanelWidth()
   let closeTitle = libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close
   const unsubscribeCloseTitle = onHostEmbedContextChanged(() => {
     const nextTitle = libraryStrings(getHostEmbedContext()?.meta?.lang ?? vscodeApi.env.language).close
@@ -658,39 +659,91 @@ export function registerAilyComponentLibraryView(vscodeApi: typeof vscode): Comp
   }
 }
 
-type SizedWorkbenchPart = { minimumWidth: number }
-type PartAwareLayoutService = IWorkbenchLayoutService & { getPart?(part: Parts): SizedWorkbenchPart }
+type PartAwareLayoutService = IWorkbenchLayoutService & { getPart?(part: Parts): { minimumWidth: number } }
 
-function ensureLibraryPanelWidth(layoutService: PartAwareLayoutService): void {
+let libraryPanelWidth = AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH
+
+function auxiliaryBarWidth(layoutService: IWorkbenchLayoutService): number | undefined {
+  try {
+    return layoutService.isVisible(Parts.AUXILIARYBAR_PART, window) ? layoutService.getSize(Parts.AUXILIARYBAR_PART).width : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Raises the secondary side bar minimum and restores the remembered width while it is visible. */
+function applyLibraryPanelWidth(layoutService: PartAwareLayoutService): void {
   try {
     const part = layoutService.getPart?.(Parts.AUXILIARYBAR_PART)
-    if (part && part.minimumWidth < AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH) {
-      part.minimumWidth = AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH
-    }
-    if (!layoutService.isVisible(Parts.AUXILIARYBAR_PART, window)) return
-    const size = layoutService.getSize(Parts.AUXILIARYBAR_PART)
-    if (size.width < AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH) {
-      layoutService.setSize(Parts.AUXILIARYBAR_PART, { width: AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH, height: size.height })
+    if (part) part.minimumWidth = Math.max(part.minimumWidth, AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH)
+    const width = auxiliaryBarWidth(layoutService)
+    if (width !== undefined && width !== libraryPanelWidth) {
+      layoutService.setSize(Parts.AUXILIARYBAR_PART, { width: libraryPanelWidth, height: layoutService.getSize(Parts.AUXILIARYBAR_PART).height })
     }
   } catch {
     /* workbench layout is not ready, or the views-only layout has no grid parts */
   }
 }
 
-function enforceLibraryPanelWidth(): vscode.Disposable | undefined {
+/**
+ * Persists sash drags only: window resizes also shrink the low-priority secondary side bar.
+ * The width is kept by the runtime because the iframe origin changes with its port on every launch.
+ */
+function syncLibraryPanelWidth(): vscode.Disposable | undefined {
+  let layoutService: PartAwareLayoutService
   try {
-    const layoutService = StandaloneServices.get(IWorkbenchLayoutService) as PartAwareLayoutService
-    ensureLibraryPanelWidth(layoutService)
-    return layoutService.onDidChangePartVisibility(() => ensureLibraryPanelWidth(layoutService))
+    layoutService = StandaloneServices.get(IWorkbenchLayoutService) as PartAwareLayoutService
   } catch {
     return undefined
+  }
+  applyLibraryPanelWidth(layoutService)
+  void fetch(AILY_UI_STATE_API, { cache: 'no-store' })
+    .then(response => response.ok ? response.json() as Promise<{ state?: { componentLibraryPanelWidth?: number } }> : undefined)
+    .then(payload => {
+      const width = Number(payload?.state?.componentLibraryPanelWidth)
+      if (!Number.isFinite(width)) return
+      libraryPanelWidth = Math.max(AILY_COMPONENT_LIBRARY_PANEL_MIN_WIDTH, Math.round(width))
+      applyLibraryPanelWidth(layoutService)
+    })
+    .catch(() => undefined)
+
+  const visibilityListener = layoutService.onDidChangePartVisibility(({ partId, visible }) => {
+    if (visible && partId === Parts.AUXILIARYBAR_PART) applyLibraryPanelWidth(layoutService)
+  })
+  let widthBeforeDrag: number | undefined
+  const onPointerDown = (event: PointerEvent) => {
+    // The workbench renders in a shadow root, so window listeners only see the retargeted host.
+    const onSash = event.composedPath().some(node => node instanceof Element && node.classList.contains('monaco-sash'))
+    widthBeforeDrag = onSash ? auxiliaryBarWidth(layoutService) : undefined
+  }
+  const onPointerUp = () => {
+    const width = auxiliaryBarWidth(layoutService)
+    if (widthBeforeDrag !== undefined && width !== undefined && width !== widthBeforeDrag) {
+      libraryPanelWidth = width
+      void fetch(AILY_UI_STATE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ componentLibraryPanelWidth: width }),
+        keepalive: true
+      }).catch(() => undefined)
+    }
+    widthBeforeDrag = undefined
+  }
+  window.addEventListener('pointerdown', onPointerDown, true)
+  window.addEventListener('pointerup', onPointerUp, true)
+  return {
+    dispose: () => {
+      visibilityListener.dispose()
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('pointerup', onPointerUp, true)
+    }
   }
 }
 
 export async function openAilyComponentLibraryPanel(): Promise<void> {
   const layoutService = StandaloneServices.get(IWorkbenchLayoutService) as PartAwareLayoutService
   layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART)
-  ensureLibraryPanelWidth(layoutService)
+  applyLibraryPanelWidth(layoutService)
   await StandaloneServices.get(IViewsService).openView(AILY_COMPONENT_LIBRARY_VIEW_ID, true)
 }
 

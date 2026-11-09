@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'node:url'
 import { handleComponentLibraryApiRequest } from './server/componentLibraryApi.js'
+import { handleUiStateApiRequest } from './server/uiStateApi.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(
@@ -41,8 +42,8 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           void handleComponentLibraryApiRequest(req, res)
-            .then(handled => {
-              if (!handled) next()
+            .then(async handled => {
+              if (!handled && !await handleUiStateApiRequest(req, res)) next()
             })
             .catch(next)
         })
