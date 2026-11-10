@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { JSDOM } from 'jsdom'
-import { librarySelectCss, librarySelectScript } from './librarySelectUi.ts'
+import { librarySelectCss, librarySelectScript } from './librarySelectUi.js'
 
 function boot(body: string) {
   const dom = new JSDOM(`<!doctype html><html class="aily-selects"><head><style>${librarySelectCss}</style></head><body>${body}</body></html>`, {
@@ -17,8 +17,9 @@ function boot(body: string) {
   if (typeof window.ResizeObserver !== 'function') {
     window.ResizeObserver = class {
       observe(): void { /* layout stub */ }
+      unobserve(): void { /* layout stub */ }
       disconnect(): void { /* layout stub */ }
-    } as typeof ResizeObserver
+    } as unknown as typeof ResizeObserver
   }
   Object.defineProperty(window, 'visualViewport', { configurable: true, value: null })
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 })
