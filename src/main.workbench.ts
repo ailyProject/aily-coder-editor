@@ -11,10 +11,12 @@ import {
   coderWorkbenchColorThemeForScheme,
   remoteAuthority
 } from './setup.workbench'
+import { embedFolderAbsolute, useEmbedHostLocalFolder } from './setup.common'
 import { CustomEditorInput } from './features/customView.workbench'
 import { announceAilyCoderWorkbenchReady } from './embedLifecycle'
 import { getHostEmbedContext, onHostEmbedContextChanged } from './hostEmbedContext'
 import { installHostLifecycleBridge } from './hostLifecycle'
+import { installHostSimulatorSourceBridge } from './hostSimulatorSource.workbench'
 import { createHostThemeSynchronizer } from './hostThemeSync'
 import './main.common'
 
@@ -23,6 +25,7 @@ if (remoteAuthority != null) {
 }
 
 installHostLifecycleBridge()
+if (useEmbedHostLocalFolder && embedFolderAbsolute) installHostSimulatorSourceBridge(embedFolderAbsolute)
 
 const hostThemeSync = createHostThemeSynchronizer(async requestedTheme => {
   const colorTheme = coderWorkbenchColorThemeForScheme(requestedTheme)

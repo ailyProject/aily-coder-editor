@@ -61,3 +61,11 @@ body {
 :root {
   --product-icon: url(product-icon.png);
 }
+
+.monaco-editor .aily-simulator-source-stop {
+  background-color: var(--vscode-editor-stackFrameHighlightBackground, rgb(245 185 50 / 24%));
+}
+
+.monaco-editor .aily-simulator-source-stop-gutter {
+  border-left: 3px solid var(--vscode-debugIcon-startForeground, #d59000);
+}
