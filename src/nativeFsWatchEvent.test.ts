@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  collapseNativeFsWatchPaths,
   isCaseSensitiveNativeFsRoot,
   NativeFsWatchEchoSuppressor,
   resolveNativeFsWatchRefreshPaths,
@@ -73,6 +74,27 @@ test('suppresses native echoes of local writes without hiding later changes', ()
   assert.equal(suppressor.shouldSuppress('/workspace/demo/sketch/src/main.cpp'), true)
   now += 1
   assert.equal(suppressor.shouldSuppress('/workspace/demo/sketch/src/main.cpp'), false)
+})
+
+test('collapses an extraction burst to the shallowest new folders', () => {
+  assert.deepEqual(
+    collapseNativeFsWatchPaths([
+      '/workspace/demo/node_modules/@aily-project/lib-servo/src/Servo.h',
+      '/workspace/demo/node_modules/@aily-project/lib-servo',
+      '/workspace/demo/node_modules/@aily-project/lib-servo/package.json',
+      '/workspace/demo/node_modules/@aily-project/lib-servo',
+      '/workspace/demo/sketch/libraries/Wire/Wire.h'
+    ]),
+    [
+      '/workspace/demo/node_modules/@aily-project/lib-servo',
+      '/workspace/demo/sketch/libraries/Wire/Wire.h'
+    ]
+  )
+  assert.deepEqual(
+    collapseNativeFsWatchPaths(['C:\\work\\demo\\node_modules\\a\\x.h', 'C:\\work\\demo\\node_modules\\a']),
+    ['C:/work/demo/node_modules/a']
+  )
+  assert.equal(collapseNativeFsWatchPaths(Array.from({ length: 500 }, (_, i) => `/w/f${i}`), 64).length, 64)
 })
 
 test('forgets suppression when a local write fails', () => {

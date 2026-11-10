@@ -16,9 +16,11 @@ import {
 } from '@codingame/monaco-vscode-api/vscode/vs/platform/files/common/files'
 import type { IFileChange } from '@codingame/monaco-vscode-api/vscode/vs/platform/files/common/files'
 import {
+  collapseNativeFsWatchPaths,
   isCaseSensitiveNativeFsRoot,
   NativeFsWatchEchoSuppressor,
-  resolveNativeFsWatchRefreshPaths
+  resolveNativeFsWatchRefreshPaths,
+  resolveNativeFsWatchTargetPath
 } from './nativeFsWatchEvent.js'
 
 const CHANNEL = 'aily-coder-editor-native-fs'
@@ -466,6 +468,8 @@ export class ParentBackedNativeFsProvider {
 
   private readonly _onDidChangeFile = new Emitter<readonly IFileChange[]>()
   readonly onDidChangeFile = this._onDidChangeFile.event
+  private readonly pendingPresencePaths = new Set<string>()
+  private presenceTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(private readonly rootFsPathNormalized: string) {
     this.capabilities =
@@ -673,6 +677,13 @@ export class ParentBackedNativeFsProvider {
             this._fire(...changes)
             _onDidReceiveParentBackedNativeFsWatchChange.fire({ watchRoot: path, event: ev })
           }
+          if (ev.eventType?.toLowerCase() === 'rename') {
+            const target = resolveNativeFsWatchTargetPath(path, ev)
+            if (target && target !== normalizeFsPathSep(path).replace(/\/$/, '') &&
+              !nativeFsWatchEchoSuppressor.shouldSuppress(target)) {
+              this.schedulePresenceCheck(target)
+            }
+          }
         })
       })
       .catch(() => {
@@ -684,6 +695,28 @@ export class ParentBackedNativeFsProvider {
 
   private _fire(...changes: IFileChange[]) {
     this._onDidChangeFile.fire(changes)
+  }
+
+  /** fs.watch reports creation and removal alike as rename; Explorer needs ADDED/DELETED to re-list a folder. */
+  private schedulePresenceCheck(target: string) {
+    this.pendingPresencePaths.add(target)
+    this.presenceTimer ??= setTimeout(() => void this.flushPresenceChecks(), 50)
+  }
+
+  private async flushPresenceChecks() {
+    this.presenceTimer = undefined
+    const paths = collapseNativeFsWatchPaths(this.pendingPresencePaths)
+    this.pendingPresencePaths.clear()
+    const changes = await Promise.all(paths.map(async (target): Promise<IFileChange | undefined> => {
+      try {
+        const { exists } = await rpc<{ exists: boolean }>('nativeFsStat', { path: target }, 5000)
+        return { type: exists ? FileChangeType.ADDED : FileChangeType.DELETED, resource: URI.file(target) }
+      } catch {
+        return undefined
+      }
+    }))
+    const resolved = changes.filter((change): change is IFileChange => change != null)
+    if (resolved.length > 0) this._fire(...resolved)
   }
 
   private async runLocalMutation<T>(paths: string[], task: () => Promise<T>): Promise<T> {

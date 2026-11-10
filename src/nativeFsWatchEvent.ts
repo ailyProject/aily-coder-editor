@@ -96,6 +96,29 @@ export function resolveNativeFsWatchRefreshPaths(
   return parent === target ? [target] : [target, parent]
 }
 
+/**
+ * Explorer only re-lists folders for ADDED/DELETED events, and one event for a
+ * folder covers everything beneath it, so a burst like an npm extraction needs
+ * just its shallowest paths classified.
+ */
+export function collapseNativeFsWatchPaths(paths: Iterable<string>, limit = 64): string[] {
+  const unique = [...new Set([...paths].map(path => normalizePath(path).replace(/\/$/, '')))]
+    .filter(Boolean)
+    .sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right))
+  const kept = new Set<string>()
+  for (const path of unique) {
+    if (kept.size >= limit) break
+    let ancestor = path
+    let covered = false
+    while (!covered && ancestor.lastIndexOf('/') > 0) {
+      ancestor = ancestor.slice(0, ancestor.lastIndexOf('/'))
+      covered = kept.has(ancestor)
+    }
+    if (!covered) kept.add(path)
+  }
+  return [...kept]
+}
+
 /** Windows drive roots are case-insensitive and must not advertise otherwise. */
 export function isCaseSensitiveNativeFsRoot(root: string): boolean {
   return !/^[a-zA-Z]:\//.test(normalizePath(root))
