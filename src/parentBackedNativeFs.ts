@@ -742,3 +742,12 @@ export async function readNativeFsBinary(absPath: string): Promise<Uint8Array | 
     return null
   }
 }
+
+/** Write a compile-entry update only over the manifest snapshot it was based on. */
+export async function writeNativeCompileEntryManifest(absPath: string, before: Uint8Array, after: Uint8Array): Promise<void> {
+  await rpc('nativeFsWriteBinary', {
+    path: normalizeFsPathSep(absPath),
+    expectedManifestBase64: bytesToBase64(before),
+    base64: bytesToBase64(after),
+  })
+}

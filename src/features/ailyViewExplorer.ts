@@ -34,7 +34,8 @@ import {
   shouldRefreshBuildOutputsNativeWatch,
   shouldRefreshStartHereNativeWatch,
   startWorkspaceNativeWatch,
-  statAbsolutePathViaHost
+  statAbsolutePathViaHost,
+  writeNativeCompileEntryManifest
 } from '../parentBackedNativeFs.js'
 import {
   AILY_LIBRARY_RECEIPT_FILE,
@@ -426,6 +427,18 @@ function isSrcCppEntryNodeId(id: string): boolean {
   return id.startsWith(ENTRY_SRC_NODE_PREFIX)
 }
 
+interface ProjectEntryManifest {
+  type?: string
+  entry?: string
+  arduinoSketch?: boolean
+}
+
+function projectEntryInWorkspace(manifest: ProjectEntryManifest): string | undefined {
+  const entry = (typeof manifest.entry === 'string' && manifest.entry.trim()) ||
+    (manifest.type === 'coder' ? 'src/main.cpp' : undefined)
+  return entry ? `${manifest.arduinoSketch === true ? '' : 'sketch/'}${entry.replace(/\\/g, '/').replace(/^\/+/, '')}` : undefined
+}
+
 /** 读取 package.json 中的默认编译入口，并转换为相对工程根的 sketch 路径。 */
 async function readProjectPackageEntry(vscodeApi: typeof vscode): Promise<string | undefined> {
   const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
@@ -435,11 +448,7 @@ async function readProjectPackageEntry(vscodeApi: typeof vscode): Promise<string
   try {
     const uri = vscodeApi.Uri.joinPath(root, 'package.json')
     const raw = await vscodeApi.workspace.fs.readFile(uri)
-    const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string; arduinoSketch?: boolean }
-    const entry = doc.entry?.trim()
-    return entry != null && entry.length > 0
-      ? `${doc.arduinoSketch === true ? '' : 'sketch/'}${entry.replace(/\\/g, '/').replace(/^\/+/, '')}`
-      : undefined
+    return projectEntryInWorkspace(JSON.parse(new TextDecoder('utf-8').decode(raw)) as ProjectEntryManifest)
   } catch {
     return undefined
   }
@@ -1937,19 +1946,44 @@ void getApi().then((vscode) => {
     return idx >= 0 ? normalized.slice(idx + 1) : normalized
   }
 
-  const syncProjectPackageEntry = async (entryRel: string): Promise<void> => {
+  let entrySync = Promise.resolve()
+  const queueEntryOperation = (operation: () => Promise<void>): Promise<void> => {
+    const update = entrySync.then(operation)
+    entrySync = update.catch(() => {})
+    return update
+  }
+
+  const syncProjectPackageEntry = async (entryRel: string, renamedFrom?: string): Promise<void> => {
     const packageUri = resolveProjectUri('package.json')
-    if (packageUri == null) {
-      return
-    }
+    if (packageUri == null) return
+    let raw: Uint8Array
     try {
-      const raw = await vscode.workspace.fs.readFile(packageUri)
-      const doc = JSON.parse(new TextDecoder('utf-8').decode(raw)) as { entry?: string; arduinoSketch?: boolean }
-      doc.entry = entryRel.replace(/\\/g, '/').replace(doc.arduinoSketch === true ? /^\.\// : /^sketch\//, '')
-      const out = `${JSON.stringify(doc, null, 2)}\n`
-      await vscode.workspace.fs.writeFile(packageUri, new TextEncoder().encode(out))
-    } catch {
-      /* 非致命：磁盘已重命名，package.json 可稍后手动修复 */
+      raw = await vscode.workspace.fs.readFile(packageUri)
+    } catch (error) {
+      if (renamedFrom != null && (error as vscode.FileSystemError)?.code === 'FileNotFound') return
+      throw error
+    }
+    const doc = JSON.parse(new TextDecoder().decode(raw)) as ProjectEntryManifest
+    let next = entryRel
+    if (renamedFrom != null) {
+      const current = projectEntryInWorkspace(doc)
+      if (current == null || (current !== renamedFrom && !current.startsWith(`${renamedFrom}/`))) return
+      next += current.slice(renamedFrom.length)
+    }
+    if (doc.arduinoSketch !== true && !next.startsWith('sketch/')) {
+      throw new Error('编译入口必须位于 sketch 目录内。')
+    }
+    const entry = doc.arduinoSketch === true ? next : next.slice('sketch/'.length)
+    if (doc.entry === entry) return
+    if (vscode.workspace.textDocuments.some(document => document.uri.toString() === packageUri.toString() && document.isDirty)) {
+      throw new Error('请先保存 package.json 中未保存的更改。')
+    }
+    doc.entry = entry
+    const output = new TextEncoder().encode(`${JSON.stringify(doc, null, 2)}\n`)
+    if (coderUseEmbedHostNativeFsBridge && packageUri.scheme === 'file') {
+      await writeNativeCompileEntryManifest(packageUri.fsPath, raw, output)
+    } else {
+      await vscode.workspace.fs.writeFile(packageUri, output)
     }
   }
 
@@ -1966,60 +2000,37 @@ void getApi().then((vscode) => {
     if (rel == null || rel.length === 0) {
       return
     }
-    await syncProjectPackageEntry(rel)
-    const userViewEl = getStableBlueprintElement('user-view')
-    if (userViewEl != null) {
-      provider.refresh(userViewEl)
-    } else {
-      provider.refresh()
+    try {
+      await queueEntryOperation(() => syncProjectPackageEntry(rel))
+    } catch (error) {
+      await vscode.window.showErrorMessage(`更新编译入口失败：${String(error)}`)
+      return
     }
+    refreshUserViewGroup()
     await vscode.window.showInformationMessage(`已将编译入口设为：${rel.replace(/\\/g, '/')}`)
   })
+
+  const relativePath = (uri: vscode.Uri): string => vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/')
+  const refreshRenamedNode = (oldRel: string, newRel: string, newUri: vscode.Uri): void => {
+    const nodeId = findBlueprintNodeIdByRelPath(oldRel)
+    if ((nodeId != null && isSrcCppEntryNodeId(nodeId)) ||
+      shouldRefreshStartHereNativeWatch(oldRel) || shouldRefreshStartHereNativeWatch(newRel)) {
+      refreshUserViewGroup()
+      return
+    }
+    if (nodeId != null) blueprintPathOverrides.set(nodeId, { label: basenameOfUri(newUri), path: newRel })
+    provider.refresh()
+  }
 
   /** 原生 Explorer 重命名完成后，同步 Aily View 蓝图节点与 package.json */
   vscode.workspace.onDidRenameFiles((event) => {
     for (const { oldUri, newUri } of event.files) {
-      const oldRel = vscode.workspace.asRelativePath(oldUri, false).replace(/\\/g, '/')
-      const newRel = vscode.workspace.asRelativePath(newUri, false).replace(/\\/g, '/')
-      const newLabel = basenameOfUri(newUri)
-      const nodeId = findBlueprintNodeIdByRelPath(oldRel)
-
-      if (nodeId == null) {
-        if (
-          shouldRefreshStartHereNativeWatch(oldRel) ||
-          shouldRefreshStartHereNativeWatch(newRel)
-        ) {
-          void (async () => {
-            const mainEntry = await readProjectPackageEntry(vscode)
-            if (mainEntry != null && oldRel === mainEntry) {
-              await syncProjectPackageEntry(newRel)
-            }
-          })()
-          refreshUserViewGroup()
-        } else {
-          provider.refresh()
-        }
-        continue
-      }
-
-      if (isSrcCppEntryNodeId(nodeId)) {
-        void (async () => {
-          const mainEntry = await readProjectPackageEntry(vscode)
-          if (mainEntry != null && oldRel.replace(/\\/g, '/') === mainEntry) {
-            await syncProjectPackageEntry(newRel)
-          }
-        })()
-        const userViewEl = getStableBlueprintElement('user-view')
-        if (userViewEl != null) {
-          provider.refresh(userViewEl)
-        } else {
-          provider.refresh()
-        }
-        continue
-      }
-
-      blueprintPathOverrides.set(nodeId, { label: newLabel, path: newRel })
-      provider.refresh()
+      if (!isUriUnderWorkspace(oldUri) || !isUriUnderWorkspace(newUri)) continue
+      const oldRel = relativePath(oldUri)
+      const newRel = relativePath(newUri)
+      void queueEntryOperation(() => syncProjectPackageEntry(newRel, oldRel))
+        .catch(error => { void vscode.window.showErrorMessage(`更新编译入口失败：${String(error)}`) })
+        .finally(() => refreshRenamedNode(oldRel, newRel, newUri))
     }
   })
 
@@ -2082,7 +2093,7 @@ void getApi().then((vscode) => {
       currentName,
       isDirectory: isRenameTargetDirectory(element),
       validateName: validateRenameEntryName,
-      onCommit: async (newName) => {
+      onCommit: newName => queueEntryOperation(async () => {
         const targetUri = vscode.Uri.joinPath(vscode.Uri.joinPath(uri, '..'), newName)
         try {
           await vscode.workspace.fs.stat(targetUri)
@@ -2093,8 +2104,22 @@ void getApi().then((vscode) => {
           }
           /* 目标不存在，可继续 */
         }
+        const oldRel = relativePath(uri)
+        const newRel = relativePath(targetUri)
         await vscode.workspace.fs.rename(uri, targetUri, { overwrite: false })
-      }
+        // workspace.fs.rename does not emit onDidRenameFiles for this tree.
+        try {
+          await syncProjectPackageEntry(newRel, oldRel)
+        } catch (error) {
+          try {
+            await vscode.workspace.fs.rename(targetUri, uri, { overwrite: false })
+          } catch (rollbackError) {
+            throw new Error(`更新编译入口失败：${String(error)}；无法撤回重命名：${String(rollbackError)}`)
+          }
+          throw error
+        }
+        refreshRenamedNode(oldRel, newRel, targetUri)
+      })
     }).catch(async (err: unknown) => {
       if (err instanceof Error && err.message.length > 0) {
         await vscode.window.showErrorMessage(`重命名 ${label} 失败：${err.message}`)
