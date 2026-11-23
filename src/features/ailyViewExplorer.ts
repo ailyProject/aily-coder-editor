@@ -816,7 +816,7 @@ async function listFsDirectoryChildren(
     if (underNodeModules && relPath === NODE_MODULES_REL && NODE_MODULES_SKIP.has(name)) {
       continue
     }
-    if (relPath === '.' && ['node_modules', 'sketch', 'package.json', 'package-lock.json'].includes(name)) continue
+    if (relPath === '.' && ['node_modules', 'sketch', 'package.json', 'package-lock.json', 'project.aci'].includes(name)) continue
     const childRel = relPath === '.' ? name : `${relPath}/${name}`
     const isDirectory = isFsDirectory(vscodeApi, fileType)
     out.push({

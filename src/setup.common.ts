@@ -486,6 +486,7 @@ export const constructOptions: IWorkbenchConstructionOptions = {
     "workbench.statusBar.visible": false,
     "workbench.secondarySideBar.defaultVisibility": "hidden",
     "files.exclude": {
+      "project.aci": true,
       "**/.aily": true,
       "**/.build": true,
       "**/.log": true,

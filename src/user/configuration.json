@@ -20,6 +20,7 @@
     },
     "files.autoSave": "off",
     "files.exclude": {
+        "project.aci": true,
         "**/.aily": true,
         "**/.build": true,
         "**/.log": true,
