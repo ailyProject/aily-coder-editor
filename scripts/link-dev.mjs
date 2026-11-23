@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import {
@@ -106,6 +107,12 @@ async function writeJsonAtomic(filePath, value) {
   const temporaryPath = `${filePath}.${process.pid}.tmp`
   await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
   await rename(temporaryPath, filePath)
+}
+
+async function removeSourceDevMarker(devMarker) {
+  if (!devMarker?.devSessionId) return
+  const currentMarker = await readJson(markerPath).catch(() => null)
+  if (currentMarker?.devSessionId === devMarker.devSessionId) await rm(markerPath, { force: true })
 }
 
 async function ensureInstallProject(installRoot) {
@@ -221,7 +228,7 @@ async function mirrorDevelopmentPackage(sourceRoot) {
   })
 }
 
-async function createDevelopmentGeneration(installRoot) {
+async function createDevelopmentGeneration(installRoot, devMarker) {
   const paths = developmentStorePaths(installRoot)
   await mkdir(paths.storeRoot, { recursive: true })
   const currentActive = existsSync(paths.activePath) ? await readJson(paths.activePath) : null
@@ -246,6 +253,7 @@ async function createDevelopmentGeneration(installRoot) {
 
   await rm(paths.versionRoot, { recursive: true, force: true })
   await mirrorDevelopmentPackage(paths.sourceRoot)
+  await writeJsonAtomic(path.join(paths.sourceRoot, '.aily-dev.json'), devMarker)
   const locator = { version: paths.version, path: `${paths.version}/source` }
   await writeJsonAtomic(paths.readyPath, {
     schemaVersion: versionStoreSchema,
@@ -529,11 +537,7 @@ async function startReloadServer() {
   }
 }
 
-async function startWatchMode(developmentSourceRoot) {
-  const reload = await startReloadServer()
-  const developmentMarkerPath = path.join(developmentSourceRoot, '.aily-dev.json')
-  await writeJsonAtomic(markerPath, { reloadUrl: reload.url })
-  await writeJsonAtomic(developmentMarkerPath, { reloadUrl: reload.url })
+async function startWatchMode(reload) {
   const builder = spawn(npmCommand, ['run', 'build:watch'], {
     cwd: packageRoot,
     env: { ...process.env },
@@ -555,16 +559,13 @@ async function startWatchMode(developmentSourceRoot) {
   console.log('Vite rebuilds ui/ on source changes; the linked iframe reloads automatically.')
 
   let stopping = false
-  const stop = async (signal) => {
+  const stop = (signal) => {
     if (stopping) return
     stopping = true
-    await rm(markerPath, { force: true })
-    await rm(developmentMarkerPath, { force: true })
     builder.kill(signal === 'SIGTERM' ? 'SIGTERM' : 'SIGINT')
-    await reload.close()
   }
-  process.once('SIGINT', () => void stop('SIGINT'))
-  process.once('SIGTERM', () => void stop('SIGTERM'))
+  process.once('SIGINT', () => stop('SIGINT'))
+  process.once('SIGTERM', () => stop('SIGTERM'))
   try {
     await new Promise((resolve, reject) => {
       builder.once('error', reject)
@@ -573,7 +574,7 @@ async function startWatchMode(developmentSourceRoot) {
         : reject(new Error(`Coder Vite watcher exited with code ${code}`)))
     })
   } finally {
-    await stop('SIGTERM')
+    stop('SIGTERM')
   }
 }
 
@@ -591,11 +592,13 @@ const installRoot = resolveInstallRoot(options)
 await ensureInstallProject(installRoot)
 
 if (options.unlink) {
+  const { sourceRoot } = developmentStorePaths(installRoot)
+  const devMarker = await readJson(path.join(sourceRoot, '.aily-dev.json')).catch(() => null)
   await cleanupLegacyDevelopmentLink(installRoot)
   await updateDevelopmentDependency(installRoot, true)
   const paths = await restoreDevelopmentGeneration(installRoot)
   await removeDevelopmentIndexEntry(installRoot)
-  await rm(markerPath, { force: true })
+  await removeSourceDevMarker(devMarker)
   console.log(`Removed ${packageName}@${paths.version} and restored the prior active version`)
   process.exit(0)
 }
@@ -604,9 +607,18 @@ if (!options['skip-build']) await run(npmCommand, ['run', 'build:subapp'])
 assertRunnablePackage()
 await cleanupLegacyDevelopmentLink(installRoot)
 await updateDevelopmentDependency(installRoot, true)
-const paths = await createDevelopmentGeneration(installRoot)
-await mergeDevelopmentIndex(installRoot)
-console.log(`Activated ${packageName}@${paths.version}: ${paths.sourceRoot}`)
-console.log('Host starts package-root index.js + ui/index.html from the pinned development generation.')
-
-if (options.watch) await startWatchMode(paths.sourceRoot)
+const reload = options.watch ? await startReloadServer() : undefined
+const devMarker = { devSessionId: randomUUID(), ...(reload ? { reloadUrl: reload.url } : {}) }
+try {
+  if (reload) await writeJsonAtomic(markerPath, devMarker)
+  const paths = await createDevelopmentGeneration(installRoot, devMarker)
+  await mergeDevelopmentIndex(installRoot)
+  console.log(`Activated ${packageName}@${paths.version}: ${paths.sourceRoot}`)
+  console.log('Host starts package-root index.js + ui/index.html from the pinned development generation.')
+  if (reload) await startWatchMode(reload)
+} finally {
+  if (reload) {
+    await reload.close()
+    await removeSourceDevMarker(devMarker)
+  }
+}

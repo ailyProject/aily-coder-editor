@@ -14,6 +14,17 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const uiRoot = path.join(packageRoot, 'ui')
 const indexPath = path.join(uiRoot, 'index.html')
 
+function readLaunchDevSessionId() {
+  // The server module resolves into the checkout, while the launch marker belongs to the installed entry.
+  try {
+    const launchDirectory = path.dirname(process.argv[1])
+    const marker = JSON.parse(readFileSync(path.join(launchDirectory, '.aily-dev.json'), 'utf8'))
+    return typeof marker?.devSessionId === 'string' ? marker.devSessionId : ''
+  } catch {
+    return ''
+  }
+}
+
 function write(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`)
 }
@@ -102,6 +113,7 @@ async function serveFile(request, response, filePath) {
 }
 
 async function startServeMode(options) {
+  const devSessionId = readLaunchDevSessionId()
   if (!existsSync(indexPath)) {
     throw new Error(`Coder UI has not been built: ${indexPath}`)
   }
@@ -170,6 +182,7 @@ async function startServeMode(options) {
       wsUrl: `ws://${originHost}:${address.port}${agentRpc.wsPath}`,
       port: address.port,
       pid: process.pid,
+      ...(devSessionId ? { devSessionId } : {}),
     },
   })
 }

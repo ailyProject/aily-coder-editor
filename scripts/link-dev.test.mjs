@@ -3,7 +3,9 @@ import { existsSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
+import { createInterface } from 'node:readline'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -21,12 +23,37 @@ function runLink(args) {
   assert.equal(result.status, 0, result.stderr || result.stdout)
 }
 
+async function readRuntimeReady(sourceRoot) {
+  const child = spawn(process.execPath, [path.join(sourceRoot, 'index.js'), 'serve'], {
+    cwd: sourceRoot,
+    stdio: ['ignore', 'pipe', 'inherit'],
+    windowsHide: true,
+  })
+  const closed = once(child, 'close')
+  const stdout = createInterface({ input: child.stdout })
+  try {
+    const [line] = await Promise.race([
+      once(stdout, 'line', { signal: AbortSignal.timeout(5000) }),
+      closed.then(([code]) => { throw new Error(`Coder Runtime exited before ready (${code})`) }),
+    ])
+    const message = JSON.parse(line)
+    assert.equal(message.event, 'ready')
+    return message.data
+  } finally {
+    stdout.close()
+    child.kill()
+    await closed
+  }
+}
+
 test('dev link registers, discovers, and cleanly restores Aily Coder Editor', async (t) => {
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'aily-coder-editor-link-'))
   const installRoot = path.join(fixtureRoot, 'npm-global', 'app')
   const packagePath = path.join(installRoot, 'node_modules', '@aily-project', 'subapp-aily-coder-editor')
   const storeRoot = path.join(installRoot, 'store', 'subapp-aily-coder-editor')
-  const devRoot = path.join(storeRoot, '0.1.9-dev')
+  const devVersion = `${packageVersion}-dev`
+  const devRoot = path.join(storeRoot, devVersion)
+  const sourceRoot = path.join(devRoot, 'source')
   const indexPath = path.join(installRoot, 'subapp-index.json')
   const originalIndex = {
     'remote-only': {
@@ -52,11 +79,15 @@ test('dev link registers, discovers, and cleanly restores Aily Coder Editor', as
   assert.equal(installPackage.dependencies[packageName], '0.1.0')
   const active = JSON.parse(await readFile(path.join(storeRoot, 'active.json'), 'utf8'))
   assert.equal(active.mode, 'pinned')
-  assert.deepEqual(active.selected, { version: '0.1.9-dev', path: '0.1.9-dev/source' })
+  assert.deepEqual(active.selected, { version: devVersion, path: `${devVersion}/source` })
   assert.equal(JSON.parse(await readFile(path.join(devRoot, 'ready.json'), 'utf8')).installMode, 'development')
-  const devPackage = JSON.parse(await readFile(path.join(devRoot, 'source', 'package.json'), 'utf8'))
+  const devPackage = JSON.parse(await readFile(path.join(sourceRoot, 'package.json'), 'utf8'))
   assert.equal(devPackage.name, packageName)
-  assert.equal(devPackage.version, '0.1.9-dev')
+  assert.equal(devPackage.version, devVersion)
+  const markerPath = path.join(sourceRoot, '.aily-dev.json')
+  const initialMarker = JSON.parse(await readFile(markerPath, 'utf8'))
+  assert.match(initialMarker.devSessionId, /^[0-9a-f-]{36}$/)
+  assert.equal((await readRuntimeReady(sourceRoot)).devSessionId, initialMarker.devSessionId)
   const developmentIndex = JSON.parse(await readFile(indexPath, 'utf8'))
   assert.equal(developmentIndex.dev, true)
   assert.equal(developmentIndex['remote-only'].id, 'remote-only')
@@ -64,6 +95,11 @@ test('dev link registers, discovers, and cleanly restores Aily Coder Editor', as
   assert.equal(developmentIndex['aily-coder-editor'].only, 'aily coder')
   assert.equal(developmentIndex['aily-coder-editor'].app.extension, true)
   assert.equal(developmentIndex['aily-coder-editor'].i18n.locales.zh_cn.TITLE, 'Aily Coder Editor')
+
+  runLink(['--app-root', installRoot, '--skip-build'])
+  const linkedAgain = JSON.parse(await readFile(markerPath, 'utf8'))
+  assert.notEqual(linkedAgain.devSessionId, initialMarker.devSessionId)
+  assert.equal((await readRuntimeReady(sourceRoot)).devSessionId, linkedAgain.devSessionId)
 
   runLink(['--app-root', installRoot, '--unlink'])
 
