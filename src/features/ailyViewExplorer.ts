@@ -25,6 +25,7 @@ import {
 import { libraryStrings } from './ailyComponentLibraryI18n.js'
 import { initialHostLanguage, workbenchUiStrings } from './ailyWorkbenchI18n.js'
 import { ailyViewCommandStrings } from './ailyViewCommandI18n.js'
+import { AilyViewFileNotes } from './ailyViewFileNotes.js'
 import { onDidImportDroppedFiles } from './fileDrop.workbench.js'
 import {
   startVirtualTreeInlineRename,
@@ -169,7 +170,8 @@ const COMMANDS = {
   openFolder: 'ailyView.openFolder',
   revealInFilesView: 'ailyView.revealInFilesView',
   copyRelativePath: 'ailyView.copyRelativePath',
-  // §7.2 main.cpp 额外
+  editFileNote: 'ailyView.editFileNote',
+  // §7.2 工程源码操作
   setAsMainEntry: 'ailyView.setAsMainEntry',
   rename: 'ailyView.rename',
   // §7.2 真实目录额外
@@ -413,6 +415,14 @@ type FsTreeElement = {
 type ExplorerTreeElement =
   | { readonly kind: 'project'; readonly node: ProjectTreeNode }
   | FsTreeElement
+
+function fileNotePath(element?: ExplorerTreeElement): string | undefined {
+  if (element?.kind === 'fs' && !element.isDirectory) return element.relPath
+  if (element?.kind === 'project' && element.node.type === 'file' && !element.node.absolutePath) {
+    return element.node.path
+  }
+  return undefined
+}
 
 /** 蓝图静态文件节点重命名后的运行时覆盖（label + path） */
 const blueprintPathOverrides = new Map<string, { label: string; path: string }>()
@@ -877,6 +887,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
   readonly #onDidChangeTreeData: vscode.EventEmitter<ExplorerTreeElement | undefined | void>
   readonly onDidChangeTreeData: vscode.Event<ExplorerTreeElement | undefined | void>
   readonly #parents = new WeakMap<ExplorerTreeElement, ExplorerTreeElement>()
+  #fileNotes?: AilyViewFileNotes
 
   constructor(
     vscodeApi: typeof vscode,
@@ -892,6 +903,21 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   refresh(element?: ExplorerTreeElement): void {
     this.#onDidChangeTreeData.fire(element)
+  }
+
+  get fileNotes(): AilyViewFileNotes | undefined {
+    const root = this.#vscode.workspace.workspaceFolders?.[0]?.uri
+    if (root == null) return undefined
+    if (this.#fileNotes?.root.toString() !== root.toString()) {
+      this.#fileNotes = new AilyViewFileNotes(this.#vscode, root)
+    }
+    return this.#fileNotes
+  }
+
+  #fileNoteDescription(element: ExplorerTreeElement): string | undefined {
+    const path = fileNotePath(element)
+    const note = path == null ? undefined : this.fileNotes?.get(path)
+    return note == null ? undefined : `(${note})`
   }
 
   /** 为 Build Outputs / release 注入真实编译产物虚拟文件。 */
@@ -1003,8 +1029,9 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       : `${element.librarySource != null ? 'library-root' : 'fs'}-${fsContextSuffix(element.relPath)}`
         + (element.libraryRemovalTarget != null ? ':uninstallable' : '')
     item.contextValue = `aily.${nodeType}:${contextId}`
-    item.description = element.description
-    item.tooltip = [element.label, element.relPath].join('\n')
+    const note = this.#fileNoteDescription(element)
+    item.description = note ?? element.description
+    item.tooltip = [element.label, note, element.relPath].filter(Boolean).join('\n')
 
     const root = vs.workspace.workspaceFolders?.[0]?.uri
     if (root != null) {
@@ -1042,6 +1069,8 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
     item.iconPath = new vs.ThemeIcon(node.icon)
     // contextValue = `aily.<type>:<id>`，便于菜单 when 子句通过 viewItem 精确或前缀匹配（§7）
     item.contextValue = `aily.${node.type}:${node.id}`
+    const note = this.#fileNoteDescription(element)
+    item.description = note
 
     // §9.3 tooltip：平台包为「标题 + 磁盘目录名 + 绝对路径」各一行，不重复绝对路径
     const absFs = node.absolutePath?.trim()
@@ -1056,6 +1085,7 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       item.tooltip = tooltipParts.join('\n')
     } else {
       const tooltipParts: string[] = [node.label]
+      if (note != null) tooltipParts.push(note)
       if (node.description != null) {
         tooltipParts.push(node.description)
       }
@@ -1162,7 +1192,10 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 
   async #readChildren(element?: ExplorerTreeElement): Promise<ExplorerTreeElement[]> {
     if (element == null) {
-      const sourceRoot = await readUserSourceRoot(this.#vscode)
+      const [sourceRoot] = await Promise.all([
+        readUserSourceRoot(this.#vscode),
+        this.fileNotes?.load().catch(() => {})
+      ])
       blueprintPathOverrides.set('user-view', { label: initialAilyViewCopy.userView, path: sourceRoot })
       return ailyViewBlueprint.filter((nd) => nd.visible).map((nd) => wrapBlueprintChild(nd))
     }
@@ -1238,10 +1271,11 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
 // 菜单 when 子句的可复用片段
 // 注意：在 manifest 字符串内 `\.` 需要写为 `\\.`
 const WHEN_VIEW = 'view == ailyView'
+const WHEN_FILE = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:/`
 const WHEN_FILE_LIKE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|virtual-file):/`
 const WHEN_DIRECTORY = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:/`
 const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|virtual-file):/`
-/** 可重命名：src 下 .cpp 入口、工作区目录（不含 Platform Packages）、node_modules 动态文件 */
+/** 可重命名：工程入口文件、工作区目录（不含 Platform Packages）、动态文件 */
 const WHEN_RENAMEABLE = `${WHEN_VIEW} && (viewItem =~ /^aily\\.file:entry-src-/ || (viewItem =~ /^aily\\.directory:/ && viewItem !~ /platform-pkg-/) || viewItem =~ /^aily\\.file:fs-/)`
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
 /** User View 中可作为编译入口的源码文件 */
@@ -1312,6 +1346,7 @@ const { getApi } = registerExtension(
         { command: COMMANDS.openFolder, title: initialAilyViewCommands.openFolder },
         { command: COMMANDS.revealInFilesView, title: initialAilyViewCommands.revealInFilesView },
         { command: COMMANDS.copyRelativePath, title: initialAilyViewCommands.copyRelativePath },
+        { command: COMMANDS.editFileNote, title: initialAilyViewCommands.editFileNote },
         { command: COMMANDS.setAsMainEntry, title: initialAilyViewCommands.setAsMainEntry },
         { command: COMMANDS.rename, title: initialAilyViewCommands.rename },
         { command: COMMANDS.newFile, title: initialAilyViewCommands.newFile },
@@ -1368,6 +1403,7 @@ const { getApi } = registerExtension(
           { command: COMMANDS.newFolder, when: WHEN_DIRECTORY, group: '1_directory@20' },
           // 单条 Rename：避免同一 command 在多个 group 重复出现
           { command: COMMANDS.rename, when: WHEN_RENAMEABLE, group: '7_modification@20' },
+          { command: COMMANDS.editFileNote, when: WHEN_FILE, group: '7_modification@25' },
 
           // package.json（Config > package-json）
           { command: COMMANDS.openVisualConfig, when: WHEN_PROJECT_CONFIG, group: '1_config@10' },
@@ -2013,6 +2049,38 @@ void getApi().then((vscode) => {
   })
 
   const relativePath = (uri: vscode.Uri): string => vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/')
+  const showFileNoteError = (error: unknown): void => {
+    void vscode.window.showErrorMessage(initialAilyViewCommands.saveFileNoteFailed, {
+      modal: true,
+      detail: String(error)
+    })
+  }
+
+  vscode.commands.registerCommand(COMMANDS.editFileNote, async (element?: ExplorerTreeElement) => {
+    const path = fileNotePath(element)
+    const notes = provider.fileNotes
+    if (element == null || path == null || notes == null) return
+    try {
+      await notes.load()
+      const value = await vscode.window.showInputBox({
+        title: `${initialAilyViewCommands.editFileNote} — ${elementLabel(element)}`,
+        prompt: initialAilyViewCommands.fileNotePrompt,
+        ignoreFocusOut: true,
+        value: notes.get(path)
+      })
+      if (value == null) return
+      await queueEntryOperation(async () => {
+        if (provider.fileNotes !== notes) return
+        const uri = vscode.Uri.joinPath(notes.root, path)
+        await vscode.workspace.fs.stat(uri)
+        await notes.set(path, value)
+        if (provider.fileNotes === notes) provider.refresh(element)
+      })
+    } catch (error) {
+      showFileNoteError(error)
+    }
+  })
+
   const refreshRenamedNode = (oldRel: string, newRel: string, newUri: vscode.Uri): void => {
     const nodeId = findBlueprintNodeIdByRelPath(oldRel)
     if ((nodeId != null && isSrcCppEntryNodeId(nodeId)) ||
@@ -2030,9 +2098,17 @@ void getApi().then((vscode) => {
       if (!isUriUnderWorkspace(oldUri) || !isUriUnderWorkspace(newUri)) continue
       const oldRel = relativePath(oldUri)
       const newRel = relativePath(newUri)
-      void queueEntryOperation(() => syncProjectPackageEntry(newRel, oldRel))
-        .catch(error => { void vscode.window.showErrorMessage(`更新编译入口失败：${String(error)}`) })
-        .finally(() => refreshRenamedNode(oldRel, newRel, newUri))
+      const notes = provider.fileNotes
+      void queueEntryOperation(async () => {
+        if (provider.fileNotes !== notes) return
+        try {
+          await syncProjectPackageEntry(newRel, oldRel)
+        } catch (error) {
+          void vscode.window.showErrorMessage(`更新编译入口失败：${String(error)}`)
+        }
+        await notes?.updatePath(oldRel, newRel).catch(showFileNoteError)
+        if (provider.fileNotes === notes) refreshRenamedNode(oldRel, newRel, newUri)
+      })
     }
   })
 
@@ -2088,6 +2164,7 @@ void getApi().then((vscode) => {
 
     const currentName =
       element?.kind === 'fs' ? element.label : basenameOfUri(uri)
+    const notes = provider.fileNotes
 
     const result = await startVirtualTreeInlineRename({
       treeView,
@@ -2120,6 +2197,7 @@ void getApi().then((vscode) => {
           }
           throw error
         }
+        await notes?.updatePath(oldRel, newRel).catch(showFileNoteError)
         refreshRenamedNode(oldRel, newRel, targetUri)
       })
     }).catch(async (err: unknown) => {
@@ -2310,6 +2388,12 @@ void getApi().then((vscode) => {
     vscode.workspace.onDidDeleteFiles((event) => {
       for (const uri of event.files) {
         bumpStartHereFromUri(uri)
+        if (!isUriUnderWorkspace(uri)) continue
+        const path = relativePath(uri)
+        const notes = provider.fileNotes
+        void queueEntryOperation(async () => {
+          await notes?.updatePath(path).catch(showFileNoteError)
+        })
       }
     })
   }
