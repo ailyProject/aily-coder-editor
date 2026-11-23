@@ -400,6 +400,7 @@ type FsTreeElement = {
   readonly relPath: string
   readonly label: string
   readonly isDirectory: boolean
+  readonly inUserView?: boolean
   /** 是否为 Installed Libraries 下的顶层包（用于 package 图标） */
   readonly isTopLevelPackage: boolean
   /** Library 下一级库的来源；用于库图标与根节点菜单。 */
@@ -425,6 +426,15 @@ function entryNodeIdForRelPath(relPath: string): string {
 
 function isSrcCppEntryNodeId(id: string): boolean {
   return id.startsWith(ENTRY_SRC_NODE_PREFIX)
+}
+
+function compileEntryPath(element?: ExplorerTreeElement): string | undefined {
+  const path = element?.kind === 'fs' && !element.isDirectory && element.inUserView
+    ? element.relPath
+    : element?.kind === 'project' && isSrcCppEntryNodeId(element.node.id)
+      ? element.node.path
+      : undefined
+  return path != null && /\.(cpp|ino)$/i.test(path) ? path : undefined
 }
 
 interface ProjectEntryManifest {
@@ -770,7 +780,8 @@ async function readProjectLibraryMetadata(
 /** 列出目录真实子项；node_modules 与 Library 的直接子目录用库图标。 */
 async function listFsDirectoryChildren(
   vscodeApi: typeof vscode,
-  relPath: string
+  relPath: string,
+  inUserView = false
 ): Promise<FsTreeElement[]> {
   const root = vscodeApi.workspace.workspaceFolders?.[0]?.uri
   if (root == null) {
@@ -803,6 +814,7 @@ async function listFsDirectoryChildren(
       relPath: childRel,
       label: name,
       isDirectory,
+      inUserView,
       isTopLevelPackage:
         (relPath === NODE_MODULES_REL || relPath === COMPONENTS_REL) && isDirectory
     })
@@ -985,12 +997,9 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       )
     )
     const nodeType = element.isDirectory ? 'directory' : 'file'
-    const isSourceCpp =
-      !element.isDirectory &&
-      element.relPath.startsWith(`${SRC_REL}/`) &&
-      element.relPath.toLowerCase().endsWith('.cpp')
-    const contextId = isSourceCpp
-      ? entryNodeIdForRelPath(element.relPath)
+    const entryPath = compileEntryPath(element)
+    const contextId = entryPath != null
+      ? entryNodeIdForRelPath(entryPath)
       : `${element.librarySource != null ? 'library-root' : 'fs'}-${fsContextSuffix(element.relPath)}`
         + (element.libraryRemovalTarget != null ? ':uninstallable' : '')
     item.contextValue = `aily.${nodeType}:${contextId}`
@@ -1163,14 +1172,14 @@ class AilyExplorerProvider implements vscode.TreeDataProvider<ExplorerTreeElemen
       if (!element.isDirectory) {
         return []
       }
-      return listFsDirectoryChildren(this.#vscode, element.relPath)
+      return listFsDirectoryChildren(this.#vscode, element.relPath, element.inUserView)
     }
 
     const node = element.node
 
     // User View：递归镜像 sketch/src。
     if (node.id === 'user-view') {
-      return listFsDirectoryChildren(this.#vscode, await readUserSourceRoot(this.#vscode))
+      return listFsDirectoryChildren(this.#vscode, await readUserSourceRoot(this.#vscode), true)
     }
 
     // Library：本地源码优先；其余节点映射 npm 包最终 src 下的库根。
@@ -1235,8 +1244,8 @@ const WHEN_REVEALABLE = `${WHEN_VIEW} && viewItem =~ /^aily\\.(file|directory|vi
 /** 可重命名：src 下 .cpp 入口、工作区目录（不含 Platform Packages）、node_modules 动态文件 */
 const WHEN_RENAMEABLE = `${WHEN_VIEW} && (viewItem =~ /^aily\\.file:entry-src-/ || (viewItem =~ /^aily\\.directory:/ && viewItem !~ /platform-pkg-/) || viewItem =~ /^aily\\.file:fs-/)`
 const WHEN_PLATFORM_PKG = `${WHEN_VIEW} && viewItem =~ /^aily\\.directory:platform-pkg-/`
-/** Start Here 下 src 镜像的 .cpp 文件 */
-const WHEN_SRC_CPP_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-/`
+/** User View 中可作为编译入口的源码文件 */
+const WHEN_COMPILE_ENTRY = `${WHEN_VIEW} && viewItem =~ /^aily\\.file:entry-src-/`
 const WHEN_PROJECT_CONFIG = `${WHEN_VIEW} && viewItem == aily.file:package-json`
 const WHEN_PROPERTY = `${WHEN_VIEW} && viewItem =~ /^aily\\.property:/`
 const WHEN_LIBRARY = `${WHEN_VIEW} && viewItem == aily.directory:library`
@@ -1352,7 +1361,7 @@ const { getApi } = registerExtension(
           { command: COMMANDS.copyRelativePath, when: WHEN_REVEALABLE, group: 'navigation@30' },
 
           // src/*.cpp 入口
-          { command: COMMANDS.setAsMainEntry, when: WHEN_SRC_CPP_ENTRY, group: '1_main@10' },
+          { command: COMMANDS.setAsMainEntry, when: WHEN_COMPILE_ENTRY, group: '1_main@10' },
 
           // 真实目录额外
           { command: COMMANDS.newFile, when: WHEN_DIRECTORY, group: '1_directory@10' },
@@ -1987,17 +1996,10 @@ void getApi().then((vscode) => {
     }
   }
 
-  // User View 中的 .cpp：写入 package.json entry。
+  // User View 中的编译入口文件：写入 package.json entry。
   vscode.commands.registerCommand(COMMANDS.setAsMainEntry, async (element?: ExplorerTreeElement) => {
-    const rel =
-      element?.kind === 'fs' &&
-      element.relPath.startsWith(`${SRC_REL}/`) &&
-      element.relPath.toLowerCase().endsWith('.cpp')
-        ? element.relPath
-        : element?.kind === 'project' && isSrcCppEntryNodeId(element.node.id)
-          ? element.node.path?.trim()
-          : undefined
-    if (rel == null || rel.length === 0) {
+    const rel = compileEntryPath(element)
+    if (rel == null) {
       return
     }
     try {
